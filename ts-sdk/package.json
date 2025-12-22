@@ -9,11 +9,14 @@
     "kijuku-cli": "./dist/cli.js"
   },
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target node && bun build src/cli.ts --outdir dist --target node && tsc --emitDeclarationOnly",
+    "build": "bun build src/index.ts --outdir dist --target node --external better-sqlite3 && bun build src/cli.ts --outdir dist --target node --external better-sqlite3 && tsc --emitDeclarationOnly",
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "bun run src/index.ts",
-    "cli": "bun run src/cli.ts"
+    "cli": "bun run src/cli.ts",
+    "example:crud": "cd .. && node examples/01-basic-crud.ts",
+    "example:search": "cd .. && node examples/02-search-filter.ts",
+    "example:bulk": "cd .. && node examples/03-bulk-operations.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0"
