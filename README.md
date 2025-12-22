@@ -1,0 +1,473 @@
+# kijuku-db
+
+メディア（コミック、ビデオ、音楽）のメタデータを管理するためのSQLiteデータベースライブラリ
+
+## 概要
+
+kijuku-dbは、メディアコンテンツのメタデータを効率的に管理するためのデータベースライブラリです。SQLiteをバックエンドとして使用し、TypeScriptとRustのSDKを提供します（現在はTypeScript SDKのみ実装済み）。
+
+### 特徴
+
+- コミック、ビデオ、音楽の3種類のメディアタイプに対応
+- 柔軟なタグ管理システム
+- EAVモデルによる拡張可能な追加属性
+- トランザクション対応
+- バルク操作サポート
+- 高度な検索・フィルタリング機能
+- CLIツール付属
+
+## インストール
+
+### 前提条件
+
+- Node.js 18以上
+- Bun（推奨）またはnpm
+
+### TypeScript SDK
+
+```bash
+cd ts-sdk
+bun install
+```
+
+npmを使用する場合：
+
+```bash
+cd ts-sdk
+npm install
+```
+
+### ビルド
+
+```bash
+bun run build
+```
+
+これにより`dist/`ディレクトリに以下のファイルが生成されます：
+- `index.js` - メインライブラリ
+- `index.d.ts` - TypeScript型定義
+- `cli.js` - CLIツール
+
+## クイックスタート
+
+### ライブラリとして使用
+
+```typescript
+import { KijukuDB } from 'kijuku-db';
+
+// データベースを初期化
+const db = new KijukuDB('./data/kijuku.db');
+
+// マイグレーション実行
+db.migrate();
+
+// メディアを作成
+const media = db.createMedia({
+  title: 'サンプルコミック',
+  media_type: 'comic',
+  artist: '作者名',
+  series: 'シリーズ名',
+  path: '/path/to/comic.cbz',
+});
+
+console.log(`作成されたメディアID: ${media.id}`);
+
+// メディアを検索
+const results = db.findMedia(
+  { media_type: 'comic', series: 'シリーズ名' },
+  { orderBy: 'created_at', order: 'DESC', limit: 10 }
+);
+
+console.log(`検索結果: ${results.length}件`);
+
+// タグを作成して付与
+const tag = db.createTag('お気に入り');
+db.addTagToMedia(media.id, tag.id);
+
+// トランザクション
+db.transaction(() => {
+  db.createMedia({ title: 'メディア1', media_type: 'comic' });
+  db.createMedia({ title: 'メディア2', media_type: 'video' });
+});
+
+// 接続を閉じる
+db.close();
+```
+
+### CLIツールとして使用
+
+```bash
+# マイグレーション実行
+kijuku-cli migrate --db ./data/kijuku.db
+
+# メディア検索
+kijuku-cli search --title "コミック" --type comic --db ./data/kijuku.db
+
+# JSONファイルからインポート
+kijuku-cli import --file data.json --db ./data/kijuku.db
+
+# CSVファイルからインポート
+kijuku-cli import --file data.csv --db ./data/kijuku.db
+
+# ヘルプ表示
+kijuku-cli help
+```
+
+## API仕様
+
+### KijukuDBクラス
+
+#### コンストラクタ
+
+```typescript
+constructor(dbPath: string, options?: DBOptions)
+```
+
+**パラメータ:**
+- `dbPath`: データベースファイルのパス
+- `options`: オプション設定
+  - `timeout`: クエリタイムアウト（ミリ秒、デフォルト: 5000）
+  - `readonly`: 読み取り専用モード（デフォルト: false）
+  - `verbose`: SQLログ出力（デフォルト: false）
+
+**環境変数:**
+- `DATABASE_PATH`: データベースファイルのパス（デフォルト値として使用）
+- `KIJUKU_DB_TIMEOUT`: タイムアウト時間
+- `KIJUKU_DB_VERBOSE`: ログ出力の有効化
+
+#### マイグレーション
+
+```typescript
+migrate(): void
+getSchemaVersion(): number
+```
+
+- `migrate()`: データベーススキーマを初期化・更新
+- `getSchemaVersion()`: 現在のスキーマバージョンを取得
+
+#### メディア操作
+
+```typescript
+createMedia(data: MediaInput): Media
+getMedia(id: number): Media | null
+updateMedia(id: number, data: Partial<MediaInput>): void
+deleteMedia(id: number): void
+findMedia(filter: MediaFilter, options?: QueryOptions): Media[]
+bulkCreateMedia(dataList: MediaInput[]): Media[]
+```
+
+**MediaInput型:**
+```typescript
+interface MediaInput {
+  title: string;              // 必須
+  media_type: 'comic' | 'video' | 'music';  // 必須
+  title_id?: string;
+  path?: string;
+  artist?: string;
+  artist_id?: string;
+  description?: string;
+  file_size?: number;
+  duration_sec?: number;
+  page_count?: number;
+  series?: string;
+  volume_number?: number;
+  volume_text?: string;
+  volume_title?: string;
+  magazine?: string;
+  magazine_id?: string;
+  language?: string;
+  source?: string;
+  external_id?: string;
+  // その他のオプションフィールド
+}
+```
+
+**MediaFilter型:**
+```typescript
+interface MediaFilter {
+  title?: string;
+  title_id?: string;
+  artist?: string;
+  artist_id?: string;
+  media_type?: 'comic' | 'video' | 'music';
+  series?: string;
+  source?: string;
+  tag_ids?: number[];
+}
+```
+
+**QueryOptions型:**
+```typescript
+interface QueryOptions {
+  orderBy?: string;      // 'created_at', 'title', 'artist' など
+  order?: 'ASC' | 'DESC';
+  limit?: number;
+  offset?: number;
+}
+```
+
+#### タグ操作
+
+```typescript
+createTag(name: string): Tag
+getTagByName(name: string): Tag | null
+getAllTags(): Tag[]
+addTagToMedia(mediaId: number, tagId: number): void
+removeTagFromMedia(mediaId: number, tagId: number): void
+getMediaTags(mediaId: number): Tag[]
+```
+
+**Tag型:**
+```typescript
+interface Tag {
+  id: number;
+  name: string;
+}
+```
+
+#### トランザクション
+
+```typescript
+transaction<T>(fn: () => T): T
+```
+
+トランザクション内で複数の操作をアトミックに実行します。
+
+**例:**
+```typescript
+db.transaction(() => {
+  const media1 = db.createMedia({ title: 'メディア1', media_type: 'comic' });
+  const tag = db.createTag('新着');
+  db.addTagToMedia(media1.id, tag.id);
+});
+```
+
+#### その他
+
+```typescript
+close(): void
+```
+
+データベース接続を閉じます。
+
+## CLIツールの使い方
+
+### コマンド一覧
+
+| コマンド | 説明 |
+|---------|------|
+| `migrate` | データベースのマイグレーションを実行 |
+| `search` | メディアを検索 |
+| `import` | JSON/CSV/TSVファイルからメディアをインポート |
+| `help` | ヘルプを表示 |
+
+### 共通オプション
+
+- `--db <path>`: データベースファイルのパス（デフォルト: `./kijuku.db`）
+
+### migrateコマンド
+
+データベースを初期化し、スキーマを作成します。
+
+```bash
+kijuku-cli migrate --db ./data/kijuku.db
+```
+
+### searchコマンド
+
+メディアを検索します。
+
+```bash
+kijuku-cli search [options] --db <path>
+```
+
+**オプション:**
+- `--title <text>`: タイトルで検索
+- `--artist <text>`: 作者で検索
+- `--type <type>`: メディアタイプで検索（`comic`, `video`, `music`）
+- `--series <text>`: シリーズで検索
+- `--source <text>`: データソースで検索
+- `--limit <n>`: 結果の最大件数
+- `--offset <n>`: 結果のオフセット
+- `--orderBy <field>`: ソートフィールド
+- `--order <ASC|DESC>`: ソート順
+
+**例:**
+```bash
+# タイトルで検索
+kijuku-cli search --title "ワンピース" --db ./data/kijuku.db
+
+# コミックタイプで最新10件を取得
+kijuku-cli search --type comic --orderBy created_at --order DESC --limit 10 --db ./data/kijuku.db
+
+# シリーズで検索
+kijuku-cli search --series "ドラゴンボール" --db ./data/kijuku.db
+```
+
+### importコマンド
+
+JSON、CSV、TSVファイルからメディアデータを一括インポートします。
+
+```bash
+kijuku-cli import --file <path> --db <path>
+```
+
+**オプション:**
+- `--file <path>`: インポートするファイルのパス（必須）
+
+**JSON形式の例:**
+```json
+[
+  {
+    "title": "サンプルコミック1",
+    "media_type": "comic",
+    "artist": "作者A",
+    "series": "シリーズ1",
+    "path": "/path/to/comic1.cbz"
+  },
+  {
+    "title": "サンプルコミック2",
+    "media_type": "comic",
+    "artist": "作者B",
+    "path": "/path/to/comic2.cbz"
+  }
+]
+```
+
+**CSV形式の例:**
+```csv
+title,media_type,artist,series,path
+サンプルコミック1,comic,作者A,シリーズ1,/path/to/comic1.cbz
+サンプルコミック2,comic,作者B,,/path/to/comic2.cbz
+```
+
+**インポート例:**
+```bash
+# JSONファイルからインポート
+kijuku-cli import --file ./data/media.json --db ./data/kijuku.db
+
+# CSVファイルからインポート
+kijuku-cli import --file ./data/media.csv --db ./data/kijuku.db
+```
+
+## データベーススキーマ
+
+### テーブル構成
+
+- `media`: メディア情報の本体
+- `tags`: タグ定義
+- `media_tags`: メディアとタグの多対多リレーション
+- `media_attributes`: 追加属性（EAVモデル）
+- `schema_version`: スキーマバージョン管理
+
+詳細なスキーマ定義は `schema/schema.sql` を参照してください。
+
+### インデックス
+
+以下のフィールドにインデックスが作成されます：
+- `title_id`, `artist_id` (完全一致検索用)
+- `media_type` (メディアタイプフィルタ)
+- `series` (シリーズ検索)
+- `source` (データソース検索)
+- `media_type, created_at` (複合インデックス)
+- `media_tags` の `tag_id`, `media_id`
+
+## 開発環境のセットアップ
+
+### リポジトリのクローン
+
+```bash
+git clone <repository-url>
+cd kijuku_db
+```
+
+### TypeScript SDKの開発
+
+```bash
+cd ts-sdk
+bun install
+```
+
+### ビルド
+
+```bash
+bun run build
+```
+
+### テスト実行
+
+```bash
+# テストを実行
+bun run test
+
+# テストをウォッチモードで実行
+bun run test:watch
+```
+
+### 開発モード
+
+```bash
+bun run dev
+```
+
+## プロジェクト構成
+
+```
+kijuku_db/
+├── rust-sdk/          # Rust SDK（未実装）
+├── ts-sdk/            # TypeScript SDK
+│   ├── src/           # ソースコード
+│   │   ├── index.ts   # メインエントリポイント
+│   │   ├── cli.ts     # CLIツール
+│   │   ├── types.ts   # 型定義
+│   │   ├── migration.ts  # マイグレーション機能
+│   │   ├── crud.ts    # CRUD操作
+│   │   ├── search.ts  # 検索機能
+│   │   ├── tag.ts     # タグ管理
+│   │   ├── bulk.ts    # バルク操作
+│   │   └── __tests__/ # テストコード
+│   ├── dist/          # ビルド成果物
+│   └── package.json
+├── schema/            # データベーススキーマ（DDL）
+│   └── schema.sql
+├── data/              # データベースファイル保存先
+└── docs/              # ドキュメント
+    └── design/        # 設計ドキュメント
+```
+
+## 設計方針
+
+詳細な設計方針については `docs/design/decisions.md` を参照してください。
+
+主な設計決定：
+- モノレポ構成（スキーマ定義を共有）
+- SDK実装はRustとTypeScriptで独立
+- TypeScript SDK優先で実装（API設計を早く固める）
+- EAVモデルによる柔軟な追加属性管理
+- NAS上のNode.js環境での実行を想定
+
+## 実行環境の注意事項
+
+このSDKは **NAS上のNode.js環境での実行を想定** しています。
+
+ネットワークファイルシステム越しのSQLiteアクセスは以下の理由により推奨されません：
+- ファイルロック機構が正しく動作しない可能性
+- データ破損のリスク
+
+PC側から利用する場合は、SSH経由でNAS上のコマンドを実行してください。
+
+## ライセンス
+
+MIT
+
+## 今後の開発予定
+
+- Rust SDKの実装
+- パフォーマンス最適化
+- エラーハンドリングの強化
+- 実アプリケーションとの統合サンプル
+- API仕様書の詳細化
+
+## 貢献
+
+プライベートプロジェクトのため、外部からの貢献は受け付けていません。
