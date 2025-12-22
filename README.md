@@ -15,6 +15,8 @@ kijuku-dbは、メディアコンテンツのメタデータを効率的に管�
 - バルク操作サポート
 - 高度な検索・フィルタリング機能
 - CLIツール付属
+- SSH経由でのリモートDB操作をサポート
+- 自動バイナリデプロイ機能
 
 ## インストール
 
@@ -397,12 +399,24 @@ bun run build
 ### テスト実行
 
 ```bash
-# テストを実行
-bun run test
+# 全テストを実行（リモートテストを除く）
+bun run test:all
+
+# カテゴリ別にテストを実行
+bun run test:unit          # 単体テストのみ
+bun run test:integration   # 結合テストのみ
+bun run test:e2e           # E2Eテスト（ローカル）のみ
 
 # テストをウォッチモードで実行
 bun run test:watch
 ```
+
+詳細なテスト方針とガイドラインについては [TESTING.md](./TESTING.md) を参照してください。
+
+**テストの分類:**
+- **単体テスト**: `test/unit/` - 個々の関数のテスト（モック使用）
+- **結合テスト**: `test/integration/` - 複数コンポーネントの連携テスト
+- **E2Eテスト**: `test/e2e/` - 実際のCLI実行テスト
 
 ### 開発モード
 
@@ -446,6 +460,81 @@ kijuku_db/
 - EAVモデルによる柔軟な追加属性管理
 - NAS上のNode.js環境での実行を想定
 
+## リモートDB操作
+
+SSH経由でリモートサーバー上のデータベースを操作できます。
+
+### セットアップ
+
+1. Rustバイナリをビルドしてローカルに配置
+
+```bash
+cd ts-sdk
+bun run deploy:local
+```
+
+2. `.ssh/config`にリモートホスト設定を追加
+
+```
+Host myserver
+    HostName example.com
+    User username
+    Port 22
+    IdentityFile ~/.ssh/id_rsa
+```
+
+3. `.env`ファイルに設定を追加
+
+```bash
+REMOTE_SSH_HOST=myserver
+REMOTE_DB_PATH=~/.local/share/kijuku/kijuku.db
+```
+
+### 使用例
+
+```typescript
+import { RemoteKijukuDB } from 'kijuku-db';
+
+// リモートDB接続を作成
+const remoteDb = new RemoteKijukuDB({
+  sshHost: 'myserver',  // .ssh/configのHost名
+  dbPath: '~/.local/share/kijuku/kijuku.db',
+});
+
+// ローカルDBと同じAPIで操作可能
+const media = await remoteDb.createMedia({
+  title: 'リモート作品',
+  media_type: 'comic',
+  artist: 'リモート作者',
+});
+
+const results = await remoteDb.findMedia({ media_type: 'comic' });
+console.log(`検索結果: ${results.length}件`);
+```
+
+### 設定オプション
+
+```typescript
+interface RemoteConfig {
+  sshHost: string;      // .ssh/configのHost名（必須）
+  dbPath?: string;      // リモートのDBパス（デフォルト: ~/.local/share/kijuku/kijuku.db）
+  workDir?: string;     // 作業ディレクトリ（省略可）
+  binaryPath?: string;  // バイナリパス（デフォルト: 自動設定）
+}
+```
+
+### 自動デプロイ機能
+
+初回実行時、リモート側にバイナリが存在しない場合は自動的に転送されます。
+
+**デフォルトの配置場所:**
+- `workDir`指定時: `${workDir}/bin/kijuku-cli`
+- `workDir`省略時: `~/.local/bin/kijuku-cli`
+
+### サンプルコード
+
+詳細な使用例は `examples/04-remote-operations.ts` を参照してください。
+
 ## 実行環境の注意事項
 
 このSDKは **NAS上のNode.js環境での実行を想定** しています。
@@ -454,7 +543,7 @@ kijuku_db/
 - ファイルロック機構が正しく動作しない可能性
 - データ破損のリスク
 
-PC側から利用する場合は、SSH経由でNAS上のコマンドを実行してください。
+PC側から利用する場合は、上記の「リモートDB操作」機能を使用してSSH経由でアクセスしてください。
 
 ## ライセンス
 

@@ -3,6 +3,12 @@
  */
 import type Database from 'better-sqlite3';
 import type { Media, MediaInput } from './types.js';
+import {
+  NotFoundError,
+  handleDatabaseError,
+  validateRequired,
+  validateMediaType,
+} from './errors.js';
 
 /**
  * SQLiteの行データをMediaオブジェクトに変換
@@ -17,24 +23,40 @@ function rowToMedia(row: any): Media {
 }
 
 /**
+ * volume_textから volume_number を計算
+ * volume_textが整数に変換可能な場合のみ、その値を返す
+ */
+function calculateVolumeNumber(volumeText: string | undefined): number | null {
+  if (!volumeText) return null;
+
+  const trimmed = volumeText.trim();
+  const num = parseInt(trimmed, 10);
+
+  // 整数に変換可能で、変換後の文字列が元の文字列と一致する場合のみ
+  if (!isNaN(num) && num.toString() === trimmed) {
+    return num;
+  }
+
+  return null;
+}
+
+/**
  * メディアを作成
  */
 export function createMedia(db: Database.Database, data: MediaInput): Media {
-  // 必須フィールドのチェック
-  if (!data.title) {
-    throw new Error('title is required');
-  }
-  if (!data.media_type) {
-    throw new Error('media_type is required');
-  }
+  try {
+    // 必須フィールドのバリデーション
+    validateRequired(data.title, 'title');
+    validateRequired(data.media_type, 'media_type');
 
-  // media_typeのバリデーション
-  if (!['comic', 'video', 'music'].includes(data.media_type)) {
-    throw new Error(`Invalid media_type: ${data.media_type}`);
-  }
+    // media_typeのバリデーション
+    validateMediaType(data.media_type);
 
   // pathが指定されている場合、flag_existを自動的にtrueに設定
   const flagExist = data.path ? 1 : (data.flag_exist ? 1 : 0);
+
+  // volume_textから volume_number を自動計算
+  const volumeNumber = calculateVolumeNumber(data.volume_text);
 
   const stmt = db.prepare(`
     INSERT INTO media (
@@ -67,7 +89,7 @@ export function createMedia(db: Database.Database, data: MediaInput): Media {
     duration_sec: data.duration_sec ?? null,
     page_count: data.page_count ?? null,
     series: data.series ?? null,
-    volume_number: data.volume_number ?? null,
+    volume_number: volumeNumber,
     volume_text: data.volume_text ?? null,
     volume_title: data.volume_title ?? null,
     magazine: data.magazine ?? null,
@@ -85,14 +107,17 @@ export function createMedia(db: Database.Database, data: MediaInput): Media {
     series_pron: data.series_pron ?? null,
   });
 
-  const insertedId = Number(result.lastInsertRowid);
-  const media = getMedia(db, insertedId);
+    const insertedId = Number(result.lastInsertRowid);
+    const media = getMedia(db, insertedId);
 
-  if (!media) {
-    throw new Error('Failed to retrieve created media');
+    if (!media) {
+      throw new NotFoundError('作成されたメディアの取得に失敗しました', { id: insertedId });
+    }
+
+    return media;
+  } catch (error: any) {
+    handleDatabaseError(error, 'メディアの作成に失敗しました');
   }
-
-  return media;
 }
 
 /**
@@ -117,15 +142,16 @@ export function updateMedia(
   id: number,
   data: Partial<MediaInput>
 ): void {
-  // メディアが存在するか確認
-  const existing = getMedia(db, id);
-  if (!existing) {
-    throw new Error(`Media with id ${id} not found`);
-  }
+  try {
+    // メディアが存在するか確認
+    const existing = getMedia(db, id);
+    if (!existing) {
+      throw new NotFoundError(`メディアが見つかりません`, { id });
+    }
 
-  // 更新するフィールドを動的に構築
-  const fields: string[] = [];
-  const values: Record<string, any> = { id };
+    // 更新するフィールドを動的に構築
+    const fields: string[] = [];
+    const values: Record<string, any> = { id };
 
   if (data.title !== undefined) {
     fields.push('title = @title');
@@ -143,14 +169,12 @@ export function updateMedia(
       fields.push('flag_exist = 1');
     }
   }
-  if (data.media_type !== undefined) {
-    // media_typeのバリデーション
-    if (!['comic', 'video', 'music'].includes(data.media_type)) {
-      throw new Error(`Invalid media_type: ${data.media_type}`);
+    if (data.media_type !== undefined) {
+      // media_typeのバリデーション
+      validateMediaType(data.media_type);
+      fields.push('media_type = @media_type');
+      values.media_type = data.media_type;
     }
-    fields.push('media_type = @media_type');
-    values.media_type = data.media_type;
-  }
   if (data.thumbnail_path !== undefined) {
     fields.push('thumbnail_path = @thumbnail_path');
     values.thumbnail_path = data.thumbnail_path;
@@ -183,13 +207,14 @@ export function updateMedia(
     fields.push('series = @series');
     values.series = data.series;
   }
-  if (data.volume_number !== undefined) {
-    fields.push('volume_number = @volume_number');
-    values.volume_number = data.volume_number;
-  }
   if (data.volume_text !== undefined) {
     fields.push('volume_text = @volume_text');
     values.volume_text = data.volume_text;
+
+    // volume_textが更新される場合、volume_numberも自動更新
+    const volumeNumber = calculateVolumeNumber(data.volume_text);
+    fields.push('volume_number = @volume_number');
+    values.volume_number = volumeNumber;
   }
   if (data.volume_title !== undefined) {
     fields.push('volume_title = @volume_title');
@@ -248,25 +273,32 @@ export function updateMedia(
     values.series_pron = data.series_pron;
   }
 
-  if (fields.length === 0) {
-    return; // 更新するフィールドがない場合は何もしない
-  }
+    if (fields.length === 0) {
+      return; // 更新するフィールドがない場合は何もしない
+    }
 
-  const sql = `UPDATE media SET ${fields.join(', ')} WHERE id = @id`;
-  const stmt = db.prepare(sql);
-  stmt.run(values);
+    const sql = `UPDATE media SET ${fields.join(', ')} WHERE id = @id`;
+    const stmt = db.prepare(sql);
+    stmt.run(values);
+  } catch (error: any) {
+    handleDatabaseError(error, `メディアの更新に失敗しました (id: ${id})`);
+  }
 }
 
 /**
  * メディアを削除
  */
 export function deleteMedia(db: Database.Database, id: number): void {
-  // メディアが存在するか確認
-  const existing = getMedia(db, id);
-  if (!existing) {
-    throw new Error(`Media with id ${id} not found`);
-  }
+  try {
+    // メディアが存在するか確認
+    const existing = getMedia(db, id);
+    if (!existing) {
+      throw new NotFoundError(`メディアが見つかりません`, { id });
+    }
 
-  const stmt = db.prepare('DELETE FROM media WHERE id = ?');
-  stmt.run(id);
+    const stmt = db.prepare('DELETE FROM media WHERE id = ?');
+    stmt.run(id);
+  } catch (error: any) {
+    handleDatabaseError(error, `メディアの削除に失敗しました (id: ${id})`);
+  }
 }

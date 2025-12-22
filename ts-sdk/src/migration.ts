@@ -21,16 +21,61 @@ function getSchemaPath(): string {
  * マイグレーションを実行
  */
 export function migrate(db: Database.Database): void {
-  const schemaPath = getSchemaPath();
+  const currentVersion = getSchemaVersion(db);
+  const targetVersion = 3;
 
-  if (!fs.existsSync(schemaPath)) {
-    throw new Error(`Schema file not found: ${schemaPath}`);
+  if (currentVersion === 0) {
+    // 初回マイグレーション: schema.sqlを実行
+    const schemaPath = getSchemaPath();
+    if (!fs.existsSync(schemaPath)) {
+      throw new Error(`Schema file not found: ${schemaPath}`);
+    }
+    const schemaSql = fs.readFileSync(schemaPath, 'utf-8');
+    db.exec(schemaSql);
+  } else {
+    // 段階的マイグレーション
+    for (let version = currentVersion + 1; version <= targetVersion; version++) {
+      applyMigration(db, version);
+    }
   }
+}
 
-  const schemaSql = fs.readFileSync(schemaPath, 'utf-8');
+/**
+ * 特定バージョンへのマイグレーションを適用
+ */
+function applyMigration(db: Database.Database, version: number): void {
+  switch (version) {
+    case 2:
+      // volume_numberカラムを削除（バージョン2では削除していた）
+      db.exec(`
+        -- volume_numberカラムを削除
+        ALTER TABLE media DROP COLUMN volume_number;
 
-  // スキーマSQLを実行
-  db.exec(schemaSql);
+        -- バージョンを記録
+        INSERT OR IGNORE INTO schema_version (version) VALUES (2);
+      `);
+      break;
+    case 3:
+      // volume_numberカラムを再追加（保存時自動計算方式）
+      db.exec(`
+        -- volume_numberカラムを再追加
+        ALTER TABLE media ADD COLUMN volume_number INTEGER;
+
+        -- 既存データのvolume_numberを計算して設定
+        UPDATE media
+        SET volume_number = CAST(volume_text AS INTEGER)
+        WHERE volume_text IS NOT NULL
+          AND volume_text <> ''
+          AND CAST(volume_text AS INTEGER) IS NOT NULL
+          AND TRIM(volume_text) = CAST(CAST(volume_text AS INTEGER) AS TEXT);
+
+        -- バージョンを記録
+        INSERT OR IGNORE INTO schema_version (version) VALUES (3);
+      `);
+      break;
+    default:
+      throw new Error(`Unknown migration version: ${version}`);
+  }
 }
 
 /**

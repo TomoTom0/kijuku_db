@@ -9,14 +9,18 @@ import type {
   QueryOptions,
   Tag,
   DBOptions,
+  MediaAttribute,
 } from './types.js';
 import * as migration from './migration.js';
 import * as crud from './crud.js';
 import * as tag from './tag.js';
 import * as search from './search.js';
 import * as bulk from './bulk.js';
+import * as attribute from './attribute.js';
 
 export * from './types.js';
+export * from './errors.js';
+export * from './remote.js';
 
 /**
  * Kijuku DBのメインクラス
@@ -146,6 +150,46 @@ export class KijukuDB {
    */
   getAllTags(): Tag[] {
     return tag.getAllTags(this.db);
+  }
+
+  /**
+   * メディアに属性を設定
+   */
+  setMediaAttribute(
+    mediaId: number,
+    key: string,
+    value: string | null,
+    valueType?: string
+  ): void {
+    attribute.setMediaAttribute(this.db, mediaId, key, value, valueType);
+  }
+
+  /**
+   * メディアの属性を取得
+   */
+  getMediaAttribute(mediaId: number, key: string): MediaAttribute | null {
+    return attribute.getMediaAttribute(this.db, mediaId, key);
+  }
+
+  /**
+   * メディアの全ての属性を取得
+   */
+  getMediaAttributes(mediaId: number): MediaAttribute[] {
+    return attribute.getMediaAttributes(this.db, mediaId);
+  }
+
+  /**
+   * メディアの属性を削除
+   */
+  deleteMediaAttribute(mediaId: number, key: string): void {
+    attribute.deleteMediaAttribute(this.db, mediaId, key);
+  }
+
+  /**
+   * メディアの全ての属性を削除
+   */
+  deleteAllMediaAttributes(mediaId: number): void {
+    attribute.deleteAllMediaAttributes(this.db, mediaId);
   }
 
   /**
