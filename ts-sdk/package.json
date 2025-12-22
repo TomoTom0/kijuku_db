@@ -1,0 +1,29 @@
+{
+  "name": "kijuku-db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "kijuku-cli": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node && bun build src/cli.ts --outdir dist --target node && tsc --emitDeclarationOnly",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "bun run src/index.ts",
+    "cli": "bun run src/cli.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "bun-types": "latest",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  },
+  "license": "MIT"
+}
