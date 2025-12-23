@@ -1,67 +1,66 @@
-#!/usr/bin/env node
 /**
- * TSV/CSVファイルにmedia_typeカラムを追加するスクリプト
+ * TSVファイルにmedia_typeカラムを追加するスクリプト
  */
-import { parse } from 'csv-parse/sync';
-import { stringify } from 'csv-stringify/sync';
 import fs from 'fs';
 import path from 'path';
+import { parse } from 'csv-parse/sync';
+import { stringify } from 'csv-stringify/sync';
+import { fileURLToPath } from 'url';
 
-const args = process.argv.slice(2);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-if (args.length < 3) {
-  console.error('使い方: add-media-type.ts <入力ファイル> <出力ファイル> <media_type>');
-  console.error('例: add-media-type.ts input.tsv output.tsv video');
-  process.exit(1);
-}
+const files = [
+  { path: path.join(__dirname, '../../tmp/tsv/default/comics.tsv'), mediaType: 'comic' },
+  { path: path.join(__dirname, '../../tmp/tsv/default/videos.tsv'), mediaType: 'video' },
+  { path: path.join(__dirname, '../../tmp/tsv/atara/comics.tsv'), mediaType: 'comic' },
+  { path: path.join(__dirname, '../../tmp/tsv/atara/comics_en.tsv'), mediaType: 'comic' },
+  { path: path.join(__dirname, '../../tmp/tsv/atara/videos.tsv'), mediaType: 'video' },
+];
 
-const [inputFile, outputFile, mediaType] = args;
+for (const { path: filePath, mediaType } of files) {
+  if (!fs.existsSync(filePath)) {
+    console.log(`スキップ: ${filePath} (ファイルが存在しません)`);
+    continue;
+  }
 
-if (!['comic', 'video', 'music'].includes(mediaType)) {
-  console.error(`エラー: media_typeは comic, video, music のいずれかである必要があります（指定値: ${mediaType}）`);
-  process.exit(1);
-}
+  console.log(`処理中: ${filePath}`);
 
-if (!fs.existsSync(inputFile)) {
-  console.error(`エラー: 入力ファイルが見つかりません: ${inputFile}`);
-  process.exit(1);
-}
+  const content = fs.readFileSync(filePath, 'utf-8');
 
-try {
-  const ext = path.extname(inputFile).toLowerCase();
-  const separator = ext === '.csv' ? ',' : '\t';
-  const content = fs.readFileSync(inputFile, 'utf-8');
-
-  // パース
-  const records = parse(content, {
+  // TSVをパース
+  const data = parse(content, {
     columns: true,
     skip_empty_lines: true,
-    delimiter: separator,
+    delimiter: '\t',
     quote: '"',
     escape: '"',
     relax_quotes: true,
-    trim: true,
   });
 
-  console.log(`${records.length}件のレコードを読み込みました`);
+  // media_typeが既に存在するかチェック
+  if (data.length > 0 && 'media_type' in data[0]) {
+    console.log(`  → すでにmedia_typeカラムが存在します`);
+    continue;
+  }
 
   // media_typeを追加
-  const processedRecords = records.map((record: any) => ({
+  const processedData = data.map((row: any) => ({
+    ...row,
     media_type: mediaType,
-    ...record,
   }));
 
-  // 出力
-  const output = stringify(processedRecords, {
+  // TSVとして出力
+  const output = stringify(processedData, {
     header: true,
-    delimiter: separator,
+    delimiter: '\t',
     quote: '"',
     escape: '"',
+    quoted_string: true,  // 改行を含むフィールドを自動的にクォート
   });
 
-  fs.writeFileSync(outputFile, output, 'utf-8');
-  console.log(`${outputFile} に ${processedRecords.length}件のレコードを出力しました`);
-} catch (error) {
-  console.error('エラー:', error instanceof Error ? error.message : error);
-  process.exit(1);
+  // 元のファイルを上書き
+  fs.writeFileSync(filePath, output, 'utf-8');
+  console.log(`  → ${data.length}件のレコードを処理しました`);
 }
+
+console.log('完了');
