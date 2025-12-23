@@ -1,239 +1,181 @@
 # データベースセットアップガイド
 
-このドキュメントでは、baked.dbとatara.dbの作成、データインポート、パス設定、ファイル存在確認の手順を説明します。
+このドキュメントでは、kijuku-dbのデータベース作成、データインポート、基本的な操作方法を説明します。
 
-## 概要
+## 1. データベース作成とマイグレーション
 
-- **baked.db**: 1,143件のメディア（comic: 948件、video: 195件）
-- **atara.db**: 18,639件のメディア（comic: 18,125件（ja: 8,713件、en: 9,412件）、video: 514件）
+### 1.1. 新規データベースの作成
 
-## 1. データベース作成とデータインポート
+```bash
+# CLIを使用
+node ts-sdk/dist/cli.js migrate <データベースパス>
 
-### 1.1. TSVファイルの準備
+# 例
+node ts-sdk/dist/cli.js migrate db/my-media.db
+```
+
+または、SDKを使用：
+
+```typescript
+import { KijukuDB } from './src/index.js';
+
+const db = new KijukuDB('db/my-media.db');
+db.migrate();
+db.close();
+```
+
+### 1.2. スキーマバージョンの確認
+
+```typescript
+const db = new KijukuDB('db/my-media.db');
+const version = db.getSchemaVersion();
+console.log(`Current schema version: ${version}`);
+```
+
+## 2. データインポート
+
+### 2.1. TSVファイルからのインポート
 
 TSVファイルには以下のカラムが必要です：
 
-- `media_type`: メディアタイプ（comic/video/music）
-- その他のメディア情報（title、language、id_old等）
-
-### 1.2. データベース作成とインポート
-
-```bash
-# baked.db の作成とインポート
-node ts-sdk/dist/cli.js migrate db/baked.db
-node ts-sdk/dist/cli.js import db/baked.db tmp/tsv/default/ --skip-attrs
-
-# atara.db の作成とインポート
-node ts-sdk/dist/cli.js migrate db/atara.db
-node ts-sdk/dist/cli.js import db/atara.db tmp/tsv/atara/ --skip-attrs
-```
-
-## 2. パス設定
-
-### 2.1. パス構造
-
-パス構造は以下の規則に従います：
-
-#### baked.db
-
-```
-comics: /share/Public/Web/resources/default/comics/content/{id_old}
-videos: /share/Public/Web/resources/default/videos/content/{id_old}
-```
-
-#### atara.db
-
-```
-comics (ja): /share/Public/Web/resources/atara/comics/content/{id_old}
-comics (en): /share/Public/Web/resources/atara_en/comics/content/{id_old}
-videos: /share/Public/Web/resources/atara/videos/content/{id_old}
-```
-
-### 2.2. SQL更新文
-
-#### baked.db
-
-```sql
--- comics のパス設定（id_oldはdescriptionに格納）
-UPDATE media
-SET
-  path = '/share/Public/Web/resources/default/comics/content/' || description,
-  thumbnail_path = '/share/Public/Web/resources/default/comics/content/' || description || '/thumb.jpg'
-WHERE media_type = 'comic';
-
--- videos のパス設定
-UPDATE media
-SET
-  path = '/share/Public/Web/resources/default/videos/content/' ||
-    (SELECT value FROM media_attributes WHERE media_attributes.media_id = media.id AND key = 'id_old'),
-  thumbnail_path = '/share/Public/Web/resources/default/videos/content/' ||
-    (SELECT value FROM media_attributes WHERE media_attributes.media_id = media.id AND key = 'id_old') || '/thumb.jpg'
-WHERE media_type = 'video';
-```
-
-#### atara.db
-
-```sql
--- comics (ja) のパス設定
-UPDATE media
-SET
-  path = '/share/Public/Web/resources/atara/comics/content/' ||
-    (SELECT value FROM media_attributes WHERE media_attributes.media_id = media.id AND key = 'id_old'),
-  thumbnail_path = '/share/Public/Web/resources/atara/comics/content/' ||
-    (SELECT value FROM media_attributes WHERE media_attributes.media_id = media.id AND key = 'id_old') || '/thumb.jpg'
-WHERE media_type = 'comic' AND language = 'ja';
-
--- comics (en) のパス設定
-UPDATE media
-SET
-  path = '/share/Public/Web/resources/atara_en/comics/content/' ||
-    (SELECT value FROM media_attributes WHERE media_attributes.media_id = media.id AND key = 'id_old'),
-  thumbnail_path = '/share/Public/Web/resources/atara_en/comics/content/' ||
-    (SELECT value FROM media_attributes WHERE media_attributes.media_id = media.id AND key = 'id_old') || '/thumb.jpg'
-WHERE media_type = 'comic' AND language = 'en';
-
--- videos のパス設定（言語条件なし）
-UPDATE media
-SET
-  path = '/share/Public/Web/resources/atara/videos/content/' ||
-    (SELECT value FROM media_attributes WHERE media_attributes.media_id = media.id AND key = 'id_old'),
-  thumbnail_path = '/share/Public/Web/resources/atara/videos/content/' ||
-    (SELECT value FROM media_attributes WHERE media_attributes.media_id = media.id AND key = 'id_old') || '/thumb.jpg'
-WHERE media_type = 'video';
-```
-
-## 3. ファイル存在確認
-
-### 3.1. チェック用TSVのエクスポート
+- **必須**: `media_type` (comic/video/music), `title`
+- **推奨**: `artist`, `path`, `language`
+- **オプション**: その他のメディア属性
 
 ```bash
-# baked.db
-sqlite3 -header -separator $'\t' db/baked.db \
-  "SELECT media_type, id, path FROM media ORDER BY id;" \
-  > tmp/wip/baked_export.tsv
+# TSVディレクトリからインポート
+node ts-sdk/dist/cli.js import <データベースパス> <TSVディレクトリ>
 
-# atara.db
-sqlite3 -header -separator $'\t' db/atara.db \
-  "SELECT media_type, id, path FROM media ORDER BY id;" \
-  > tmp/wip/atara_export.tsv
+# 例
+node ts-sdk/dist/cli.js import db/my-media.db tmp/tsv/
 ```
 
-### 3.2. リモートでのパス存在確認
-
-`tmp/wip/check-paths.sh` スクリプトを使用してリモートサーバー上でパスの存在を確認します。
+### 2.2. JSONファイルからのインポート
 
 ```bash
-# ローカルで準備
-mkdir -p /tmp/check-work
-cp tmp/wip/baked_export.tsv /tmp/check-work/
-cp tmp/wip/atara_export.tsv /tmp/check-work/
-cp tmp/wip/check-paths.sh /tmp/check-work/
-
-# リモートにアップロード
-scp -r /tmp/check-work remote-host:/tmp/
-
-# リモートで実行
-ssh remote-host
-cd /tmp/check-work
-chmod +x check-paths.sh
-./check-paths.sh --tsv-dir /tmp/check-work --output-dir /tmp/check-results
-
-# 結果をダウンロード
-scp -r remote-host:/tmp/check-results/* tmp/check-path/output/
+node ts-sdk/dist/cli.js import db/my-media.db data.json
 ```
 
-#### チェック結果の形式
+JSON形式例：
 
-`*_check_result.tsv` ファイルには以下のカラムが含まれます：
+```json
+[
+  {
+    "title": "サンプル作品",
+    "media_type": "comic",
+    "artist": "作者名",
+    "language": "ja",
+    "path": "/path/to/content"
+  }
+]
+```
 
-- `media_type`: メディアタイプ
-- `id`: メディアID
-- `path`: チェック対象のパス
-- `exists`: パスが存在するか（true/false）
-- `is_dir`: ディレクトリかどうか（true/false）
-- `file_count`: ファイル数（ディレクトリの場合は内部のファイル数、ファイルの場合は1）
-- `error`: エラー情報（存在しない場合は "not_found"）
-
-## 4. flag_exist の更新
-
-### 4.1. SDK を使用した更新
-
-`ts-sdk/tmp/update-flag-exist-sdk.ts` スクリプトを使用して、チェック結果を基に `flag_exist` フィールドを更新します。
+### 2.3. SDKを使用したインポート
 
 ```typescript
-import { KijukuDB } from '../src/index.js';
+import { KijukuDB } from './src/index.js';
 import fs from 'fs';
 import { parse } from 'csv-parse/sync';
 
-function updateFlagExist(dbPath: string, checkResultPath: string) {
-  const db = new KijukuDB(dbPath);
+const db = new KijukuDB('db/my-media.db');
 
-  const content = fs.readFileSync(checkResultPath, 'utf-8');
-  const results = parse(content, {
-    columns: true,
-    skip_empty_lines: true,
-    delimiter: '\t',
-    relax_column_count: true,
-    skip_records_with_error: true,
+// TSVファイルを読み込み
+const content = fs.readFileSync('data.tsv', 'utf-8');
+const records = parse(content, {
+  columns: true,
+  delimiter: '\t',
+  skip_empty_lines: true,
+});
+
+// バルクインポート
+const mediaList = records.map(row => ({
+  media_type: row.media_type,
+  title: row.title,
+  artist: row.artist || null,
+  path: row.path || null,
+  language: row.language || null,
+}));
+
+db.bulkCreateMedia(mediaList);
+db.close();
+```
+
+## 3. パス設定
+
+### 3.1. パスの一括設定
+
+メディアのパスを一括で設定する場合は、SQLまたはSDKを使用します。
+
+#### SQLを使用する場合
+
+```sql
+-- 例: id_oldを使ってパスを設定
+UPDATE media
+SET path = '/path/to/content/' ||
+  (SELECT value FROM media_attributes WHERE media_attributes.media_id = media.id AND key = 'id_old')
+WHERE media_type = 'comic';
+```
+
+#### SDKを使用する場合
+
+```typescript
+const db = new KijukuDB('db/my-media.db');
+
+// 全メディアを取得
+const allMedia = db.findMedia({}, { limit: 100000 });
+
+// パスを設定
+for (const media of allMedia) {
+  const basePath = '/path/to/content';
+  const newPath = `${basePath}/${media.id}`;
+
+  db.updateMedia(media.id, {
+    ...media,
+    path: newPath,
+    thumbnail_path: `${newPath}/thumb.jpg`,
   });
-
-  let updated = 0;
-  for (const row of results) {
-    const id = parseInt(row.id, 10);
-    if (isNaN(id)) continue;
-
-    const exists = row.exists === 'true';
-    const media = db.getMedia(id);
-    if (!media) continue;
-
-    if (media.flag_exist !== exists) {
-      db.updateMedia(id, {
-        ...media,
-        flag_exist: exists,
-      });
-      updated++;
-    }
-  }
-
-  console.log(`更新完了: ${updated}件`);
-  db.close();
 }
 
-// 実行
-updateFlagExist('db/baked.db', 'tmp/check-path/output/baked_check_result.tsv');
-updateFlagExist('db/atara.db', 'tmp/check-path/output/atara_check_result.tsv');
+db.close();
 ```
 
-### 4.2. 実行
+## 4. データの検証
+
+### 4.1. メディア数の確認
 
 ```bash
-cd ts-sdk
-tsx tmp/update-flag-exist-sdk.ts
+sqlite3 db/my-media.db "SELECT media_type, COUNT(*) FROM media GROUP BY media_type;"
 ```
 
-### 4.3. 更新結果の確認
+または：
 
-```bash
-# baked.db
-sqlite3 db/baked.db "SELECT flag_exist, COUNT(*) as count FROM media GROUP BY flag_exist;"
+```typescript
+const db = new KijukuDB('db/my-media.db');
 
-# atara.db
-sqlite3 db/atara.db "SELECT flag_exist, COUNT(*) as count FROM media GROUP BY flag_exist;"
+const comics = db.findMedia({ media_type: 'comic' });
+const videos = db.findMedia({ media_type: 'video' });
+const music = db.findMedia({ media_type: 'music' });
+
+console.log(`Comics: ${comics.length}`);
+console.log(`Videos: ${videos.length}`);
+console.log(`Music: ${music.length}`);
 ```
 
-#### 期待される結果
+### 4.2. データの整合性確認
 
-**baked.db**:
-- 存在する: 947件（82.1%）
-- 存在しない: 196件（17.0%）
+```typescript
+// パスが設定されていないメディアを検索
+const withoutPath = db.findMedia({}).filter(m => !m.path);
+console.log(`Missing path: ${withoutPath.length} items`);
 
-**atara.db**:
-- 存在する: 9,372件（49.8%）
-- 存在しない: 9,267件（49.2%）
+// 言語が設定されていないメディアを検索
+const withoutLang = db.findMedia({}).filter(m => !m.language);
+console.log(`Missing language: ${withoutLang.length} items`);
+```
 
 ## 5. volume_number の自動計算
 
-`volume_number` フィールドは、`volume_text` から自動的に計算されます。
+`volume_number` フィールドは `volume_text` から自動的に計算されます。
 
 ### 5.1. 動作仕様
 
@@ -244,10 +186,6 @@ sqlite3 db/atara.db "SELECT flag_exist, COUNT(*) as count FROM media GROUP BY fl
 ### 5.2. 使用例
 
 ```typescript
-import { KijukuDB } from './src/index.js';
-
-const db = new KijukuDB('db/baked.db');
-
 // volume_textを設定すると、volume_numberが自動計算される
 db.createMedia({
   media_type: 'comic',
@@ -261,11 +199,31 @@ db.createMedia({
   volume_text: '5-6',  // volume_number は null（整数でないため）
 });
 
-// 検索時にvolume_numberでソート可能
+// volume_numberでソート可能
 const results = db.findMedia(
   { media_type: 'comic' },
   { sort: [{ field: 'volume_number', direction: 'asc' }] }
 );
+```
+
+## 6. バックアップとメンテナンス
+
+### 6.1. データベースのバックアップ
+
+```bash
+# シンプルなコピー
+cp db/my-media.db db/my-media.db.backup
+
+# 日付付きバックアップ
+cp db/my-media.db "db/my-media.db.$(date +%Y%m%d_%H%M%S)"
+```
+
+### 6.2. VACUUMの実行
+
+データベースを最適化してファイルサイズを削減：
+
+```bash
+sqlite3 db/my-media.db "VACUUM;"
 ```
 
 ## トラブルシューティング
@@ -273,20 +231,19 @@ const results = db.findMedia(
 ### TSVファイルのインポートエラー
 
 - **エラー**: カラム数が一致しない
-  - **対処**: TSVファイルに `media_type` カラムが含まれているか確認してください
-  - **注意**: 複数行フィールド（章情報など）を含むTSVは `csv-parse` ライブラリで適切にパースしてください
+  - **対処**: TSVファイルに必須カラム（`media_type`, `title`）が含まれているか確認してください
+  - **対処**: 複数行フィールドを含むTSVは `csv-parse` ライブラリの `relax_column_count: true` オプションを使用してください
 
-### パス設定エラー
+### データベースロックエラー
 
-- **エラー**: id_old が見つからない
-  - **対処**: baked.dbのcomicsでは `description` フィールドに id_old が格納されています
-  - **対処**: その他のメディアタイプでは `media_attributes` テーブルを確認してください
+- **エラー**: `database is locked`
+  - **対処**: 他のプロセスがデータベースを使用していないか確認してください
+  - **対処**: ネットワークファイルシステム経由でのアクセスは避けてください
 
-### flag_exist 更新エラー
+### パフォーマンスの問題
 
-- **エラー**: TSVパースエラー
-  - **対処**: `relax_column_count: true` と `skip_records_with_error: true` オプションを使用してください
-  - **対処**: 進捗メッセージなどの無効な行は自動的にスキップされます
+- 大量データのインポート時は `bulkCreateMedia()` を使用してください
+- インデックスが適切に作成されているか確認してください（マイグレーションで自動作成されます）
 
 ## 参考資料
 
