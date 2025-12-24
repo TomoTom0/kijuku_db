@@ -1,0 +1,157 @@
+[
+  {
+    "title": "ワンピース 1巻",
+    "media_type": "comic",
+    "artist": "尾田栄一郎",
+    "series": "ワンピース",
+    "volume_number": 1,
+    "language": "ja",
+    "source": "manual",
+    "page_count": 200,
+    "description": "海賊王を目指す少年ルフィの冒険物語"
+  },
+  {
+    "title": "ワンピース 2巻",
+    "media_type": "comic",
+    "artist": "尾田栄一郎",
+    "series": "ワンピース",
+    "volume_number": 2,
+    "language": "ja",
+    "source": "manual",
+    "page_count": 195
+  },
+  {
+    "title": "ドラゴンボール 完全版 1巻",
+    "media_type": "comic",
+    "artist": "鳥山明",
+    "series": "ドラゴンボール",
+    "volume_number": 1,
+    "language": "ja",
+    "source": "manual",
+    "page_count": 250,
+    "description": "七つの玉を集めると願いが叶うという伝説のドラゴンボールを探す冒険物語"
+  },
+  {
+    "title": "NARUTO 1巻",
+    "media_type": "comic",
+    "artist": "岸本斉史",
+    "series": "NARUTO",
+    "volume_number": 1,
+    "language": "ja",
+    "source": "manual",
+    "page_count": 190,
+    "description": "忍者を目指す少年ナルトの成長物語"
+  },
+  {
+    "title": "進撃の巨人 1巻",
+    "media_type": "comic",
+    "artist": "諫山創",
+    "series": "進撃の巨人",
+    "volume_number": 1,
+    "language": "ja",
+    "source": "manual",
+    "page_count": 180,
+    "description": "巨人に支配された世界で人類の生き残りをかけた戦いが描かれる"
+  },
+  {
+    "title": "鬼滅の刃 1巻",
+    "media_type": "comic",
+    "artist": "吾峠呼世晴",
+    "series": "鬼滅の刃",
+    "volume_number": 1,
+    "language": "ja",
+    "source": "manual",
+    "page_count": 192,
+    "description": "家族を鬼に殺された少年が鬼殺隊として戦う物語"
+  },
+  {
+    "title": "君の名は。",
+    "media_type": "video",
+    "artist": "新海誠",
+    "language": "ja",
+    "source": "manual",
+    "duration_sec": 6360,
+    "file_size": 4500000000,
+    "description": "時空を超えて繋がる少年と少女の恋愛ファンタジー"
+  },
+  {
+    "title": "天気の子",
+    "media_type": "video",
+    "artist": "新海誠",
+    "language": "ja",
+    "source": "manual",
+    "duration_sec": 6840,
+    "file_size": 4800000000,
+    "description": "天候を操る少女と家出少年の物語"
+  },
+  {
+    "title": "すずめの戸締まり",
+    "media_type": "video",
+    "artist": "新海誠",
+    "language": "ja",
+    "source": "manual",
+    "duration_sec": 7320,
+    "file_size": 5000000000,
+    "description": "災いの扉を閉じる旅に出る少女の物語"
+  },
+  {
+    "title": "千と千尋の神隠し",
+    "media_type": "video",
+    "artist": "宮崎駿",
+    "language": "ja",
+    "source": "manual",
+    "duration_sec": 7440,
+    "file_size": 6000000000,
+    "description": "不思議な世界に迷い込んだ少女の冒険"
+  },
+  {
+    "title": "となりのトトロ",
+    "media_type": "video",
+    "artist": "宮崎駿",
+    "language": "ja",
+    "source": "manual",
+    "duration_sec": 5160,
+    "file_size": 3500000000,
+    "description": "田舎に引っ越した姉妹と不思議な生き物トトロとの交流"
+  },
+  {
+    "title": "RADWIMPS - 前前前世",
+    "media_type": "music",
+    "artist": "RADWIMPS",
+    "language": "ja",
+    "source": "manual",
+    "duration_sec": 285,
+    "file_size": 8000000,
+    "description": "映画「君の名は。」の主題歌"
+  },
+  {
+    "title": "米津玄師 - Lemon",
+    "media_type": "music",
+    "artist": "米津玄師",
+    "language": "ja",
+    "source": "manual",
+    "duration_sec": 254,
+    "file_size": 7500000,
+    "description": "ドラマ「アンナチュラル」の主題歌"
+  },
+  {
+    "title": "Official髭男dism - Pretender",
+    "media_type": "music",
+    "artist": "Official髭男dism",
+    "language": "ja",
+    "source": "manual",
+    "duration_sec": 318,
+    "file_size": 8500000,
+    "description": "映画「コンフィデンスマンJP」の主題歌"
+  },
+  {
+    "title": "LiSA - 紅蓮華",
+    "media_type": "music",
+    "artist": "LiSA",
+    "language": "ja",
+    "source": "manual",
+    "duration_sec": 243,
+    "file_size": 7000000,
+    "description": "アニメ「鬼滅の刃」のオープニングテーマ"
+  }
+]

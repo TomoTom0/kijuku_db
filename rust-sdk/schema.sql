@@ -99,6 +99,4 @@ BEGIN
 END;
 
 -- 初期バージョンを記録
-INSERT OR IGNORE INTO schema_version (version) VALUES (1);
-INSERT OR IGNORE INTO schema_version (version) VALUES (2);
 INSERT OR IGNORE INTO schema_version (version) VALUES (3);
