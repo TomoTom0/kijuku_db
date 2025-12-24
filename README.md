@@ -428,7 +428,7 @@ bun run dev
 
 ```
 kijuku_db/
-├── rust-sdk/          # Rust SDK（未実装）
+├── rust-sdk/          # Rust SDK
 ├── ts-sdk/            # TypeScript SDK
 │   ├── src/           # ソースコード
 │   │   ├── index.ts   # メインエントリポイント
