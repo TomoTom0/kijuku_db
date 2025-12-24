@@ -14,16 +14,16 @@ pub fn find_media(
 
     // フィルタ条件を構築
     if let Some(ref title) = filter.title {
-        where_clauses.push("m.title = ?".to_string());
-        params.push(Box::new(title.clone()));
+        where_clauses.push("m.title LIKE ?".to_string());
+        params.push(Box::new(format!("%{}%", title)));
     }
     if let Some(ref title_id) = filter.title_id {
         where_clauses.push("m.title_id = ?".to_string());
         params.push(Box::new(title_id.clone()));
     }
     if let Some(ref artist) = filter.artist {
-        where_clauses.push("m.artist = ?".to_string());
-        params.push(Box::new(artist.clone()));
+        where_clauses.push("m.artist LIKE ?".to_string());
+        params.push(Box::new(format!("%{}%", artist)));
     }
     if let Some(ref artist_id) = filter.artist_id {
         where_clauses.push("m.artist_id = ?".to_string());
@@ -34,8 +34,8 @@ pub fn find_media(
         params.push(Box::new(media_type.as_str().to_string()));
     }
     if let Some(ref series) = filter.series {
-        where_clauses.push("m.series = ?".to_string());
-        params.push(Box::new(series.clone()));
+        where_clauses.push("m.series LIKE ?".to_string());
+        params.push(Box::new(format!("%{}%", series)));
     }
     if let Some(ref source) = filter.source {
         where_clauses.push("m.source = ?".to_string());
