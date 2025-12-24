@@ -1,5 +1,5 @@
 -- kijuku_db スキーマ定義
--- Version: 1
+-- Version: 3
 
 -- 外部キー制約を有効化
 PRAGMA foreign_keys = ON;
@@ -100,3 +100,5 @@ END;
 
 -- 初期バージョンを記録
 INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+INSERT OR IGNORE INTO schema_version (version) VALUES (2);
+INSERT OR IGNORE INTO schema_version (version) VALUES (3);

@@ -1,0 +1,47 @@
+{
+  "name": "kijuku-db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "kijuku-cli": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node --external better-sqlite3 && bun build src/cli.ts --outdir dist --target node --external better-sqlite3 && tsc --emitDeclarationOnly",
+    "deploy:local": "../scripts/dev/deploy-local.sh",
+    "build:all": "bun run build && bun run deploy:local",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:e2e": "vitest run test/e2e/cli-local.test.ts",
+    "test:e2e:remote": "vitest run test/e2e/cli-remote.test.ts test/e2e/sdk-remote.test.ts",
+    "test:all": "vitest run test/unit test/integration test/e2e/cli-local.test.ts",
+    "test:watch": "vitest",
+    "dev": "bun run src/index.ts",
+    "cli": "bun run src/cli.ts",
+    "example:crud": "cd .. && node examples/01-basic-crud.ts",
+    "example:search": "cd .. && node examples/02-search-filter.ts",
+    "example:bulk": "cd .. && node examples/03-bulk-operations.ts",
+    "example:remote": "cd .. && tsx examples/04-remote-operations.ts",
+    "benchmark": "tsx benchmarks/performance.bench.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "csv-parse": "^6.1.0",
+    "csv-stringify": "^6.6.0",
+    "ssh-config": "^5.0.4",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "@types/ssh2": "^1.15.5",
+    "bun-types": "latest",
+    "tsx": "^4.21.0",
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
+  },
+  "license": "MIT"
+}

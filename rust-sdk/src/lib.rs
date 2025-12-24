@@ -1,0 +1,288 @@
+//! きじゅくDB - Rust SDK
+//!
+//! メディア管理のためのSQLiteベースのデータベースSDK
+//!
+//! # 機能
+//!
+//! - メディア情報のCRUD操作
+//! - タグ管理
+//! - 全文検索
+//! - 一括操作
+//! - トランザクション管理
+//!
+//! # 使用例
+//!
+//! ```no_run
+//! use kijuku_db::{KijukuDB, MediaInput, MediaType};
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // データベースを開く
+//! let db = KijukuDB::open("my_media.db")?;
+//!
+//! // 新しいメディアを作成準備
+//! let input = MediaInput {
+//!     title: "サンプルコミック".to_string(),
+//!     media_type: MediaType::Comic,
+//!     artist: Some("サンプル作者".to_string()),
+//!     ..Default::default()
+//! };
+//!
+//! // CRUD操作は今後実装されます
+//! # Ok(())
+//! # }
+//! ```
+
+pub mod attribute;
+pub mod bulk;
+pub mod crud;
+pub mod error;
+pub mod migration;
+pub mod search;
+pub mod tag;
+pub mod types;
+
+pub use error::{KijukuError, Result};
+pub use types::*;
+
+use rusqlite::Connection;
+use std::path::Path;
+
+/// きじゅくDBのメインクラス
+pub struct KijukuDB {
+    conn: Connection,
+    options: DBOptions,
+}
+
+impl KijukuDB {
+    /// データベースを開く
+    ///
+    /// # 引数
+    ///
+    /// * `path` - データベースファイルのパス
+    ///
+    /// # 戻り値
+    ///
+    /// データベース接続を返す
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        Ok(Self {
+            conn,
+            options: DBOptions::default(),
+        })
+    }
+
+    /// オプション付きでデータベースを開く
+    ///
+    /// # 引数
+    ///
+    /// * `path` - データベースファイルのパス
+    /// * `options` - データベース接続オプション
+    pub fn open_with_options<P: AsRef<Path>>(path: P, options: DBOptions) -> Result<Self> {
+        let conn = if options.readonly {
+            Connection::open_with_flags(
+                path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?
+        } else {
+            Connection::open(path)?
+        };
+
+        Ok(Self { conn, options })
+    }
+
+    /// インメモリデータベースを作成
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        Ok(Self {
+            conn,
+            options: DBOptions::default(),
+        })
+    }
+
+    /// データベース接続への参照を取得
+    pub fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// データベースオプションへの参照を取得
+    pub fn options(&self) -> &DBOptions {
+        &self.options
+    }
+
+    /// マイグレーションを実行
+    pub fn migrate(&self) -> Result<()> {
+        migration::migrate(&self.conn)
+    }
+
+    /// スキーマバージョンを取得
+    pub fn get_schema_version(&self) -> Result<i64> {
+        migration::get_schema_version(&self.conn)
+    }
+
+    /// テーブル一覧を取得
+    pub fn get_tables(&self) -> Result<Vec<String>> {
+        migration::get_tables(&self.conn)
+    }
+
+    /// 外部キー制約が有効かチェック
+    pub fn is_foreign_keys_enabled(&self) -> Result<bool> {
+        migration::is_foreign_keys_enabled(&self.conn)
+    }
+
+    /// メディアを作成
+    pub fn create_media(&self, input: &MediaInput) -> Result<Media> {
+        crud::create_media(&self.conn, input)
+    }
+
+    /// IDでメディアを取得
+    pub fn get_media(&self, id: i64) -> Option<Media> {
+        crud::get_media(&self.conn, id)
+    }
+
+    /// メディアを更新
+    pub fn update_media(&self, id: i64, input: &MediaInput) -> Result<()> {
+        crud::update_media(&self.conn, id, input)
+    }
+
+    /// メディアを削除
+    pub fn delete_media(&self, id: i64) -> Result<()> {
+        crud::delete_media(&self.conn, id)
+    }
+
+    /// メディアを検索
+    pub fn find_media(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+    ) -> Result<Vec<Media>> {
+        search::find_media(&self.conn, filter, options)
+    }
+
+    /// 複数のメディアを一括作成
+    pub fn bulk_create_media(&self, data_list: &[MediaInput]) -> Result<Vec<Media>> {
+        bulk::bulk_create_media(&self.conn, data_list)
+    }
+
+    /// タグを作成
+    pub fn create_tag(&self, name: &str) -> Result<Tag> {
+        tag::create_tag(&self.conn, name)
+    }
+
+    /// タグ名でタグを取得
+    pub fn get_tag_by_name(&self, name: &str) -> Option<Tag> {
+        tag::get_tag_by_name(&self.conn, name)
+    }
+
+    /// 全てのタグを取得
+    pub fn get_all_tags(&self) -> Result<Vec<Tag>> {
+        tag::get_all_tags(&self.conn)
+    }
+
+    /// メディアにタグを追加
+    pub fn add_tag_to_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
+        tag::add_tag_to_media(&self.conn, media_id, tag_id)
+    }
+
+    /// メディアからタグを削除
+    pub fn remove_tag_from_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
+        tag::remove_tag_from_media(&self.conn, media_id, tag_id)
+    }
+
+    /// メディアに関連付けられたタグを取得
+    pub fn get_media_tags(&self, media_id: i64) -> Result<Vec<Tag>> {
+        tag::get_media_tags(&self.conn, media_id)
+    }
+
+    /// メディアに属性を設定
+    pub fn set_media_attribute(
+        &self,
+        media_id: i64,
+        key: &str,
+        value: Option<&str>,
+        value_type: Option<AttributeValueType>,
+    ) -> Result<()> {
+        attribute::set_media_attribute(&self.conn, media_id, key, value, value_type)
+    }
+
+    /// メディアの属性を取得
+    pub fn get_media_attribute(&self, media_id: i64, key: &str) -> Result<Option<MediaAttribute>> {
+        attribute::get_media_attribute(&self.conn, media_id, key)
+    }
+
+    /// メディアの全ての属性を取得
+    pub fn get_media_attributes(&self, media_id: i64) -> Result<Vec<MediaAttribute>> {
+        attribute::get_media_attributes(&self.conn, media_id)
+    }
+
+    /// メディアの属性を削除
+    pub fn delete_media_attribute(&self, media_id: i64, key: &str) -> Result<()> {
+        attribute::delete_media_attribute(&self.conn, media_id, key)
+    }
+
+    /// メディアの全ての属性を削除
+    pub fn delete_all_media_attributes(&self, media_id: i64) -> Result<()> {
+        attribute::delete_all_media_attributes(&self.conn, media_id)
+    }
+}
+
+// Defaultトレイトの実装
+impl Default for MediaInput {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            media_type: MediaType::Comic,
+            title_id: None,
+            path: None,
+            thumbnail_path: None,
+            artist: None,
+            artist_id: None,
+            description: None,
+            file_size: None,
+            duration_sec: None,
+            page_count: None,
+            series: None,
+            volume_number: None,
+            volume_text: None,
+            volume_title: None,
+            magazine: None,
+            magazine_id: None,
+            language: None,
+            source: None,
+            external_id: None,
+            artist_en: None,
+            title_en: None,
+            chapters: None,
+            extension: None,
+            flag_exist: None,
+            title_pron: None,
+            artist_pron: None,
+            series_pron: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_open_in_memory() {
+        let db = KijukuDB::open_in_memory();
+        assert!(db.is_ok());
+    }
+
+    #[test]
+    fn test_media_type_conversion() {
+        assert_eq!(MediaType::from_str("comic"), Some(MediaType::Comic));
+        assert_eq!(MediaType::from_str("video"), Some(MediaType::Video));
+        assert_eq!(MediaType::from_str("music"), Some(MediaType::Music));
+        assert_eq!(MediaType::from_str("invalid"), None);
+    }
+
+    #[test]
+    fn test_media_type_as_str() {
+        assert_eq!(MediaType::Comic.as_str(), "comic");
+        assert_eq!(MediaType::Video.as_str(), "video");
+        assert_eq!(MediaType::Music.as_str(), "music");
+    }
+}
