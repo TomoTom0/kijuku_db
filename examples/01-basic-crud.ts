@@ -7,8 +7,11 @@
  * 3. メディアの取得
  * 4. メディアの更新
  * 5. メディアの削除
+ * 
+ * Note: 外部プロジェクトでは以下のようにインポートしてください:
+ * import { KijukuDB } from 'kijuku-db';
  */
-import { KijukuDB } from 'kijuku-db';
+import { KijukuDB } from '../ts-sdk/dist/index.js';
 
 // データベースパス
 const DB_PATH = './data/example.db';

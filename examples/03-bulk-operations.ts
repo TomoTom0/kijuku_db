@@ -5,6 +5,9 @@
  * 1. JSONファイルからデータを読み込み
  * 2. 複数のメディアを一括作成
  * 3. トランザクションを使った複数操作
+ * 
+ * Note: 外部プロジェクトでは以下のようにインポートしてください:
+ * import { KijukuDB } from 'kijuku-db';
  */
 import { KijukuDB } from '../ts-sdk/dist/index.js';
 import fs from 'fs';

@@ -72,16 +72,16 @@
 ```typescript
 // 悪い例
 for (const item of items) {
-  createMedia(db, item);
+  db.createMedia(item);
 }
 
 // 良い例
-bulkCreateMedia(db, items);
+db.bulkCreateMedia(items);
 
 // または手動でトランザクションを使用
 const insertMany = db.transaction((items) => {
   for (const item of items) {
-    createMedia(db, item);
+    db.createMedia(item);
   }
 });
 insertMany(items);

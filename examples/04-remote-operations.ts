@@ -5,6 +5,9 @@
  * 1. ~/.ssh/config にリモートホスト設定を追加
  * 2. .env ファイルに REMOTE_SSH_HOST を設定
  * 3. bun run deploy:local でローカルにバイナリを配置
+ * 
+ * Note: 外部プロジェクトでは以下のようにインポートしてください:
+ * import { RemoteKijukuDB } from 'kijuku-db';
  */
 
 import { RemoteKijukuDB } from '../ts-sdk/src/remote.js';

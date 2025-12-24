@@ -9,6 +9,9 @@
  * 5. ソート順の指定
  * 6. ページネーション（limit/offset）
  * 7. タグでの検索
+ * 
+ * Note: 外部プロジェクトでは以下のようにインポートしてください:
+ * import { KijukuDB } from 'kijuku-db';
  */
 import { KijukuDB } from '../ts-sdk/dist/index.js';
 
