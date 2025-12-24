@@ -136,58 +136,154 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaInput) -> Result<()
         )));
     }
 
-    // 動的にUPDATE文を構築する簡易版
-    // 実際には全フィールドを更新
-    let flag_exist = if input.flag_exist.unwrap_or(false) {
-        1
-    } else {
-        0
-    };
+    // 動的にUPDATE文を構築（指定されたフィールドのみ更新）
+    let mut update_fields = vec!["title = ?1".to_string()];
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(input.title.clone())];
+    let mut param_idx = 2;
 
-    // volume_textからvolume_numberを自動計算
-    let volume_number = calculate_volume_number(input.volume_text.as_deref());
+    if let Some(ref val) = input.title_id {
+        update_fields.push(format!("title_id = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.path {
+        update_fields.push(format!("path = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    update_fields.push(format!("media_type = ?{}", param_idx));
+    params.push(Box::new(input.media_type.as_str().to_string()));
+    param_idx += 1;
+    
+    if let Some(ref val) = input.thumbnail_path {
+        update_fields.push(format!("thumbnail_path = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.artist {
+        update_fields.push(format!("artist = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.artist_id {
+        update_fields.push(format!("artist_id = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.description {
+        update_fields.push(format!("description = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(val) = input.file_size {
+        update_fields.push(format!("file_size = ?{}", param_idx));
+        params.push(Box::new(val));
+        param_idx += 1;
+    }
+    if let Some(val) = input.duration_sec {
+        update_fields.push(format!("duration_sec = ?{}", param_idx));
+        params.push(Box::new(val));
+        param_idx += 1;
+    }
+    if let Some(val) = input.page_count {
+        update_fields.push(format!("page_count = ?{}", param_idx));
+        params.push(Box::new(val));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.series {
+        update_fields.push(format!("series = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.volume_text {
+        let volume_number = calculate_volume_number(Some(val.as_str()));
+        update_fields.push(format!("volume_text = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+        update_fields.push(format!("volume_number = ?{}", param_idx));
+        params.push(Box::new(volume_number));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.volume_title {
+        update_fields.push(format!("volume_title = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.magazine {
+        update_fields.push(format!("magazine = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.magazine_id {
+        update_fields.push(format!("magazine_id = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.language {
+        update_fields.push(format!("language = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.source {
+        update_fields.push(format!("source = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.external_id {
+        update_fields.push(format!("external_id = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.artist_en {
+        update_fields.push(format!("artist_en = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.title_en {
+        update_fields.push(format!("title_en = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.chapters {
+        update_fields.push(format!("chapters = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.extension {
+        update_fields.push(format!("extension = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(val) = input.flag_exist {
+        update_fields.push(format!("flag_exist = ?{}", param_idx));
+        params.push(Box::new(val));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.title_pron {
+        update_fields.push(format!("title_pron = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.artist_pron {
+        update_fields.push(format!("artist_pron = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.series_pron {
+        update_fields.push(format!("series_pron = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
 
-    conn.execute(
-        "UPDATE media SET
-            title = ?1, title_id = ?2, path = ?3, media_type = ?4, thumbnail_path = ?5,
-            artist = ?6, artist_id = ?7, description = ?8, file_size = ?9, duration_sec = ?10,
-            page_count = ?11, series = ?12, volume_number = ?13, volume_text = ?14, volume_title = ?15,
-            magazine = ?16, magazine_id = ?17, language = ?18, source = ?19, external_id = ?20,
-            artist_en = ?21, title_en = ?22, chapters = ?23, extension = ?24, flag_exist = ?25,
-            title_pron = ?26, artist_pron = ?27, series_pron = ?28
-        WHERE id = ?29",
-        params![
-            input.title,
-            input.title_id,
-            input.path,
-            input.media_type.as_str(),
-            input.thumbnail_path,
-            input.artist,
-            input.artist_id,
-            input.description,
-            input.file_size,
-            input.duration_sec,
-            input.page_count,
-            input.series,
-            volume_number,
-            input.volume_text,
-            input.volume_title,
-            input.magazine,
-            input.magazine_id,
-            input.language,
-            input.source,
-            input.external_id,
-            input.artist_en,
-            input.title_en,
-            input.chapters,
-            input.extension,
-            flag_exist,
-            input.title_pron,
-            input.artist_pron,
-            input.series_pron,
-            id,
-        ],
-    )?;
+    let sql = format!(
+        "UPDATE media SET {} WHERE id = ?{}",
+        update_fields.join(", "),
+        param_idx
+    );
+    params.push(Box::new(id));
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    conn.execute(&sql, params_refs.as_slice())?;
 
     Ok(())
 }

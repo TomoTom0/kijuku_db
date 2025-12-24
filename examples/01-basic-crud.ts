@@ -8,7 +8,7 @@
  * 4. メディアの更新
  * 5. メディアの削除
  */
-import { KijukuDB } from '../ts-sdk/dist/index.js';
+import { KijukuDB } from 'kijuku-db';
 
 // データベースパス
 const DB_PATH = './data/example.db';

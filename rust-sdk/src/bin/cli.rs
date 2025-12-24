@@ -2,6 +2,7 @@
 //!
 //! JSON形式の入出力でリモート操作を可能にするCLIツール
 
+use clap::Parser;
 use kijuku_db::{
     AttributeValueType, KijukuDB, MediaFilter, MediaInput, QueryOptions,
 };
@@ -147,14 +148,16 @@ struct DeleteAllMediaAttributesParams {
 }
 
 fn main() {
-    // データベースパスはコマンドライン引数から取得
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 3 || args[1] != "--db" {
-        eprintln!("Usage: kijuku-cli --db <database_path>");
-        std::process::exit(1);
+    #[derive(Parser)]
+    #[command(name = "kijuku-cli")]
+    #[command(about = "きじゅくDB CLI", long_about = None)]
+    struct Cli {
+        #[arg(long)]
+        db: String,
     }
 
-    let db_path = &args[2];
+    let cli = Cli::parse();
+    let db_path = &cli.db;
 
     // 標準入力からJSONコマンドを読み取る
     let mut input = String::new();
@@ -483,6 +486,15 @@ fn handle_delete_all_media_attributes(
 }
 
 fn output_response(response: &CommandResponse) {
-    let json = serde_json::to_string(response).unwrap();
-    println!("{}", json);
+    match serde_json::to_string(response) {
+        Ok(json) => println!("{}", json),
+        Err(e) => {
+            let err_resp = CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e));
+            if let Ok(err_json) = serde_json::to_string(&err_resp) {
+                println!("{}", err_json);
+            } else {
+                println!("{{\"success\":false,\"error\":\"Failed to serialize error response\"}}");
+            }
+        }
+    }
 }
