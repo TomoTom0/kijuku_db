@@ -4,7 +4,7 @@
 
 ## 概要
 
-kijuku-dbは、メディアコンテンツのメタデータを効率的に管理するためのデータベースライブラリです。SQLiteをバックエンドとして使用し、TypeScriptとRustのSDKを提供します（現在はTypeScript SDKのみ実装済み）。
+kijuku-dbは、メディアコンテンツのメタデータを効率的に管理するためのデータベースライブラリです。SQLiteをバックエンドとして使用し、TypeScriptとRustのSDKを提供します。
 
 ### 特徴
 
@@ -14,16 +14,24 @@ kijuku-dbは、メディアコンテンツのメタデータを効率的に管�
 - トランザクション対応
 - バルク操作サポート
 - 高度な検索・フィルタリング機能
+- **時間間隔ベースの自動バックアップ機能**
+- **認証付きWeb GUIサーバー（メディア閲覧・検索）**
 - CLIツール付属
 - SSH経由でのリモートDB操作をサポート
 - 自動バイナリデプロイ機能
+- TypeScript SDK と Rust SDK の両方を提供
 
 ## インストール
 
 ### 前提条件
 
+**TypeScript SDK:**
 - Node.js 18以上
 - Bun（推奨）またはnpm
+
+**Rust SDK:**
+- Rust 1.70以上
+- Cargo
 
 ### TypeScript SDK
 
@@ -39,7 +47,7 @@ cd ts-sdk
 npm install
 ```
 
-### ビルド
+#### ビルド
 
 ```bash
 bun run build
@@ -49,6 +57,25 @@ bun run build
 - `index.js` - メインライブラリ
 - `index.d.ts` - TypeScript型定義
 - `cli.js` - CLIツール
+
+### Rust SDK
+
+```bash
+cd rust-sdk
+cargo build --release
+```
+
+これにより`target/release/`ディレクトリにバイナリが生成されます：
+- `kijuku-cli` - CLIツール（ライブラリ機能を含む）
+
+**使用例:**
+```bash
+# マイグレーション
+./target/release/kijuku-cli --db ./data/kijuku.db migrate
+
+# Web GUIサーバー起動
+./target/release/kijuku-cli --db ./data/kijuku.db server --port 40001
+```
 
 ## クイックスタート
 
@@ -261,6 +288,7 @@ close(): void
 | `migrate` | データベースのマイグレーションを実行 |
 | `search` | メディアを検索 |
 | `import` | JSON/CSV/TSVファイルからメディアをインポート |
+| `server` | Web GUIサーバーを起動（認証付き） |
 | `help` | ヘルプを表示 |
 
 ### 共通オプション
@@ -351,6 +379,50 @@ kijuku-cli import --file ./data/media.json --db ./data/kijuku.db
 # CSVファイルからインポート
 kijuku-cli import --file ./data/media.csv --db ./data/kijuku.db
 ```
+
+### serverコマンド
+
+認証付きWeb GUIサーバーを起動します。ブラウザでメディアの閲覧・検索ができます。
+
+```bash
+kijuku-cli server --db <path> [options]
+```
+
+**オプション:**
+- `--port <number>`: サーバーのポート番号（デフォルト: 40001）
+- `--password <text>`: 認証パスワード（省略時は自動生成）
+
+**例:**
+```bash
+# デフォルト設定で起動（パスワードは自動生成）
+kijuku-cli server --db ./data/kijuku.db
+
+# ポートとパスワードを指定して起動
+kijuku-cli server --db ./data/kijuku.db --port 8080 --password mypassword
+```
+
+起動すると以下のような情報が表示されます：
+
+```
+Kijuku DB Web GUI Server
+========================
+URL: http://localhost:40001
+Password: Ab12Cd34Ef56
+
+Press Ctrl+C to stop the server
+```
+
+ブラウザで表示されたURLにアクセスし、パスワードを入力してログインします。
+
+**機能:**
+- メディア一覧の表示（ページネーション対応）
+- タイトル・作者・シリーズ・メディアタイプでの検索
+- メディア詳細の表示（タグ、追加属性を含む）
+- レスポンシブデザイン（モバイル対応）
+
+**注意事項:**
+- serverコマンドはローカルDBのみサポート（リモートDB非対応）
+- Ctrl+Cでサーバーを停止できます
 
 ## データベーススキーマ
 
@@ -559,11 +631,13 @@ MIT
 
 ## 今後の開発予定
 
-- Rust SDKの実装
+- バックアップファイルの自動削除・間引き機能
 - パフォーマンス最適化
 - エラーハンドリングの強化
 - 実アプリケーションとの統合サンプル
 - API仕様書の詳細化
+- Web GUIのHTTPS対応
+- セッション永続化機能
 
 ## 貢献
 

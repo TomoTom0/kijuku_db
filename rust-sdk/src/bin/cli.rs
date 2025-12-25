@@ -147,17 +147,61 @@ struct DeleteAllMediaAttributesParams {
     media_id: i64,
 }
 
-fn main() {
-    #[derive(Parser)]
-    #[command(name = "kijuku-cli")]
-    #[command(about = "きじゅくDB CLI", long_about = None)]
-    struct Cli {
-        #[arg(long)]
-        db: String,
-    }
+use clap::Subcommand;
 
+#[derive(Parser)]
+#[command(name = "kijuku-cli")]
+#[command(about = "きじゅくDB CLI", long_about = None)]
+struct Cli {
+    #[arg(long)]
+    db: String,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Web GUIサーバーを起動
+    Server {
+        /// サーバーのポート番号（デフォルト: 40001）
+        #[arg(long, default_value = "40001")]
+        port: u16,
+
+        /// 認証パスワード（省略時は自動生成）
+        #[arg(long)]
+        password: Option<String>,
+    },
+}
+
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
     let db_path = &cli.db;
+
+    // serverコマンドの場合
+    if let Some(Commands::Server { port, password }) = cli.command {
+        match kijuku_db::KijukuDB::open(db_path) {
+            Ok(db) => {
+                if let Err(e) = db.migrate() {
+                    eprintln!("マイグレーションエラー: {}", e);
+                    return;
+                }
+
+                let options = kijuku_db::ServerOptions {
+                    port,
+                    password,
+                };
+
+                kijuku_db::start_server(db, options).await;
+            }
+            Err(e) => {
+                eprintln!("データベースを開けませんでした: {}", e);
+                return;
+            }
+        }
+        return;
+    }
 
     // 標準入力からJSONコマンドを読み取る
     let mut input = String::new();

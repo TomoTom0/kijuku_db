@@ -17,16 +17,21 @@ import * as tag from './tag.js';
 import * as search from './search.js';
 import * as bulk from './bulk.js';
 import * as attribute from './attribute.js';
+import { BackupManager } from './backup.js';
 
 export * from './types.js';
 export * from './errors.js';
 export * from './remote.js';
+export { BackupManager } from './backup.js';
+export { startServer } from './server/index.js';
+export { AuthManager, generatePassword } from './server/auth.js';
 
 /**
  * Kijuku DBのメインクラス
  */
 export class KijukuDB {
   private db: Database.Database;
+  private backupManager?: BackupManager;
 
   constructor(dbPath: string, options?: DBOptions) {
     this.db = new Database(dbPath, {
@@ -38,6 +43,11 @@ export class KijukuDB {
     // SQLite設定
     this.db.pragma('foreign_keys = ON');
     this.db.pragma('journal_mode = WAL');
+
+    // バックアップマネージャーの初期化
+    if (options?.backup) {
+      this.backupManager = new BackupManager(this.db, options.backup);
+    }
   }
 
   /**
@@ -72,7 +82,9 @@ export class KijukuDB {
    * メディアを作成
    */
   createMedia(data: MediaInput): Media {
-    return crud.createMedia(this.db, data);
+    const result = crud.createMedia(this.db, data);
+    this.backupManager?.recordOperation().catch(() => {});
+    return result;
   }
 
   /**
@@ -87,6 +99,7 @@ export class KijukuDB {
    */
   updateMedia(id: number, data: Partial<MediaInput>): void {
     crud.updateMedia(this.db, id, data);
+    this.backupManager?.recordOperation().catch(() => {});
   }
 
   /**
@@ -94,6 +107,7 @@ export class KijukuDB {
    */
   deleteMedia(id: number): void {
     crud.deleteMedia(this.db, id);
+    this.backupManager?.recordOperation().catch(() => {});
   }
 
   /**
@@ -107,14 +121,18 @@ export class KijukuDB {
    * 複数のメディアを一括作成
    */
   bulkCreateMedia(dataList: MediaInput[]): Media[] {
-    return bulk.bulkCreateMedia(this.db, dataList);
+    const result = bulk.bulkCreateMedia(this.db, dataList);
+    this.backupManager?.recordOperation().catch(() => {});
+    return result;
   }
 
   /**
    * タグを作成
    */
   createTag(name: string): Tag {
-    return tag.createTag(this.db, name);
+    const result = tag.createTag(this.db, name);
+    this.backupManager?.recordOperation().catch(() => {});
+    return result;
   }
 
   /**
@@ -122,6 +140,7 @@ export class KijukuDB {
    */
   addTagToMedia(mediaId: number, tagId: number): void {
     tag.addTagToMedia(this.db, mediaId, tagId);
+    this.backupManager?.recordOperation().catch(() => {});
   }
 
   /**
@@ -129,6 +148,7 @@ export class KijukuDB {
    */
   removeTagFromMedia(mediaId: number, tagId: number): void {
     tag.removeTagFromMedia(this.db, mediaId, tagId);
+    this.backupManager?.recordOperation().catch(() => {});
   }
 
   /**
@@ -162,6 +182,7 @@ export class KijukuDB {
     valueType?: string
   ): void {
     attribute.setMediaAttribute(this.db, mediaId, key, value, valueType);
+    this.backupManager?.recordOperation().catch(() => {});
   }
 
   /**
@@ -183,6 +204,7 @@ export class KijukuDB {
    */
   deleteMediaAttribute(mediaId: number, key: string): void {
     attribute.deleteMediaAttribute(this.db, mediaId, key);
+    this.backupManager?.recordOperation().catch(() => {});
   }
 
   /**
@@ -190,13 +212,37 @@ export class KijukuDB {
    */
   deleteAllMediaAttributes(mediaId: number): void {
     attribute.deleteAllMediaAttributes(this.db, mediaId);
+    this.backupManager?.recordOperation().catch(() => {});
   }
 
   /**
    * トランザクションを実行
    */
   transaction<T>(fn: () => T): T {
-    return this.db.transaction(fn)();
+    const result = this.db.transaction(fn)();
+    this.backupManager?.recordOperation().catch(() => {});
+    return result;
+  }
+
+  /**
+   * 手動でバックアップを実行
+   */
+  async backup(): Promise<string | undefined> {
+    return this.backupManager?.backup();
+  }
+
+  /**
+   * バックアップ一覧を取得
+   */
+  listBackups(): Array<{ name: string; path: string; createdAt: Date }> {
+    return this.backupManager?.listBackups() ?? [];
+  }
+
+  /**
+   * バックアップマネージャーを取得
+   */
+  getBackupManager(): BackupManager | undefined {
+    return this.backupManager;
   }
 
   /**

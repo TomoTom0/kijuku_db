@@ -1,7 +1,40 @@
+# Temporary files
 tmp
+*.log
+*.tmp
+
+# Dependencies
 node_modules
+
+# Build outputs
 dist
+target
+
+# Database files
 *.db
 *.db-wal
 *.db-shm
 db/
+
+# Backup files
+*.backup.*.db
+backups/
+
+# Environment files
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test coverage
+coverage/
+.nyc_output/

@@ -1,0 +1,237 @@
+pub mod auth;
+
+use crate::{KijukuDB, MediaFilter, MediaType, QueryOptions, SortOrder};
+use auth::{generate_password, AuthManager};
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    middleware,
+    response::{Html, Json},
+    routing::{get, post},
+    Router,
+};
+use axum_extra::extract::cookie::{Cookie, CookieJar};
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
+use tower_http::services::ServeDir;
+
+pub struct ServerState {
+    db: Arc<Mutex<KijukuDB>>,
+    auth: Arc<AuthManager>,
+}
+
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    password: String,
+}
+
+#[derive(Serialize)]
+pub struct LoginResponse {
+    success: bool,
+}
+
+#[derive(Serialize)]
+pub struct ErrorResponse {
+    error: String,
+}
+
+#[derive(Deserialize)]
+pub struct MediaQuery {
+    title: Option<String>,
+    artist: Option<String>,
+    media_type: Option<String>,
+    series: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    #[serde(rename = "orderBy")]
+    order_by: Option<String>,
+    order: Option<String>,
+}
+
+pub struct ServerOptions {
+    pub port: u16,
+    pub password: Option<String>,
+}
+
+impl Default for ServerOptions {
+    fn default() -> Self {
+        Self {
+            port: 40001,
+            password: None,
+        }
+    }
+}
+
+pub async fn start_server(db: KijukuDB, options: ServerOptions) {
+    let password = options.password.unwrap_or_else(generate_password);
+    let auth = Arc::new(AuthManager::new(password.clone()));
+
+    let state = Arc::new(ServerState {
+        db: Arc::new(Mutex::new(db)),
+        auth: auth.clone(),
+    });
+
+    let static_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("server")
+        .join("static");
+
+    // Protected routes that require authentication
+    let protected_routes = Router::new()
+        .route("/api/media", get(get_media_list))
+        .route("/api/media/:id", get(get_media_detail))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    let app = Router::new()
+        .route("/", get(serve_index))
+        .route("/api/auth/login", post(login))
+        .route("/api/auth/logout", post(logout))
+        .merge(protected_routes)
+        .nest_service("/static", ServeDir::new(static_dir))
+        .with_state(state);
+
+    let addr = format!("0.0.0.0:{}", options.port);
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+
+    println!("\nKijuku DB Web GUI Server");
+    println!("========================");
+    println!("URL: http://localhost:{}", options.port);
+    println!("Password: {}", password);
+    println!("\nPress Ctrl+C to stop the server\n");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .unwrap();
+
+    println!("\nServer stopped gracefully");
+}
+
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to install Ctrl+C handler");
+}
+
+async fn auth_middleware(
+    State(state): State<Arc<ServerState>>,
+    jar: CookieJar,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    let session_id = jar
+        .get("session_id")
+        .map(|cookie| cookie.value().to_string());
+
+    if let Some(session_id) = session_id {
+        if state.auth.validate_session(&session_id) {
+            return Ok(next.run(request).await);
+        }
+    }
+
+    Err(StatusCode::UNAUTHORIZED)
+}
+
+async fn serve_index() -> Html<&'static str> {
+    Html(include_str!("static/index.html"))
+}
+
+async fn login(
+    State(state): State<Arc<ServerState>>,
+    jar: CookieJar,
+    Json(payload): Json<LoginRequest>,
+) -> Result<(CookieJar, Json<LoginResponse>), StatusCode> {
+    if let Some(session_id) = state.auth.authenticate(&payload.password) {
+        let cookie = Cookie::build(("session_id", session_id))
+            .path("/")
+            .http_only(true)
+            .build();
+
+        Ok((jar.add(cookie), Json(LoginResponse { success: true })))
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+async fn logout(
+    State(state): State<Arc<ServerState>>,
+    jar: CookieJar,
+) -> (CookieJar, Json<LoginResponse>) {
+    if let Some(session_id) = jar.get("session_id") {
+        state.auth.logout(session_id.value());
+    }
+
+    let mut cookie = Cookie::new("session_id", "");
+    cookie.set_path("/");
+    cookie.make_removal();
+
+    (jar.remove(cookie), Json(LoginResponse { success: true }))
+}
+
+async fn get_media_list(
+    State(state): State<Arc<ServerState>>,
+    Query(params): Query<MediaQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let db = state.db.lock().unwrap();
+
+    let media_type = params.media_type.and_then(|s| match s.as_str() {
+        "comic" => Some(MediaType::Comic),
+        "video" => Some(MediaType::Video),
+        "music" => Some(MediaType::Music),
+        _ => None,
+    });
+
+    let filter = MediaFilter {
+        title: params.title,
+        artist: params.artist,
+        media_type,
+        series: params.series,
+        ..Default::default()
+    };
+
+    let options = QueryOptions {
+        order_by: params.order_by,
+        order: params.order.and_then(|s| match s.as_str() {
+            "ASC" => Some(SortOrder::Asc),
+            "DESC" => Some(SortOrder::Desc),
+            _ => None,
+        }),
+        limit: params.limit.map(|v| v as i64),
+        offset: params.offset.map(|v| v as i64),
+    };
+
+    match db.find_media(&filter, Some(&options)) {
+        Ok(media) => {
+            let count = media.len();
+            Ok(Json(serde_json::json!({
+                "media": media,
+                "count": count,
+            })))
+        }
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn get_media_detail(
+    State(state): State<Arc<ServerState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let db = state.db.lock().unwrap();
+
+    match db.get_media(id) {
+        Some(media) => {
+            let tags = db.get_media_tags(id).unwrap_or_default();
+            let attributes = db.get_media_attributes(id).unwrap_or_default();
+
+            Ok(Json(serde_json::json!({
+                "media": media,
+                "tags": tags,
+                "attributes": attributes,
+            })))
+        }
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}

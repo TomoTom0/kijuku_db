@@ -9,7 +9,7 @@
     "kijuku-cli": "./dist/cli.js"
   },
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target node --external better-sqlite3 && bun build src/cli.ts --outdir dist --target node --external better-sqlite3 && tsc --emitDeclarationOnly",
+    "build": "bun build src/index.ts --outdir dist --target node --external better-sqlite3 && bun build src/cli.ts --outdir dist --target node --external better-sqlite3 && tsc --emitDeclarationOnly && cp -r src/server/static dist/server/",
     "deploy:local": "../scripts/dev/deploy-local.sh",
     "build:all": "bun run build && bun run deploy:local",
     "test": "vitest run",
@@ -28,9 +28,11 @@
     "benchmark": "tsx benchmarks/performance.bench.ts"
   },
   "dependencies": {
+    "@hono/node-server": "^1.19.7",
     "better-sqlite3": "^11.0.0",
     "csv-parse": "^6.1.0",
     "csv-stringify": "^6.6.0",
+    "hono": "^4.11.1",
     "ssh-config": "^5.0.4",
     "ssh2": "^1.17.0"
   },

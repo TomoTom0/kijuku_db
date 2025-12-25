@@ -3,6 +3,7 @@
  * Kijuku DB CLI ツール
  */
 import { KijukuDB, RemoteKijukuDB } from './index.js';
+import { startServer } from './server/index.js';
 import fs from 'fs';
 import path from 'path';
 import { parse } from 'csv-parse/sync';
@@ -11,6 +12,7 @@ const COMMANDS = {
   migrate: 'データベースのマイグレーションを実行',
   search: 'メディアを検索',
   import: 'JSON/CSV/TSVファイルからメディアをインポート',
+  server: 'Web GUIサーバーを起動',
   help: 'ヘルプを表示',
 };
 
@@ -42,12 +44,15 @@ function showHelp(): void {
   console.log('  --db <path>              データベースファイルのパス（デフォルト: ./kijuku.db）');
   console.log('                           リモートDB: host:path 形式（例: as5202:/home/user/kijuku.db）');
   console.log('  --additional-columns <cols>  追加カラムのリスト（カンマ区切り、importコマンドのみ）');
+  console.log('  --port <number>          サーバーのポート番号（デフォルト: 40001、serverコマンドのみ）');
+  console.log('  --password <password>    認証パスワード（省略時は自動生成、serverコマンドのみ）');
   console.log('');
   console.log('例（ローカルDB）:');
   console.log('  kijuku-cli migrate --db ./data/kijuku.db');
   console.log('  kijuku-cli search --title "コミック" --db ./kijuku.db');
   console.log('  kijuku-cli import --file data.json --db ./kijuku.db');
   console.log('  kijuku-cli import --file data.tsv --db ./kijuku.db --additional-columns "id_old,custom_field"');
+  console.log('  kijuku-cli server --db ./kijuku.db');
   console.log('');
   console.log('例（リモートDB）:');
   console.log('  kijuku-cli migrate --db as5202:/home/user/kijuku.db');
@@ -56,6 +61,7 @@ function showHelp(): void {
   console.log('');
   console.log('注意:');
   console.log('  - リモートDBを使用する場合、~/.ssh/config にホスト設定が必要です');
+  console.log('  - serverコマンドはローカルDBのみサポートしています');
 }
 
 /**
@@ -368,6 +374,32 @@ async function runImport(options: Record<string, string>): Promise<void> {
 }
 
 /**
+ * serverコマンドを実行
+ */
+async function runServer(options: Record<string, string>): Promise<void> {
+  const dbPath = getDbPath(options);
+  const parsed = parseDbPath(dbPath);
+
+  if (parsed.isRemote) {
+    console.error('エラー: serverコマンドはローカルDBのみサポートしています');
+    process.exit(1);
+  }
+
+  try {
+    const db = new KijukuDB(parsed.localPath!);
+    db.migrate();
+
+    const port = options.port ? parseInt(options.port, 10) : 40001;
+    const password = options.password;
+
+    startServer(db, { port, password });
+  } catch (error) {
+    console.error('エラー:', error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+}
+
+/**
  * メイン処理
  */
 async function main(): Promise<void> {
@@ -383,6 +415,9 @@ async function main(): Promise<void> {
       break;
     case 'import':
       await runImport(options);
+      break;
+    case 'server':
+      await runServer(options);
       break;
     case 'help':
       showHelp();
