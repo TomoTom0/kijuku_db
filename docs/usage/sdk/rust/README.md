@@ -80,7 +80,7 @@ use kijuku_db::KijukuDB;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // データベース接続を作成
-    let db = KijukuDB::new("./data/kijuku.db")?;
+    let db = KijukuDB::open("./data/kijuku.db")?;
 
     // スキーマを初期化（初回のみ）
     db.migrate()?;
@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use kijuku_db::{KijukuDB, MediaInput};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = KijukuDB::new("./data/kijuku.db")?;
+    let db = KijukuDB::open("./data/kijuku.db")?;
     db.migrate()?;
 
     let media = db.create_media(MediaInput {
@@ -120,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use kijuku_db::{KijukuDB, MediaFilter, QueryOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = KijukuDB::new("./data/kijuku.db")?;
+    let db = KijukuDB::open("./data/kijuku.db")?;
 
     // シリーズで検索
     let filter = MediaFilter {
@@ -151,7 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use kijuku_db::KijukuDB;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = KijukuDB::new("./data/kijuku.db")?;
+    let db = KijukuDB::open("./data/kijuku.db")?;
 
     // タグを作成
     let tag = db.create_tag("お気に入り")?;
@@ -175,7 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use kijuku_db::{KijukuDB, MediaInput};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = KijukuDB::new("./data/kijuku.db")?;
+    let db = KijukuDB::open("./data/kijuku.db")?;
 
     db.transaction(|| {
         let media = db.create_media(MediaInput {
@@ -204,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use kijuku_db::{KijukuDB, MediaInput};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = KijukuDB::new("./data/kijuku.db")?;
+    let db = KijukuDB::open("./data/kijuku.db")?;
 
     let media_list = vec![
         MediaInput {
@@ -259,7 +259,7 @@ fn start_server() -> Result<(), Box<dyn std::error::Error>> {
 use kijuku_db::{KijukuDB, MediaInput};
 
 fn main() {
-    let db = match KijukuDB::new("./data/kijuku.db") {
+    let db = match KijukuDB::open("./data/kijuku.db") {
         Ok(db) => db,
         Err(e) => {
             eprintln!("データベース接続エラー: {}", e);
@@ -296,7 +296,7 @@ fn main() {
 use kijuku_db::{KijukuDB, MediaInput};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = KijukuDB::new("./data/kijuku.db")?;
+    let db = KijukuDB::open("./data/kijuku.db")?;
 
     db.transaction(|| {
         for i in 0..1000 {
@@ -391,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_create_media() -> Result<(), Box<dyn std::error::Error>> {
-        let db = KijukuDB::new(":memory:")?;
+        let db = KijukuDB::open(":memory:")?;
         db.migrate()?;
 
         let media = db.create_media(MediaInput {

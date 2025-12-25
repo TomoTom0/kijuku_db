@@ -66,6 +66,16 @@ pub async fn start_server(db: KijukuDB, options: ServerOptions) {
     let password = options.password.unwrap_or_else(generate_password);
     let auth = Arc::new(AuthManager::new(password.clone()));
 
+    // セッションクリーンアップタスクを起動
+    let auth_for_cleanup = auth.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            auth_for_cleanup.cleanup_sessions(86400); // 24時間以上古いセッションを削除
+        }
+    });
+
     let state = Arc::new(ServerState {
         db: Arc::new(Mutex::new(db)),
         auth: auth.clone(),

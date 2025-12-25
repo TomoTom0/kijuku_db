@@ -240,41 +240,28 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
-    let db_path = &cli.db;
-
-    // docsコマンドの場合
-    if let Some(Commands::Docs { doc_type }) = &cli.command {
-        show_docs(doc_type);
-        return;
-    }
-
-    // serverコマンドの場合
-    if let Some(Commands::Server { port, password }) = cli.command {
-        match kijuku_db::KijukuDB::open(db_path) {
-            Ok(db) => {
-                if let Err(e) = db.migrate() {
-                    eprintln!("マイグレーションエラー: {}", e);
-                    return;
-                }
-
-                let options = kijuku_db::ServerOptions {
-                    port,
-                    password,
-                };
-
-                kijuku_db::start_server(db, options).await;
-            }
-            Err(e) => {
-                eprintln!("データベースを開けませんでした: {}", e);
+async fn handle_server(db_path: &str, port: u16, password: Option<String>) {
+    match kijuku_db::KijukuDB::open(db_path) {
+        Ok(db) => {
+            if let Err(e) = db.migrate() {
+                eprintln!("マイグレーションエラー: {}", e);
                 return;
             }
-        }
-        return;
-    }
 
+            let options = kijuku_db::ServerOptions {
+                port,
+                password,
+            };
+
+            kijuku_db::start_server(db, options).await;
+        }
+        Err(e) => {
+            eprintln!("データベースを開けませんでした: {}", e);
+        }
+    }
+}
+
+fn handle_stdin(db_path: &str) {
     // 標準入力からJSONコマンドを読み取る
     let mut input = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut input) {
@@ -313,6 +300,24 @@ async fn main() {
     // コマンドを実行
     let response = execute_command(&db, &request);
     output_response(&response);
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let db_path = &cli.db;
+
+    match &cli.command {
+        Some(Commands::Docs { doc_type }) => {
+            show_docs(doc_type);
+        }
+        Some(Commands::Server { port, password }) => {
+            handle_server(db_path, *port, password.clone()).await;
+        }
+        None => {
+            handle_stdin(db_path);
+        }
+    }
 }
 
 fn execute_command(db: &KijukuDB, request: &CommandRequest) -> CommandResponse {

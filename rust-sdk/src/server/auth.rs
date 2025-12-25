@@ -26,7 +26,7 @@ impl SessionStore {
         let session_id = Uuid::new_v4().to_string();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("System time is before UNIX epoch, this should not happen.")
             .as_secs();
 
         let session = Session {
@@ -53,7 +53,7 @@ impl SessionStore {
     pub fn cleanup(&self, max_age_secs: u64) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("System time is before UNIX epoch, this should not happen.")
             .as_secs();
 
         self.sessions

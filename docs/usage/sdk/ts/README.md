@@ -144,8 +144,8 @@ SDK利用者が主に使用する機能です。
 const db = new KijukuDB('./data/kijuku.db', {
   backup: {
     enabled: true,
-    interval: 3600000, // 1時間ごと（ミリ秒）
-    destination: './backups',
+    intervalMs: 3600000, // 1時間ごと（ミリ秒）
+    backupDir: './backups',
   }
 });
 
@@ -156,8 +156,8 @@ db.migrate();
 手動でバックアップを作成：
 
 ```typescript
-const backupPath = db.createBackup('./backups');
-console.log(`バックアップを作成しました: ${backupPath}`);
+await db.backup();
+console.log(`バックアップを作成しました`);
 ```
 
 ### リモートDB操作（SSH経由）

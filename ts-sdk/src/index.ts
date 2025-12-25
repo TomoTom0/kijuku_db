@@ -83,7 +83,9 @@ export class KijukuDB {
    */
   createMedia(data: MediaInput): Media {
     const result = crud.createMedia(this.db, data);
-    this.backupManager?.recordOperation().catch(() => {});
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
     return result;
   }
 
@@ -99,7 +101,9 @@ export class KijukuDB {
    */
   updateMedia(id: number, data: Partial<MediaInput>): void {
     crud.updateMedia(this.db, id, data);
-    this.backupManager?.recordOperation().catch(() => {});
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
   }
 
   /**
@@ -107,7 +111,9 @@ export class KijukuDB {
    */
   deleteMedia(id: number): void {
     crud.deleteMedia(this.db, id);
-    this.backupManager?.recordOperation().catch(() => {});
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
   }
 
   /**
@@ -122,7 +128,9 @@ export class KijukuDB {
    */
   bulkCreateMedia(dataList: MediaInput[]): Media[] {
     const result = bulk.bulkCreateMedia(this.db, dataList);
-    this.backupManager?.recordOperation().catch(() => {});
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
     return result;
   }
 
@@ -131,7 +139,9 @@ export class KijukuDB {
    */
   createTag(name: string): Tag {
     const result = tag.createTag(this.db, name);
-    this.backupManager?.recordOperation().catch(() => {});
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
     return result;
   }
 
@@ -140,7 +150,9 @@ export class KijukuDB {
    */
   addTagToMedia(mediaId: number, tagId: number): void {
     tag.addTagToMedia(this.db, mediaId, tagId);
-    this.backupManager?.recordOperation().catch(() => {});
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
   }
 
   /**
@@ -148,7 +160,9 @@ export class KijukuDB {
    */
   removeTagFromMedia(mediaId: number, tagId: number): void {
     tag.removeTagFromMedia(this.db, mediaId, tagId);
-    this.backupManager?.recordOperation().catch(() => {});
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
   }
 
   /**
@@ -182,7 +196,9 @@ export class KijukuDB {
     valueType?: string
   ): void {
     attribute.setMediaAttribute(this.db, mediaId, key, value, valueType);
-    this.backupManager?.recordOperation().catch(() => {});
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
   }
 
   /**
@@ -204,7 +220,9 @@ export class KijukuDB {
    */
   deleteMediaAttribute(mediaId: number, key: string): void {
     attribute.deleteMediaAttribute(this.db, mediaId, key);
-    this.backupManager?.recordOperation().catch(() => {});
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
   }
 
   /**
@@ -212,7 +230,9 @@ export class KijukuDB {
    */
   deleteAllMediaAttributes(mediaId: number): void {
     attribute.deleteAllMediaAttributes(this.db, mediaId);
-    this.backupManager?.recordOperation().catch(() => {});
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
   }
 
   /**
@@ -220,7 +240,9 @@ export class KijukuDB {
    */
   transaction<T>(fn: () => T): T {
     const result = this.db.transaction(fn)();
-    this.backupManager?.recordOperation().catch(() => {});
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
     return result;
   }
 
