@@ -113,12 +113,23 @@ export interface Tag {
 }
 
 /**
+ * バックアップ設定オプション
+ */
+export interface BackupOptions {
+  backupDir: string;
+  intervalMs?: number;
+  enabled?: boolean;
+  onProgress?: (info: { totalPages: number; remainingPages: number }) => void;
+}
+
+/**
  * データベース接続オプション
  */
 export interface DBOptions {
   timeout?: number;
   readonly?: boolean;
   verbose?: boolean;
+  backup?: BackupOptions;
 }
 
 /**

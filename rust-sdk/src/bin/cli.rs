@@ -3,11 +3,14 @@
 //! JSON形式の入出力でリモート操作を可能にするCLIツール
 
 use clap::Parser;
+use include_dir::{include_dir, Dir};
 use kijuku_db::{
     AttributeValueType, KijukuDB, MediaFilter, MediaInput, QueryOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
+
+static DOCS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../docs");
 
 /// コマンドリクエスト
 #[derive(Debug, Deserialize)]
@@ -147,18 +150,104 @@ struct DeleteAllMediaAttributesParams {
     media_id: i64,
 }
 
-fn main() {
-    #[derive(Parser)]
-    #[command(name = "kijuku-cli")]
-    #[command(about = "きじゅくDB CLI", long_about = None)]
-    struct Cli {
-        #[arg(long)]
-        db: String,
+use clap::Subcommand;
+
+/// SDK利用ガイドを表示
+fn show_docs(doc_type: &str) {
+    let (doc_subpath, doc_name) = match doc_type {
+        "overview" | "sdk" => ("usage/sdk/README.md", "SDK選択ガイド"),
+        "ts" | "typescript" => ("usage/sdk/ts/README.md", "TypeScript SDKガイド"),
+        "rust" => ("usage/sdk/rust/README.md", "Rust SDKガイド"),
+        "api" => ("api.md", "API仕様書"),
+        _ => {
+            eprintln!("エラー: 不明なドキュメントタイプ: {}", doc_type);
+            eprintln!();
+            eprintln!("利用可能なドキュメント:");
+            eprintln!("  kijuku-cli docs [overview|sdk]  - SDK選択ガイド（デフォルト）");
+            eprintln!("  kijuku-cli docs ts              - TypeScript SDKガイド");
+            eprintln!("  kijuku-cli docs rust            - Rust SDKガイド");
+            eprintln!("  kijuku-cli docs api             - API仕様書");
+            return;
+        }
+    };
+
+    // バイナリに埋め込まれたドキュメントから読み込む
+    let content = DOCS_DIR
+        .get_file(doc_subpath)
+        .and_then(|f| f.contents_utf8());
+
+    match content {
+        Some(doc_content) => {
+            println!("# {}", doc_name);
+            println!();
+            println!("{}", doc_content);
+        }
+        None => {
+            eprintln!("ドキュメントファイルが見つかりません: {}", doc_subpath);
+            eprintln!();
+            eprintln!("オンラインドキュメント:");
+            eprintln!(
+                "  https://github.com/TomoTom0/kijuku_db/blob/main/docs/{}",
+                doc_subpath
+            );
+        }
     }
+}
 
-    let cli = Cli::parse();
-    let db_path = &cli.db;
+#[derive(Parser)]
+#[command(name = "kijuku-cli")]
+#[command(about = "きじゅくDB CLI", long_about = None)]
+struct Cli {
+    /// データベースファイルのパス
+    #[arg(long, default_value = "kijuku.db")]
+    db: String,
 
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Web GUIサーバーを起動
+    Server {
+        /// サーバーのポート番号（デフォルト: 40001）
+        #[arg(long, default_value = "40001")]
+        port: u16,
+
+        /// 認証パスワード（省略時は自動生成）
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// SDK利用ガイドを表示
+    Docs {
+        /// ドキュメントタイプ (overview|ts|rust|api)
+        #[arg(value_name = "TYPE", default_value = "overview")]
+        doc_type: String,
+    },
+}
+
+async fn handle_server(db_path: &str, port: u16, password: Option<String>) {
+    match kijuku_db::KijukuDB::open(db_path) {
+        Ok(db) => {
+            if let Err(e) = db.migrate() {
+                eprintln!("マイグレーションエラー: {}", e);
+                return;
+            }
+
+            let options = kijuku_db::ServerOptions {
+                port,
+                password,
+            };
+
+            kijuku_db::start_server(db, options).await;
+        }
+        Err(e) => {
+            eprintln!("データベースを開けませんでした: {}", e);
+        }
+    }
+}
+
+fn handle_stdin(db_path: &str) {
     // 標準入力からJSONコマンドを読み取る
     let mut input = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut input) {
@@ -197,6 +286,24 @@ fn main() {
     // コマンドを実行
     let response = execute_command(&db, &request);
     output_response(&response);
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let db_path = &cli.db;
+
+    match &cli.command {
+        Some(Commands::Docs { doc_type }) => {
+            show_docs(doc_type);
+        }
+        Some(Commands::Server { port, password }) => {
+            handle_server(db_path, *port, password.clone()).await;
+        }
+        None => {
+            handle_stdin(db_path);
+        }
+    }
 }
 
 fn execute_command(db: &KijukuDB, request: &CommandRequest) -> CommandResponse {

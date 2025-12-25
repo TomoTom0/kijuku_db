@@ -3,6 +3,7 @@
  * Kijuku DB CLI ツール
  */
 import { KijukuDB, RemoteKijukuDB } from './index.js';
+import { startServer } from './server/index.js';
 import fs from 'fs';
 import path from 'path';
 import { parse } from 'csv-parse/sync';
@@ -11,6 +12,8 @@ const COMMANDS = {
   migrate: 'データベースのマイグレーションを実行',
   search: 'メディアを検索',
   import: 'JSON/CSV/TSVファイルからメディアをインポート',
+  server: 'Web GUIサーバーを起動',
+  docs: 'SDK利用ガイドを表示 (docs [overview|ts|rust|api])',
   help: 'ヘルプを表示',
 };
 
@@ -23,6 +26,76 @@ const STANDARD_MEDIA_COLUMNS = new Set([
   'artist_en', 'title_en', 'chapters', 'extension', 'flag_exist',
   'created_at', 'updated_at', 'title_pron', 'artist_pron', 'series_pron',
 ]);
+
+/**
+ * SDK利用ガイドを表示
+ */
+function showDocs(options: Record<string, string>): void {
+  // 引数からドキュメントタイプを取得（デフォルトは概要）
+  const args = process.argv.slice(3); // 'docs'以降の引数
+  const docType = args[0] || 'overview';
+
+  let docSubPath: string;
+  let docName: string;
+
+  switch (docType) {
+    case 'overview':
+    case 'sdk':
+      docSubPath = 'usage/sdk/README.md';
+      docName = 'SDK選択ガイド';
+      break;
+    case 'ts':
+    case 'typescript':
+      docSubPath = 'usage/sdk/ts/README.md';
+      docName = 'TypeScript SDKガイド';
+      break;
+    case 'rust':
+      docSubPath = 'usage/sdk/rust/README.md';
+      docName = 'Rust SDKガイド';
+      break;
+    case 'api':
+      docSubPath = 'api.md';
+      docName = 'API仕様書';
+      break;
+    default:
+      console.error(`エラー: 不明なドキュメントタイプ: ${docType}`);
+      console.log('');
+      console.log('利用可能なドキュメント:');
+      console.log('  kijuku-cli docs [overview|sdk]  - SDK選択ガイド（デフォルト）');
+      console.log('  kijuku-cli docs ts              - TypeScript SDKガイド');
+      console.log('  kijuku-cli docs rust            - Rust SDKガイド');
+      console.log('  kijuku-cli docs api             - API仕様書');
+      return;
+  }
+
+  // ドキュメントファイルのパスを取得
+  // ビルド後: dist/docs/...
+  // 開発時: ../docs/...
+  const docsPath = path.join(__dirname, 'docs', docSubPath);
+  const fallbackPath = path.join(__dirname, '..', '..', 'docs', docSubPath);
+
+  let docContent: string;
+
+  try {
+    if (fs.existsSync(docsPath)) {
+      docContent = fs.readFileSync(docsPath, 'utf-8');
+    } else if (fs.existsSync(fallbackPath)) {
+      docContent = fs.readFileSync(fallbackPath, 'utf-8');
+    } else {
+      console.error('ドキュメントファイルが見つかりません');
+      console.log('');
+      console.log('オンラインドキュメント:');
+      console.log(`  https://github.com/TomoTom0/kijuku_db/blob/main/docs/${docSubPath}`);
+      return;
+    }
+
+    console.log(`# ${docName}`);
+    console.log('');
+    console.log(docContent);
+  } catch (error) {
+    console.error('ドキュメントの読み込みに失敗しました:', error instanceof Error ? error.message : error);
+  }
+}
 
 /**
  * ヘルプメッセージを表示
@@ -42,12 +115,15 @@ function showHelp(): void {
   console.log('  --db <path>              データベースファイルのパス（デフォルト: ./kijuku.db）');
   console.log('                           リモートDB: host:path 形式（例: as5202:/home/user/kijuku.db）');
   console.log('  --additional-columns <cols>  追加カラムのリスト（カンマ区切り、importコマンドのみ）');
+  console.log('  --port <number>          サーバーのポート番号（デフォルト: 40001、serverコマンドのみ）');
+  console.log('  --password <password>    認証パスワード（省略時は自動生成、serverコマンドのみ）');
   console.log('');
   console.log('例（ローカルDB）:');
   console.log('  kijuku-cli migrate --db ./data/kijuku.db');
   console.log('  kijuku-cli search --title "コミック" --db ./kijuku.db');
   console.log('  kijuku-cli import --file data.json --db ./kijuku.db');
   console.log('  kijuku-cli import --file data.tsv --db ./kijuku.db --additional-columns "id_old,custom_field"');
+  console.log('  kijuku-cli server --db ./kijuku.db');
   console.log('');
   console.log('例（リモートDB）:');
   console.log('  kijuku-cli migrate --db as5202:/home/user/kijuku.db');
@@ -56,6 +132,7 @@ function showHelp(): void {
   console.log('');
   console.log('注意:');
   console.log('  - リモートDBを使用する場合、~/.ssh/config にホスト設定が必要です');
+  console.log('  - serverコマンドはローカルDBのみサポートしています');
 }
 
 /**
@@ -368,6 +445,32 @@ async function runImport(options: Record<string, string>): Promise<void> {
 }
 
 /**
+ * serverコマンドを実行
+ */
+async function runServer(options: Record<string, string>): Promise<void> {
+  const dbPath = getDbPath(options);
+  const parsed = parseDbPath(dbPath);
+
+  if (parsed.isRemote) {
+    console.error('エラー: serverコマンドはローカルDBのみサポートしています');
+    process.exit(1);
+  }
+
+  try {
+    const db = new KijukuDB(parsed.localPath!);
+    db.migrate();
+
+    const port = options.port ? parseInt(options.port, 10) : 40001;
+    const password = options.password;
+
+    startServer(db, { port, password });
+  } catch (error) {
+    console.error('エラー:', error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+}
+
+/**
  * メイン処理
  */
 async function main(): Promise<void> {
@@ -383,6 +486,12 @@ async function main(): Promise<void> {
       break;
     case 'import':
       await runImport(options);
+      break;
+    case 'server':
+      await runServer(options);
+      break;
+    case 'docs':
+      showDocs(options);
       break;
     case 'help':
       showHelp();
