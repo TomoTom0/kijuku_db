@@ -38,10 +38,12 @@ pub mod crud;
 pub mod error;
 pub mod migration;
 pub mod search;
+pub mod server;
 pub mod tag;
 pub mod types;
 
 pub use error::{KijukuError, Result};
+pub use server::{ServerOptions, start_server};
 pub use types::*;
 
 use rusqlite::Connection;

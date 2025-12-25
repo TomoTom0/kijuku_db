@@ -1,0 +1,96 @@
+# Unreleased
+
+## Added
+
+### 自動バックアップ機能 (TASK-44)
+
+- 時間間隔ベースの自動バックアップ機能を実装
+- `BackupManager`クラスを新規作成し、`KijukuDB`クラスに統合
+- 各書き込み操作後に自動的にバックアップの必要性をチェック
+- 設定された時間間隔を超えた場合に自動的にバックアップを実行
+- 手動バックアップ機能（`backup()`メソッド）
+- バックアップ一覧の取得機能（`listBackups()`メソッド）
+- バックアップ設定のカスタマイズ（バックアップ間隔、バックアップディレクトリ等）
+
+**ファイル:**
+- `ts-sdk/src/backup.ts`: BackupManagerクラス
+- `ts-sdk/src/index.ts`: KijukuDBクラスへの統合
+- `ts-sdk/src/types.ts`: BackupOptions型定義
+- `test/unit/backup.test.ts`: テストコード（10テスト全て成功）
+
+### 認証付きWeb GUIサーバー (TASK-45)
+
+#### TypeScript SDK
+
+- Honoフレームワークベースの認証付きWebサーバーを実装
+- 起動時にランダムパスワードを自動生成（または手動指定可能）
+- SHA-256ベースのセッション認証
+- メディア一覧・検索・詳細表示機能を提供するAPIエンドポイント
+- レスポンシブなフロントエンド（HTML/CSS/JavaScript）
+- CLIに`server`コマンドを追加（ローカルDBのみ対応）
+- デフォルトポート: 40001
+
+**ファイル:**
+- `ts-sdk/src/server/auth.ts`: 認証・セッション管理
+- `ts-sdk/src/server/index.ts`: Honoサーバー実装
+- `ts-sdk/src/server/static/`: フロントエンドファイル（HTML/CSS/JS）
+- `ts-sdk/src/cli.ts`: serverコマンド追加
+
+**APIエンドポイント:**
+- `POST /api/auth/login`: ログイン
+- `POST /api/auth/logout`: ログアウト
+- `GET /api/media`: メディア一覧・検索（認証必須）
+- `GET /api/media/:id`: メディア詳細（認証必須）
+
+#### Rust SDK
+
+- Axumフレームワークベースの認証付きWebサーバーを実装
+- TypeScript SDKと同等の機能を提供
+- クッキーベースのセッション管理
+- 認証ミドルウェアによる保護されたAPIエンドポイント
+- グレースフルシャットダウン機能（Ctrl+C対応）
+- CLIに`server`コマンドを追加
+- デフォルトポート: 40001
+
+**ファイル:**
+- `rust-sdk/src/server/auth.rs`: 認証・セッション管理
+- `rust-sdk/src/server/mod.rs`: Axumサーバー実装
+- `rust-sdk/src/server/static/`: フロントエンドファイル（TypeScript SDKと共通）
+- `rust-sdk/src/bin/cli.rs`: serverコマンド追加
+- `rust-sdk/src/lib.rs`: サーバーモジュールのエクスポート
+
+**依存関係:**
+- `axum`: Webフレームワーク
+- `axum-extra`: クッキーサポート
+- `tokio`: 非同期ランタイム
+- `tower`, `tower-http`: ミドルウェアと静的ファイルサービング
+- `rand`, `sha2`, `uuid`: 認証・セキュリティ
+
+## Changed
+
+- CLIコマンド名を`serve`から`server`に変更（TypeScript SDK）
+- サーバーはCtrl+Cでグレースフルシャットダウン可能
+
+## Technical Notes
+
+### 自動バックアップ
+
+- バックアップは`better-sqlite3`のバックアップAPIを使用
+- デフォルトのバックアップ間隔: 1時間
+- バックアップファイル名形式: `{dbname}.backup.{timestamp}.db`
+- バックアップディレクトリ: デフォルトでDBと同じディレクトリ
+
+### Web GUIサーバー
+
+- 認証: SHA-256ハッシュ + セッションID（UUID v4）
+- セッション管理: インメモリ（サーバー再起動で無効化）
+- TypeScript SDK: Hono + better-sqlite3
+- Rust SDK: Axum + rusqlite
+- フロントエンド: Vanilla JavaScript（フレームワーク不使用）
+- 対応ブラウザ: モダンブラウザ（ES6+対応）
+
+### 制限事項
+
+- `server`コマンドはローカルDBのみサポート（リモートDB非対応）
+- セッション永続化なし（サーバー再起動でログアウト）
+- HTTPS非対応（本番環境ではリバースプロキシ推奨）
