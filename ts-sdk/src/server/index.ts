@@ -85,6 +85,10 @@ export function startServer(db: KijukuDB, options: ServerOptions = {}): void {
     const limit = query.limit ? parseInt(query.limit, 10) : 50;
     const offset = query.offset ? parseInt(query.offset, 10) : 0;
 
+    // 全件数を取得（limitとoffsetなし）
+    const allMedia = db.findMedia(filter);
+    const total = allMedia.length;
+
     const media = db.findMedia(filter, {
       limit,
       offset,
@@ -92,7 +96,7 @@ export function startServer(db: KijukuDB, options: ServerOptions = {}): void {
       order: (query.order ?? 'DESC') === 'DESC' ? 'DESC' : 'ASC',
     });
 
-    return c.json({ media, count: media.length });
+    return c.json({ media, count: media.length, total });
   });
 
   app.get('/api/media/:id', async (c) => {

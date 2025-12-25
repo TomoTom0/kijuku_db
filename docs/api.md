@@ -820,7 +820,8 @@ Press Ctrl+C to stop the server
 ```json
 {
   "media": [/* Media配列 */],
-  "count": 100
+  "count": 20,
+  "total": 250
 }
 ```
 
@@ -829,7 +830,8 @@ Press Ctrl+C to stop the server
 | フィールド | 型 | 説明 |
 |-----------|-----|------|
 | `media` | `Media[]` | メディアオブジェクトの配列 |
-| `count` | `number` | **このページで取得したメディアの件数**（`media.length`と同じ）。フィルタ条件に一致する全件数ではありません。全件数が必要な場合は別途COUNT(*)クエリを実行してください。 |
+| `count` | `number` | このページで取得したメディアの件数（`media.length`と同じ） |
+| `total` | `number` | フィルタ条件に一致する全件数 |
 
 **HTTPステータス:**
 - 200: 成功

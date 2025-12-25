@@ -4,16 +4,18 @@ use crate::{KijukuDB, MediaFilter, MediaType, QueryOptions, SortOrder};
 use auth::{generate_password, AuthManager};
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     middleware,
-    response::{Html, Json},
+    response::{Html, IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
+use include_dir::{include_dir, Dir};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use tower_http::services::ServeDir;
+
+static STATIC_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/src/server/static");
 
 pub struct ServerState {
     db: Arc<Mutex<KijukuDB>>,
@@ -81,11 +83,6 @@ pub async fn start_server(db: KijukuDB, options: ServerOptions) {
         auth: auth.clone(),
     });
 
-    let static_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("server")
-        .join("static");
-
     // Protected routes that require authentication
     let protected_routes = Router::new()
         .route("/api/media", get(get_media_list))
@@ -97,10 +94,10 @@ pub async fn start_server(db: KijukuDB, options: ServerOptions) {
 
     let app = Router::new()
         .route("/", get(serve_index))
+        .route("/static/*path", get(serve_static))
         .route("/api/auth/login", post(login))
         .route("/api/auth/logout", post(logout))
         .merge(protected_routes)
-        .nest_service("/static", ServeDir::new(static_dir))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", options.port);
@@ -146,7 +143,35 @@ async fn auth_middleware(
 }
 
 async fn serve_index() -> Html<&'static str> {
-    Html(include_str!("static/index.html"))
+    let content = STATIC_DIR
+        .get_file("index.html")
+        .and_then(|f| f.contents_utf8())
+        .unwrap_or("<html><body>Error: index.html not found</body></html>");
+    Html(content)
+}
+
+async fn serve_static(axum::extract::Path(path): axum::extract::Path<String>) -> Response {
+    let file = STATIC_DIR.get_file(&path);
+
+    match file {
+        Some(file) => {
+            let mime_type = if path.ends_with(".js") {
+                "application/javascript"
+            } else if path.ends_with(".css") {
+                "text/css"
+            } else if path.ends_with(".html") {
+                "text/html"
+            } else {
+                "application/octet-stream"
+            };
+
+            (
+                [(header::CONTENT_TYPE, mime_type)],
+                file.contents(),
+            ).into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "File not found").into_response(),
+    }
 }
 
 async fn login(
@@ -203,8 +228,8 @@ async fn get_media_list(
     };
 
     let options = QueryOptions {
-        order_by: params.order_by,
-        order: params.order.and_then(|s| match s.as_str() {
+        order_by: params.order_by.clone(),
+        order: params.order.as_ref().and_then(|s| match s.as_str() {
             "ASC" => Some(SortOrder::Asc),
             "DESC" => Some(SortOrder::Desc),
             _ => None,
@@ -213,12 +238,19 @@ async fn get_media_list(
         offset: params.offset.map(|v| v as i64),
     };
 
+    // 全件数を取得（limitとoffsetなし）
+    let total = match db.find_media(&filter, None) {
+        Ok(all_media) => all_media.len(),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
     match db.find_media(&filter, Some(&options)) {
         Ok(media) => {
             let count = media.len();
             Ok(Json(serde_json::json!({
                 "media": media,
                 "count": count,
+                "total": total,
             })))
         }
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),

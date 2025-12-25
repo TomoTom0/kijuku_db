@@ -3,11 +3,14 @@
 //! JSON形式の入出力でリモート操作を可能にするCLIツール
 
 use clap::Parser;
+use include_dir::{include_dir, Dir};
 use kijuku_db::{
     AttributeValueType, KijukuDB, MediaFilter, MediaInput, QueryOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
+
+static DOCS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../docs");
 
 /// コマンドリクエスト
 #[derive(Debug, Deserialize)]
@@ -148,7 +151,6 @@ struct DeleteAllMediaAttributesParams {
 }
 
 use clap::Subcommand;
-use std::path::PathBuf;
 
 /// SDK利用ガイドを表示
 fn show_docs(doc_type: &str) {
@@ -169,26 +171,10 @@ fn show_docs(doc_type: &str) {
         }
     };
 
-    // ドキュメントファイルのパスを取得
-    // 実行ファイルと同じディレクトリの docs/ 以下にドキュメントがあることを想定
-    let exe_path = std::env::current_exe().ok();
-    let doc_path = exe_path
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(|p| p.join("docs").join(doc_subpath));
-
-    // ソースツリーからの相対パス（開発時用）
-    let fallback_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("docs")
-        .join(doc_subpath);
-
-    let content = if let Some(ref path) = doc_path {
-        std::fs::read_to_string(path).ok()
-    } else {
-        None
-    }
-    .or_else(|| std::fs::read_to_string(&fallback_path).ok());
+    // バイナリに埋め込まれたドキュメントから読み込む
+    let content = DOCS_DIR
+        .get_file(doc_subpath)
+        .and_then(|f| f.contents_utf8());
 
     match content {
         Some(doc_content) => {
@@ -197,7 +183,7 @@ fn show_docs(doc_type: &str) {
             println!("{}", doc_content);
         }
         None => {
-            eprintln!("ドキュメントファイルが見つかりません");
+            eprintln!("ドキュメントファイルが見つかりません: {}", doc_subpath);
             eprintln!();
             eprintln!("オンラインドキュメント:");
             eprintln!(
