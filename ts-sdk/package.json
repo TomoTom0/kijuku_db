@@ -8,8 +8,19 @@
   "bin": {
     "kijuku-cli": "./dist/cli.js"
   },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/",
+    "docs/usage/sdk/",
+    "examples/"
+  ],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target node --external better-sqlite3 && bun build src/cli.ts --outdir dist --target node --external better-sqlite3 && tsc --emitDeclarationOnly && cp -r src/server/static dist/server/",
+    "build": "bun build src/index.ts --outdir dist --target node --external better-sqlite3 && bun build src/cli.ts --outdir dist --target node --external better-sqlite3 && tsc --emitDeclarationOnly && cp -r src/server/static dist/server/ && mkdir -p dist/docs/usage && cp -r ../docs/usage/sdk dist/docs/usage/ && cp ../docs/api.md dist/docs/",
     "deploy:local": "../scripts/dev/deploy-local.sh",
     "build:all": "bun run build && bun run deploy:local",
     "test": "vitest run",

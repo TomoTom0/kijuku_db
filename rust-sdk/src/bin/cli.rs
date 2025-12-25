@@ -148,12 +148,72 @@ struct DeleteAllMediaAttributesParams {
 }
 
 use clap::Subcommand;
+use std::path::PathBuf;
+
+/// SDK利用ガイドを表示
+fn show_docs(doc_type: &str) {
+    let (doc_subpath, doc_name) = match doc_type {
+        "overview" | "sdk" => ("usage/sdk/README.md", "SDK選択ガイド"),
+        "ts" | "typescript" => ("usage/sdk/ts/README.md", "TypeScript SDKガイド"),
+        "rust" => ("usage/sdk/rust/README.md", "Rust SDKガイド"),
+        "api" => ("api.md", "API仕様書"),
+        _ => {
+            eprintln!("エラー: 不明なドキュメントタイプ: {}", doc_type);
+            eprintln!();
+            eprintln!("利用可能なドキュメント:");
+            eprintln!("  kijuku-cli docs [overview|sdk]  - SDK選択ガイド（デフォルト）");
+            eprintln!("  kijuku-cli docs ts              - TypeScript SDKガイド");
+            eprintln!("  kijuku-cli docs rust            - Rust SDKガイド");
+            eprintln!("  kijuku-cli docs api             - API仕様書");
+            return;
+        }
+    };
+
+    // ドキュメントファイルのパスを取得
+    // 実行ファイルと同じディレクトリの docs/ 以下にドキュメントがあることを想定
+    let exe_path = std::env::current_exe().ok();
+    let doc_path = exe_path
+        .as_ref()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("docs").join(doc_subpath));
+
+    // ソースツリーからの相対パス（開発時用）
+    let fallback_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("docs")
+        .join(doc_subpath);
+
+    let content = if let Some(ref path) = doc_path {
+        std::fs::read_to_string(path).ok()
+    } else {
+        None
+    }
+    .or_else(|| std::fs::read_to_string(&fallback_path).ok());
+
+    match content {
+        Some(doc_content) => {
+            println!("# {}", doc_name);
+            println!();
+            println!("{}", doc_content);
+        }
+        None => {
+            eprintln!("ドキュメントファイルが見つかりません");
+            eprintln!();
+            eprintln!("オンラインドキュメント:");
+            eprintln!(
+                "  https://github.com/TomoTom0/kijuku_db/blob/main/docs/{}",
+                doc_subpath
+            );
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "kijuku-cli")]
 #[command(about = "きじゅくDB CLI", long_about = None)]
 struct Cli {
-    #[arg(long)]
+    /// データベースファイルのパス
+    #[arg(long, default_value = "kijuku.db")]
     db: String,
 
     #[command(subcommand)]
@@ -172,12 +232,24 @@ enum Commands {
         #[arg(long)]
         password: Option<String>,
     },
+    /// SDK利用ガイドを表示
+    Docs {
+        /// ドキュメントタイプ (overview|ts|rust|api)
+        #[arg(value_name = "TYPE", default_value = "overview")]
+        doc_type: String,
+    },
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
     let db_path = &cli.db;
+
+    // docsコマンドの場合
+    if let Some(Commands::Docs { doc_type }) = &cli.command {
+        show_docs(doc_type);
+        return;
+    }
 
     // serverコマンドの場合
     if let Some(Commands::Server { port, password }) = cli.command {

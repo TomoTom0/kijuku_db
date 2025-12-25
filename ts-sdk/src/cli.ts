@@ -13,6 +13,7 @@ const COMMANDS = {
   search: 'メディアを検索',
   import: 'JSON/CSV/TSVファイルからメディアをインポート',
   server: 'Web GUIサーバーを起動',
+  docs: 'SDK利用ガイドを表示 (docs [overview|ts|rust|api])',
   help: 'ヘルプを表示',
 };
 
@@ -25,6 +26,76 @@ const STANDARD_MEDIA_COLUMNS = new Set([
   'artist_en', 'title_en', 'chapters', 'extension', 'flag_exist',
   'created_at', 'updated_at', 'title_pron', 'artist_pron', 'series_pron',
 ]);
+
+/**
+ * SDK利用ガイドを表示
+ */
+function showDocs(options: Record<string, string>): void {
+  // 引数からドキュメントタイプを取得（デフォルトは概要）
+  const args = process.argv.slice(3); // 'docs'以降の引数
+  const docType = args[0] || 'overview';
+
+  let docSubPath: string;
+  let docName: string;
+
+  switch (docType) {
+    case 'overview':
+    case 'sdk':
+      docSubPath = 'usage/sdk/README.md';
+      docName = 'SDK選択ガイド';
+      break;
+    case 'ts':
+    case 'typescript':
+      docSubPath = 'usage/sdk/ts/README.md';
+      docName = 'TypeScript SDKガイド';
+      break;
+    case 'rust':
+      docSubPath = 'usage/sdk/rust/README.md';
+      docName = 'Rust SDKガイド';
+      break;
+    case 'api':
+      docSubPath = 'api.md';
+      docName = 'API仕様書';
+      break;
+    default:
+      console.error(`エラー: 不明なドキュメントタイプ: ${docType}`);
+      console.log('');
+      console.log('利用可能なドキュメント:');
+      console.log('  kijuku-cli docs [overview|sdk]  - SDK選択ガイド（デフォルト）');
+      console.log('  kijuku-cli docs ts              - TypeScript SDKガイド');
+      console.log('  kijuku-cli docs rust            - Rust SDKガイド');
+      console.log('  kijuku-cli docs api             - API仕様書');
+      return;
+  }
+
+  // ドキュメントファイルのパスを取得
+  // ビルド後: dist/docs/...
+  // 開発時: ../docs/...
+  const docsPath = path.join(__dirname, 'docs', docSubPath);
+  const fallbackPath = path.join(__dirname, '..', '..', 'docs', docSubPath);
+
+  let docContent: string;
+
+  try {
+    if (fs.existsSync(docsPath)) {
+      docContent = fs.readFileSync(docsPath, 'utf-8');
+    } else if (fs.existsSync(fallbackPath)) {
+      docContent = fs.readFileSync(fallbackPath, 'utf-8');
+    } else {
+      console.error('ドキュメントファイルが見つかりません');
+      console.log('');
+      console.log('オンラインドキュメント:');
+      console.log(`  https://github.com/TomoTom0/kijuku_db/blob/main/docs/${docSubPath}`);
+      return;
+    }
+
+    console.log(`# ${docName}`);
+    console.log('');
+    console.log(docContent);
+  } catch (error) {
+    console.error('ドキュメントの読み込みに失敗しました:', error instanceof Error ? error.message : error);
+  }
+}
 
 /**
  * ヘルプメッセージを表示
@@ -418,6 +489,9 @@ async function main(): Promise<void> {
       break;
     case 'server':
       await runServer(options);
+      break;
+    case 'docs':
+      showDocs(options);
       break;
     case 'help':
       showHelp();

@@ -734,8 +734,7 @@ db.close();
 **使用例:**
 
 ```typescript
-import { KijukuDB } from 'kijuku-db';
-import { startServer } from 'kijuku-db/server';
+import { KijukuDB, startServer } from 'kijuku-db';
 
 const db = new KijukuDB('./data/kijuku.db');
 db.migrate();

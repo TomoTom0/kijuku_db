@@ -70,16 +70,20 @@ cargo build --release
 
 **使用例:**
 ```bash
-# マイグレーション
-./target/release/kijuku-cli --db ./data/kijuku.db migrate
+# SDK利用ガイドを表示
+./target/release/kijuku-cli docs rust
 
 # Web GUIサーバー起動
 ./target/release/kijuku-cli --db ./data/kijuku.db server --port 40001
 ```
 
+**注意:** Rust CLIは主にSSH経由で使用されることを想定しています。直接操作する場合はTypeScript CLIを推奨します。
+
 ## クイックスタート
 
-### ライブラリとして使用
+> **外部プロジェクトからSDKとして利用する場合は、[SDK利用ガイド](docs/usage/sdk/README.md)を参照してください。**
+
+### ライブラリとして使用（このリポジトリ内で開発する場合）
 
 ```typescript
 import { KijukuDB } from 'kijuku-db';
@@ -137,6 +141,12 @@ kijuku-cli import --file data.json --db ./data/kijuku.db
 
 # CSVファイルからインポート
 kijuku-cli import --file data.csv --db ./data/kijuku.db
+
+# SDK利用ガイドを表示
+kijuku-cli docs          # 概要
+kijuku-cli docs ts       # TypeScript SDK
+kijuku-cli docs rust     # Rust SDK
+kijuku-cli docs api      # API仕様書
 
 # ヘルプ表示
 kijuku-cli help
@@ -590,8 +600,8 @@ console.log(`検索結果: ${results.length}件`);
 interface RemoteConfig {
   sshHost: string;      // .ssh/configのHost名（必須）
   dbPath?: string;      // リモートのDBパス（デフォルト: ~/.local/share/kijuku/kijuku.db）
-  workDir?: string;     // 作業ディレクトリ（省略可）
-  binaryPath?: string;  // バイナリパス（デフォルト: 自動設定）
+  workDir?: string;     // 作業ディレクトリ（省略可、将来の拡張用）
+  binaryPath?: string;  // バイナリパス（デフォルト: ~/.local/bin/kijuku-cli）
 }
 ```
 
@@ -599,9 +609,9 @@ interface RemoteConfig {
 
 初回実行時、リモート側にバイナリが存在しない場合は自動的に転送されます。
 
-**デフォルトの配置場所:**
-- `workDir`指定時: `${workDir}/bin/kijuku-cli`
-- `workDir`省略時: `~/.local/bin/kijuku-cli`
+**バイナリの配置場所:**
+- `binaryPath`を指定した場合: 指定されたパス
+- `binaryPath`未指定の場合: `~/.local/bin/kijuku-cli`（デフォルト）
 
 ### サンプルコード
 
@@ -618,6 +628,14 @@ interface RemoteConfig {
 PC側から利用する場合は、上記の「リモートDB操作」機能を使用してSSH経由でアクセスしてください。
 
 ## ドキュメント
+
+### SDK利用ガイド（外部プロジェクトから使用する場合）
+
+- **[SDK利用ガイド（概要）](docs/usage/sdk/README.md)** - TypeScript/Rust SDK選択ガイド
+  - [TypeScript SDK利用ガイド](docs/usage/sdk/ts/README.md) - インストール、基本的な使い方、高度な機能
+  - [Rust SDK利用ガイド](docs/usage/sdk/rust/README.md) - インストール、基本的な使い方
+
+### 開発者向けドキュメント
 
 - [データベースセットアップガイド](docs/DATABASE_SETUP.md) - DBの作成とデータインポート手順
 - [テストガイド](docs/TESTING.md) - テスト実行方法
