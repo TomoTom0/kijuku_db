@@ -186,7 +186,7 @@ use kijuku_db::{KijukuDB, MediaInput};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
 
-    db.transaction(|| {
+    db.connection().transaction(|| {
         let media = db.create_media(&MediaInput {
             title: "メディア1".to_string(),
             media_type: MediaType::Comic,
@@ -307,7 +307,7 @@ use kijuku_db::{KijukuDB, MediaInput};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
 
-    db.transaction(|| {
+    db.connection().transaction(|| {
         for i in 0..1000 {
             db.create_media(&MediaInput {
                 title: format!("メディア{}", i),
@@ -331,7 +331,7 @@ fn process_large_dataset(db: &KijukuDB, items: Vec<MediaInput>) -> Result<(), Bo
     const BATCH_SIZE: usize = 1000;
 
     for chunk in items.chunks(BATCH_SIZE) {
-        db.transaction(|| {
+        db.connection().transaction(|| {
             for item in chunk {
                 db.create_media(item)?;
             }
