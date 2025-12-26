@@ -96,38 +96,6 @@ impl RemoteKijukuDB {
         Ok(sess)
     }
 
-    /// リモートでコマンドを実行
-    fn exec_command(&self, command: &str) -> Result<String> {
-        let sess = self.connect()?;
-
-        let mut channel = sess
-            .channel_session()
-            .map_err(|e| KijukuError::Other(format!("Failed to open channel: {}", e)))?;
-
-        channel
-            .exec(command)
-            .map_err(|e| KijukuError::Other(format!("Failed to execute command: {}", e)))?;
-
-        let mut output = String::new();
-        channel
-            .read_to_string(&mut output)
-            .map_err(|e| KijukuError::Other(format!("Failed to read output: {}", e)))?;
-
-        channel.wait_close().ok();
-
-        let exit_status = channel.exit_status()
-            .map_err(|e| KijukuError::Other(format!("Failed to get exit status: {}", e)))?;
-
-        if exit_status != 0 {
-            return Err(KijukuError::Other(format!(
-                "Command failed with exit code {}: {}",
-                exit_status, output
-            )));
-        }
-
-        Ok(output)
-    }
-
     /// リモートでJSONコマンドを実行
     fn execute_remote_command(&self, request: CommandRequest) -> Result<CommandResponse> {
         let remote_db_path = self
@@ -144,17 +112,44 @@ impl RemoteKijukuDB {
         let json_input = serde_json::to_string(&request)
             .map_err(|e| KijukuError::Other(format!("Failed to serialize request: {}", e)))?;
 
-        let command = format!(
-            "echo '{}' | {} --db {}",
-            json_input, remote_binary_path, remote_db_path
-        );
+        let sess = self.connect()?;
+        let mut channel = sess
+            .channel_session()
+            .map_err(|e| KijukuError::Other(format!("Failed to open channel: {}", e)))?;
 
-        let output = self.exec_command(&command)?;
+        let command = format!("{} --db {}", remote_binary_path, remote_db_path);
+        channel
+            .exec(&command)
+            .map_err(|e| KijukuError::Other(format!("Failed to execute command: {}", e)))?;
 
-        let response: CommandResponse = serde_json::from_str(&output)
-            .map_err(|e| KijukuError::Other(format!("Failed to parse response: {}", e)))?;
+        use std::io::Write;
+        channel
+            .write_all(json_input.as_bytes())
+            .map_err(|e| KijukuError::Other(format!("Failed to write to channel stdin: {}", e)))?;
+        channel.send_eof().map_err(|e| KijukuError::Other(format!("Failed to send EOF to channel: {}", e)))?;
 
-        Ok(response)
+        let mut output = String::new();
+        channel
+            .read_to_string(&mut output)
+            .map_err(|e| KijukuError::Other(format!("Failed to read command stdout: {}", e)))?;
+
+        let mut stderr = String::new();
+        channel.stderr().read_to_string(&mut stderr).map_err(|e| KijukuError::Other(format!("Failed to read command stderr: {}", e)))?;
+
+        channel.wait_close().ok();
+
+        let exit_status = channel.exit_status()
+            .map_err(|e| KijukuError::Other(format!("Failed to get exit status: {}", e)))?;
+
+        if exit_status != 0 {
+            return Err(KijukuError::Other(format!(
+                "Command failed with exit code {}. stdout: {}, stderr: {}",
+                exit_status, output, stderr
+            )));
+        }
+
+        serde_json::from_str(&output)
+            .map_err(|e| KijukuError::Other(format!("Failed to parse response from stdout: {}. Raw output: {}", e, output)))
     }
 
     /// レスポンスのエラーチェック
