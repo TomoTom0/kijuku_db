@@ -101,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 2. メディアの作成
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
@@ -181,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 5. トランザクション
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
@@ -210,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 大量のメディアを効率的に登録：
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
@@ -265,7 +265,7 @@ fn start_server() -> Result<(), Box<dyn std::error::Error>> {
 ## エラーハンドリング
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() {
     let db = match KijukuDB::open("./data/kijuku.db") {
@@ -302,7 +302,7 @@ fn main() {
 大量のデータ操作はトランザクション内で実行してください：
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
