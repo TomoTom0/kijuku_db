@@ -1015,7 +1015,6 @@ const db = new KijukuDB('./data/kijuku.db', {
   backup: {
     backupDir: './backups',
     intervalMs: 1800000,  // 30分間隔
-    enabled: true,
     onProgress: (info) => {
       console.log(`Backup progress: ${info.totalPages - info.remainingPages} / ${info.totalPages} pages completed`);
     }
