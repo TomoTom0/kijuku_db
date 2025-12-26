@@ -1,7 +1,7 @@
 pub mod auth;
 
 use crate::{KijukuDB, MediaFilter, MediaType, QueryOptions, SortOrder};
-use auth::{generate_password, AuthManager};
+pub use auth::{generate_password, AuthManager};
 use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
