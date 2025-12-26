@@ -33,16 +33,21 @@
 //! ```
 
 pub mod attribute;
+pub mod backup;
 pub mod bulk;
 pub mod crud;
 pub mod error;
 pub mod migration;
+pub mod remote;
 pub mod search;
 pub mod server;
 pub mod tag;
 pub mod types;
 
+pub use backup::{BackupInfo, BackupManager, BackupOptions};
 pub use error::{KijukuError, Result};
+pub use remote::{RemoteConfig, RemoteKijukuDB};
+pub use server::auth::{AuthManager, generate_password};
 pub use server::{ServerOptions, start_server};
 pub use types::*;
 
@@ -53,6 +58,7 @@ use std::path::Path;
 pub struct KijukuDB {
     conn: Connection,
     options: DBOptions,
+    backup_manager: Option<BackupManager>,
 }
 
 impl KijukuDB {
@@ -70,6 +76,7 @@ impl KijukuDB {
         Ok(Self {
             conn,
             options: DBOptions::default(),
+            backup_manager: None,
         })
     }
 
@@ -80,16 +87,24 @@ impl KijukuDB {
     /// * `path` - データベースファイルのパス
     /// * `options` - データベース接続オプション
     pub fn open_with_options<P: AsRef<Path>>(path: P, options: DBOptions) -> Result<Self> {
+        let path_ref = path.as_ref();
         let conn = if options.readonly {
             Connection::open_with_flags(
-                path,
+                path_ref,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )?
         } else {
-            Connection::open(path)?
+            Connection::open(path_ref)?
         };
 
-        Ok(Self { conn, options })
+        // バックアップマネージャーの初期化
+        let backup_manager = if let Some(backup_opts) = options.backup.clone() {
+            Some(BackupManager::new(path_ref, backup_opts)?)
+        } else {
+            None
+        };
+
+        Ok(Self { conn, options, backup_manager })
     }
 
     /// インメモリデータベースを作成
@@ -98,6 +113,7 @@ impl KijukuDB {
         Ok(Self {
             conn,
             options: DBOptions::default(),
+            backup_manager: None,
         })
     }
 
@@ -224,6 +240,11 @@ impl KijukuDB {
     /// メディアの全ての属性を削除
     pub fn delete_all_media_attributes(&self, media_id: i64) -> Result<()> {
         attribute::delete_all_media_attributes(&self.conn, media_id)
+    }
+
+    /// バックアップマネージャーを取得
+    pub fn get_backup_manager(&self) -> Option<&BackupManager> {
+        self.backup_manager.as_ref()
     }
 }
 
