@@ -210,7 +210,7 @@ async fn get_media_list(
     State(state): State<Arc<ServerState>>,
     Query(params): Query<MediaQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let media_type = params.media_type.and_then(|s| match s.as_str() {
         "comic" => Some(MediaType::Comic),
@@ -261,7 +261,7 @@ async fn get_media_detail(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     match db.get_media(id) {
         Some(media) => {

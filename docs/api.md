@@ -40,7 +40,7 @@
 | `timeout` | `number` | `5000` | クエリタイムアウト（ミリ秒） |
 | `readonly` | `boolean` | `false` | 読み取り専用モードで開く |
 | `verbose` | `boolean` | `false` | SQLログを標準出力に表示 |
-| `backup` | `BackupOptions` | `{ enabled: true, interval: 3600000 }` | 自動バックアップ設定 |
+| `backup` | `BackupOptions` | `undefined` | 自動バックアップ設定（backupDirが必須） |
 
 **戻り値:** `KijukuDB`インスタンス
 
@@ -999,9 +999,10 @@ interface DBOptions {
 
 ```typescript
 interface BackupOptions {
+  backupDir: string;          // バックアップ保存先（必須）
+  intervalMs?: number;        // バックアップ間隔（ミリ秒、デフォルト: 3600000 = 1時間）
   enabled?: boolean;          // バックアップを有効化（デフォルト: true）
-  interval?: number;          // バックアップ間隔（ミリ秒、デフォルト: 3600000 = 1時間）
-  directory?: string;         // バックアップ保存先（デフォルト: DBと同じディレクトリ）
+  onProgress?: (info: { totalPages: number; remainingPages: number }) => void;  // バックアップ進捗コールバック
 }
 ```
 
@@ -1012,9 +1013,11 @@ interface BackupOptions {
 ```typescript
 const db = new KijukuDB('./data/kijuku.db', {
   backup: {
-    enabled: true,
-    interval: 1800000,  // 30分間隔
-    directory: './backups'
+    backupDir: './backups',
+    intervalMs: 1800000,  // 30分間隔
+    onProgress: (info) => {
+      console.log(`Backup progress: ${info.totalPages - info.remainingPages} / ${info.totalPages} pages completed`);
+    }
   }
 });
 ```
