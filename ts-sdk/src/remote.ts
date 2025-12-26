@@ -21,8 +21,8 @@ import type {
 export interface RemoteConfig {
   sshHost: string;           // .ssh/configのHost名（必須）
   dbPath?: string;           // リモートのDBパス（デフォルト: ~/.local/share/kijuku/kijuku.db）
-  workDir?: string;          // 作業ディレクトリ（省略可）
-  binaryPath?: string;       // バイナリパス（デフォルト: workDirがあれば ${workDir}/bin/kijuku-cli、なければ ~/.local/bin/kijuku-cli）
+  workDir?: string;          // 作業ディレクトリ（省略可、将来の拡張用）
+  binaryPath?: string;       // バイナリパス（デフォルト: ~/.local/bin/kijuku-cli）
   port?: number;             // SSHポート（省略時はSSH設定から読み取り）
 }
 
@@ -89,13 +89,7 @@ export class RemoteKijukuDB {
    * リモートバイナリパスを取得
    */
   private getRemoteBinaryPath(): string {
-    if (this.config.binaryPath) {
-      return this.config.binaryPath;
-    }
-    if (this.config.workDir) {
-      return `${this.config.workDir}/bin/kijuku-cli`;
-    }
-    return '~/.local/bin/kijuku-cli';
+    return this.config.binaryPath || '~/.local/bin/kijuku-cli';
   }
 
   /**
