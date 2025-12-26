@@ -1,5 +1,5 @@
 use kijuku_db::{BackupManager, BackupOptions, DBOptions, KijukuDB, MediaInput, MediaType};
-use std::fs;
+use rusqlite;
 use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -57,8 +57,12 @@ fn test_auto_backup_with_record_operation() {
             ..Default::default()
     };
 
-    // 空のDBファイルを作成
-    fs::write(&db_path, b"test data").unwrap();
+    // 実際のSQLiteデータベースを作成
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+    }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
 
@@ -95,8 +99,12 @@ fn test_manual_backup() {
             ..Default::default()
     };
 
-    // 空のDBファイルを作成
-    fs::write(&db_path, b"test data").unwrap();
+    // 実際のSQLiteデータベースを作成
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+    }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
 
@@ -128,8 +136,12 @@ fn test_backup_list() {
             ..Default::default()
     };
 
-    // 空のDBファイルを作成
-    fs::write(&db_path, b"test data").unwrap();
+    // 実際のSQLiteデータベースを作成
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+    }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
 
@@ -163,8 +175,12 @@ fn test_backup_timestamps() {
             ..Default::default()
     };
 
-    // 空のDBファイルを作成
-    fs::write(&db_path, b"test data").unwrap();
+    // 実際のSQLiteデータベースを作成
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+    }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
 
@@ -198,8 +214,12 @@ fn test_backup_disabled() {
         ..Default::default()
     };
 
-    // 空のDBファイルを作成
-    fs::write(&db_path, b"test data").unwrap();
+    // 実際のSQLiteデータベースを作成
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+    }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
 

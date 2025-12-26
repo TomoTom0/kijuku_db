@@ -138,8 +138,14 @@ impl BackupManager {
         let backup_file_name = format!("kijuku-backup-{}.db", timestamp_str);
         let backup_path = Path::new(&self.backup_dir).join(&backup_file_name);
 
-        // データベースをコピー
-        fs::copy(&self.db_path, &backup_path)?;
+        // SQLite Online Backup APIを使用して安全にバックアップ
+        let mut dst_conn = rusqlite::Connection::open(&backup_path)?;
+        let src_conn = rusqlite::Connection::open_with_flags(
+            &self.db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let backup = rusqlite::backup::Backup::new(&src_conn, &mut dst_conn)?;
+        backup.run_to_completion(5, std::time::Duration::from_millis(250), None)?;
 
         // 最後のバックアップ時刻を更新
         {
@@ -310,8 +316,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
 
-        // 空のDBファイルを作成
-        fs::write(&db_path, b"test data").unwrap();
+        // 実際のSQLiteデータベースを作成
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
+            conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+        }
 
         let backup_dir = temp_dir.path().join("backups");
         let options = BackupOptions {
@@ -335,8 +345,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
 
-        // 空のDBファイルを作成
-        fs::write(&db_path, b"test data").unwrap();
+        // 実際のSQLiteデータベースを作成
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
+            conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+        }
 
         let backup_dir = temp_dir.path().join("backups");
         let options = BackupOptions {
@@ -366,7 +380,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
 
-        fs::write(&db_path, b"test data").unwrap();
+        // 実際のSQLiteデータベースを作成
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
+            conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+        }
 
         let backup_dir = temp_dir.path().join("backups");
         let options = BackupOptions {
