@@ -4,7 +4,7 @@
 
 ## 概要
 
-kijuku-dbは、メディアコンテンツのメタデータを効率的に管理するためのデータベースライブラリです。SQLiteをバックエンドとして使用し、TypeScriptとRustのSDKを提供します（現在はTypeScript SDKのみ実装済み）。
+kijuku-dbは、メディアコンテンツのメタデータを効率的に管理するためのデータベースライブラリです。SQLiteをバックエンドとして使用し、TypeScriptとRustのSDKを提供します。
 
 ### 特徴
 
@@ -14,16 +14,24 @@ kijuku-dbは、メディアコンテンツのメタデータを効率的に管�
 - トランザクション対応
 - バルク操作サポート
 - 高度な検索・フィルタリング機能
+- **時間間隔ベースの自動バックアップ機能**
+- **認証付きWeb GUIサーバー（メディア閲覧・検索）**
 - CLIツール付属
 - SSH経由でのリモートDB操作をサポート
 - 自動バイナリデプロイ機能
+- TypeScript SDK と Rust SDK の両方を提供
 
 ## インストール
 
 ### 前提条件
 
+**TypeScript SDK:**
 - Node.js 18以上
 - Bun（推奨）またはnpm
+
+**Rust SDK:**
+- Rust 1.70以上
+- Cargo
 
 ### TypeScript SDK
 
@@ -39,7 +47,7 @@ cd ts-sdk
 npm install
 ```
 
-### ビルド
+#### ビルド
 
 ```bash
 bun run build
@@ -50,9 +58,32 @@ bun run build
 - `index.d.ts` - TypeScript型定義
 - `cli.js` - CLIツール
 
+### Rust SDK
+
+```bash
+cd rust-sdk
+cargo build --release
+```
+
+これにより`target/release/`ディレクトリにバイナリが生成されます：
+- `kijuku-cli` - CLIツール（ライブラリ機能を含む）
+
+**使用例:**
+```bash
+# SDK利用ガイドを表示
+./target/release/kijuku-cli docs rust
+
+# Web GUIサーバー起動
+./target/release/kijuku-cli --db ./data/kijuku.db server --port 40001
+```
+
+**注意:** Rust CLIは主にSSH経由で使用されることを想定しています。直接操作する場合はTypeScript CLIを推奨します。
+
 ## クイックスタート
 
-### ライブラリとして使用
+> **外部プロジェクトからSDKとして利用する場合は、[SDK利用ガイド](docs/usage/sdk/README.md)を参照してください。**
+
+### ライブラリとして使用（このリポジトリ内で開発する場合）
 
 ```typescript
 import { KijukuDB } from 'kijuku-db';
@@ -110,6 +141,12 @@ kijuku-cli import --file data.json --db ./data/kijuku.db
 
 # CSVファイルからインポート
 kijuku-cli import --file data.csv --db ./data/kijuku.db
+
+# SDK利用ガイドを表示
+kijuku-cli docs          # 概要
+kijuku-cli docs ts       # TypeScript SDK
+kijuku-cli docs rust     # Rust SDK
+kijuku-cli docs api      # API仕様書
 
 # ヘルプ表示
 kijuku-cli help
@@ -261,6 +298,7 @@ close(): void
 | `migrate` | データベースのマイグレーションを実行 |
 | `search` | メディアを検索 |
 | `import` | JSON/CSV/TSVファイルからメディアをインポート |
+| `server` | Web GUIサーバーを起動（認証付き） |
 | `help` | ヘルプを表示 |
 
 ### 共通オプション
@@ -351,6 +389,50 @@ kijuku-cli import --file ./data/media.json --db ./data/kijuku.db
 # CSVファイルからインポート
 kijuku-cli import --file ./data/media.csv --db ./data/kijuku.db
 ```
+
+### serverコマンド
+
+認証付きWeb GUIサーバーを起動します。ブラウザでメディアの閲覧・検索ができます。
+
+```bash
+kijuku-cli server --db <path> [options]
+```
+
+**オプション:**
+- `--port <number>`: サーバーのポート番号（デフォルト: 40001）
+- `--password <text>`: 認証パスワード（省略時は自動生成）
+
+**例:**
+```bash
+# デフォルト設定で起動（パスワードは自動生成）
+kijuku-cli server --db ./data/kijuku.db
+
+# ポートとパスワードを指定して起動
+kijuku-cli server --db ./data/kijuku.db --port 8080 --password mypassword
+```
+
+起動すると以下のような情報が表示されます：
+
+```
+Kijuku DB Web GUI Server
+========================
+URL: http://localhost:40001
+Password: Ab12Cd34Ef56
+
+Press Ctrl+C to stop the server
+```
+
+ブラウザで表示されたURLにアクセスし、パスワードを入力してログインします。
+
+**機能:**
+- メディア一覧の表示（ページネーション対応）
+- タイトル・作者・シリーズ・メディアタイプでの検索
+- メディア詳細の表示（タグ、追加属性を含む）
+- レスポンシブデザイン（モバイル対応）
+
+**注意事項:**
+- serverコマンドはローカルDBのみサポート（リモートDB非対応）
+- Ctrl+Cでサーバーを停止できます
 
 ## データベーススキーマ
 
@@ -518,8 +600,8 @@ console.log(`検索結果: ${results.length}件`);
 interface RemoteConfig {
   sshHost: string;      // .ssh/configのHost名（必須）
   dbPath?: string;      // リモートのDBパス（デフォルト: ~/.local/share/kijuku/kijuku.db）
-  workDir?: string;     // 作業ディレクトリ（省略可）
-  binaryPath?: string;  // バイナリパス（デフォルト: 自動設定）
+  workDir?: string;     // 作業ディレクトリ（省略可、将来の拡張用）
+  binaryPath?: string;  // バイナリパス（デフォルト: ~/.local/bin/kijuku-cli）
 }
 ```
 
@@ -527,9 +609,9 @@ interface RemoteConfig {
 
 初回実行時、リモート側にバイナリが存在しない場合は自動的に転送されます。
 
-**デフォルトの配置場所:**
-- `workDir`指定時: `${workDir}/bin/kijuku-cli`
-- `workDir`省略時: `~/.local/bin/kijuku-cli`
+**バイナリの配置場所:**
+- `binaryPath`を指定した場合: 指定されたパス
+- `binaryPath`未指定の場合: `~/.local/bin/kijuku-cli`（デフォルト）
 
 ### サンプルコード
 
@@ -547,6 +629,14 @@ PC側から利用する場合は、上記の「リモートDB操作」機能を�
 
 ## ドキュメント
 
+### SDK利用ガイド（外部プロジェクトから使用する場合）
+
+- **[SDK利用ガイド（概要）](docs/usage/sdk/README.md)** - TypeScript/Rust SDK選択ガイド
+  - [TypeScript SDK利用ガイド](docs/usage/sdk/ts/README.md) - インストール、基本的な使い方、高度な機能
+  - [Rust SDK利用ガイド](docs/usage/sdk/rust/README.md) - インストール、基本的な使い方
+
+### 開発者向けドキュメント
+
 - [データベースセットアップガイド](docs/DATABASE_SETUP.md) - DBの作成とデータインポート手順
 - [テストガイド](docs/TESTING.md) - テスト実行方法
 - [パフォーマンスガイド](docs/PERFORMANCE.md) - パフォーマンステストとベンチマーク
@@ -559,11 +649,13 @@ MIT
 
 ## 今後の開発予定
 
-- Rust SDKの実装
+- バックアップファイルの自動削除・間引き機能
 - パフォーマンス最適化
 - エラーハンドリングの強化
 - 実アプリケーションとの統合サンプル
 - API仕様書の詳細化
+- Web GUIのHTTPS対応
+- セッション永続化機能
 
 ## 貢献
 

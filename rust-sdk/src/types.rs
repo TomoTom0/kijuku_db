@@ -159,6 +159,7 @@ pub struct DBOptions {
     pub timeout: Option<u64>,
     pub readonly: bool,
     pub verbose: bool,
+    pub backup: Option<crate::backup::BackupOptions>,
 }
 
 /// メディア属性（EAVモデル）

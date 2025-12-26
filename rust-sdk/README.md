@@ -2,6 +2,18 @@
 
 メディア管理のためのSQLiteベースのデータベースSDKのRust実装です。
 
+## 外部プロジェクトから使用する場合
+
+**[Rust SDK利用ガイド](../docs/usage/sdk/rust/README.md)**を参照してください。
+
+- インストール方法（ローカルパス、Git URL）
+- 基本的な使い方（CRUD、検索、タグ、トランザクション）
+- 高度な機能（バルク挿入、パフォーマンス最適化）
+- 型定義
+- エラーハンドリング
+- テストの書き方
+- トラブルシューティング
+
 ## 特徴
 
 - ✅ メディア情報の管理（コミック、動画、音楽）
@@ -128,6 +140,24 @@ let results = db.bulk_create_media(&bulk_data)?;
 ## データベーススキーマ
 
 データベースのスキーマは`schema.sql`に定義されています。
+
+## CLIツールとして使用
+
+```bash
+# ビルド
+cargo build --release
+
+# SDK利用ガイドを表示
+./target/release/kijuku-cli docs          # 概要
+./target/release/kijuku-cli docs ts       # TypeScript SDK
+./target/release/kijuku-cli docs rust     # Rust SDK
+./target/release/kijuku-cli docs api      # API仕様書
+
+# Web GUIサーバー起動
+./target/release/kijuku-cli --db ./data/kijuku.db server --port 40001
+```
+
+**注意:** CLIは主にSSH経由で使用されることを想定しています（TypeScript SDKのRemoteKijukuDB経由）。
 
 ## 開発
 

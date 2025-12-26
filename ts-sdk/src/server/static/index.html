@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kijuku DB</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="login-screen" class="screen">
+        <div class="login-container">
+            <h1>Kijuku DB</h1>
+            <form id="login-form">
+                <input type="password" id="password" placeholder="Password" required>
+                <button type="submit">Login</button>
+                <div id="login-error" class="error"></div>
+            </form>
+        </div>
+    </div>
+
+    <div id="main-screen" class="screen" style="display: none;">
+        <header>
+            <h1>Kijuku DB</h1>
+            <button id="logout-btn">Logout</button>
+        </header>
+
+        <main>
+            <div class="search-panel">
+                <h2>Search Media</h2>
+                <form id="search-form">
+                    <input type="text" id="search-title" placeholder="Title">
+                    <input type="text" id="search-artist" placeholder="Artist">
+                    <input type="text" id="search-series" placeholder="Series">
+                    <select id="search-media-type">
+                        <option value="">All Types</option>
+                        <option value="comic">Comic</option>
+                        <option value="video">Video</option>
+                        <option value="music">Music</option>
+                    </select>
+                    <button type="submit">Search</button>
+                    <button type="button" id="clear-btn">Clear</button>
+                </form>
+            </div>
+
+            <div class="results-panel">
+                <h2>Results (<span id="result-count">0</span>)</h2>
+                <div id="media-list" class="media-list"></div>
+            </div>
+
+            <div id="media-detail" class="media-detail" style="display: none;">
+                <button id="close-detail-btn" class="close-btn">Close</button>
+                <h2 id="detail-title"></h2>
+                <div id="detail-content"></div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

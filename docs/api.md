@@ -9,8 +9,10 @@
   - [マイグレーション](#マイグレーション)
   - [メディア操作](#メディア操作)
   - [タグ操作](#タグ操作)
+  - [バックアップ操作](#バックアップ操作)
   - [トランザクション](#トランザクション)
   - [その他](#その他)
+- [Web GUIサーバー](#web-guiサーバー)
 - [型定義](#型定義)
 - [エラーハンドリング](#エラーハンドリング)
 
@@ -38,6 +40,7 @@
 | `timeout` | `number` | `5000` | クエリタイムアウト（ミリ秒） |
 | `readonly` | `boolean` | `false` | 読み取り専用モードで開く |
 | `verbose` | `boolean` | `false` | SQLログを標準出力に表示 |
+| `backup` | `BackupOptions` | `undefined` | 自動バックアップ設定（backupDirが必須） |
 
 **戻り値:** `KijukuDB`インスタンス
 
@@ -587,6 +590,76 @@ console.log(result.media1.id, result.media2.id);
 
 ---
 
+### バックアップ操作
+
+#### `backup(destinationPath?: string): Promise<void>`
+
+データベースを手動でバックアップします。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `destinationPath` | `string` | | バックアップ先のパス。省略時は自動生成 |
+
+**戻り値:** `Promise<void>`
+
+**動作:**
+- `destinationPath`省略時: `{dbname}.backup.{timestamp}.db`形式で保存
+- better-sqlite3のバックアップAPIを使用して安全にコピー
+
+**使用例:**
+
+```typescript
+// 自動生成されたパスにバックアップ
+await db.backup();
+
+// 特定のパスにバックアップ
+await db.backup('./backups/manual-backup.db');
+```
+
+**エラー:**
+- バックアップ先ディレクトリが存在しない場合: `Error`
+- バックアップ中にエラーが発生した場合: `Error`
+
+---
+
+#### `listBackups(): string[]`
+
+バックアップファイルの一覧を取得します。
+
+**パラメータ:** なし
+
+**戻り値:** `string[]` - バックアップファイルパスの配列（作成日時の降順）
+
+**使用例:**
+
+```typescript
+const backups = db.listBackups();
+console.log(`バックアップファイル数: ${backups.length}`);
+backups.forEach(backup => console.log(backup));
+```
+
+---
+
+#### `getBackupManager(): BackupManager`
+
+BackupManagerインスタンスを取得します（高度な使用）。
+
+**パラメータ:** なし
+
+**戻り値:** `BackupManager` - バックアップマネージャー
+
+**使用例:**
+
+```typescript
+const manager = db.getBackupManager();
+// バックアップ設定を変更
+manager.setInterval(1800000); // 30分間隔に変更
+```
+
+---
+
 ### その他
 
 #### `close(): void`
@@ -627,6 +700,168 @@ db.close();
 **パラメータ:** なし
 
 **戻り値:** `boolean` - 有効なら`true`
+
+---
+
+## Web GUIサーバー
+
+### `startServer(db: KijukuDB, options: ServerOptions): void`
+
+認証付きWeb GUIサーバーを起動します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `db` | `KijukuDB` | ✓ | データベースインスタンス |
+| `options` | `ServerOptions` | ✓ | サーバー設定オプション |
+
+**ServerOptions:**
+
+| プロパティ | 型 | 必須 | デフォルト | 説明 |
+|-----------|-----|------|----------|------|
+| `port` | `number` | ✓ | `40001` | サーバーのポート番号 |
+| `password` | `string` | | (自動生成) | 認証パスワード |
+
+**戻り値:** なし
+
+**動作:**
+1. パスワードが指定されていない場合、12文字のランダムパスワードを生成
+2. セッション管理システムを初期化
+3. 指定されたポートでHTTPサーバーを起動
+4. コンソールにURL・パスワードを表示
+
+**使用例:**
+
+```typescript
+import { KijukuDB, startServer } from 'kijuku-db';
+
+const db = new KijukuDB('./data/kijuku.db');
+db.migrate();
+
+// デフォルト設定で起動
+startServer(db, { port: 40001 });
+
+// パスワード指定
+startServer(db, {
+  port: 8080,
+  password: 'mypassword123'
+});
+```
+
+**出力例:**
+
+```
+Kijuku DB Web GUI Server
+========================
+URL: http://localhost:40001
+Password: Ab12Cd34Ef56
+
+Press Ctrl+C to stop the server
+```
+
+### APIエンドポイント
+
+#### `POST /api/auth/login`
+
+ログインを行います。
+
+**リクエストボディ:**
+```json
+{
+  "password": "string"
+}
+```
+
+**レスポンス（成功時）:**
+```json
+{
+  "success": true
+}
+```
+
+**HTTPステータス:**
+- 200: ログイン成功
+- 401: パスワードが間違っている
+
+---
+
+#### `POST /api/auth/logout`
+
+ログアウトを行います。
+
+**レスポンス:**
+```json
+{
+  "success": true
+}
+```
+
+---
+
+#### `GET /api/media`
+
+メディア一覧を取得します（認証必須）。
+
+**クエリパラメータ:**
+
+| 名前 | 型 | 説明 |
+|------|-----|------|
+| `title` | `string` | タイトルで検索（部分一致） |
+| `artist` | `string` | 作者で検索（部分一致） |
+| `series` | `string` | シリーズで検索（部分一致） |
+| `media_type` | `string` | メディアタイプ（comic/video/music） |
+| `limit` | `number` | 取得件数（デフォルト: 20） |
+| `offset` | `number` | オフセット（デフォルト: 0） |
+| `orderBy` | `string` | ソートフィールド |
+| `order` | `string` | ソート順（ASC/DESC） |
+
+**レスポンス:**
+```json
+{
+  "media": [/* Media配列 */],
+  "count": 20,
+  "total": 250
+}
+```
+
+**レスポンスフィールド:**
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `media` | `Media[]` | メディアオブジェクトの配列 |
+| `count` | `number` | このページで取得したメディアの件数（`media.length`と同じ） |
+| `total` | `number` | フィルタ条件に一致する全件数 |
+
+**HTTPステータス:**
+- 200: 成功
+- 401: 未認証
+
+---
+
+#### `GET /api/media/:id`
+
+メディア詳細を取得します（認証必須）。
+
+**パスパラメータ:**
+
+| 名前 | 型 | 説明 |
+|------|-----|------|
+| `id` | `number` | メディアID |
+
+**レスポンス:**
+```json
+{
+  "media": {/* Mediaオブジェクト */},
+  "tags": [/* Tag配列 */],
+  "attributes": [/* MediaAttribute配列 */]
+}
+```
+
+**HTTPステータス:**
+- 200: 成功
+- 401: 未認証
+- 404: メディアが見つからない
 
 ---
 
@@ -752,10 +987,40 @@ interface DBOptions {
   timeout?: number;
   readonly?: boolean;
   verbose?: boolean;
+  backup?: BackupOptions;
 }
 ```
 
 データベース接続オプション。
+
+---
+
+### BackupOptions
+
+```typescript
+interface BackupOptions {
+  backupDir: string;          // バックアップ保存先（必須）
+  intervalMs?: number;        // バックアップ間隔（ミリ秒、デフォルト: 3600000 = 1時間）
+  enabled?: boolean;          // バックアップを有効化（デフォルト: true）
+  onProgress?: (info: { totalPages: number; remainingPages: number }) => void;  // バックアップ進捗コールバック
+}
+```
+
+自動バックアップ設定オプション。
+
+**使用例:**
+
+```typescript
+const db = new KijukuDB('./data/kijuku.db', {
+  backup: {
+    backupDir: './backups',
+    intervalMs: 1800000,  // 30分間隔
+    onProgress: (info) => {
+      console.log(`Backup progress: ${info.totalPages - info.remainingPages} / ${info.totalPages} pages completed`);
+    }
+  }
+});
+```
 
 ---
 

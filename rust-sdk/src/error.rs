@@ -7,6 +7,10 @@ pub enum KijukuError {
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
 
+    /// IO エラー
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
     /// データが見つからないエラー
     #[error("Not found: {0}")]
     NotFound(String),
