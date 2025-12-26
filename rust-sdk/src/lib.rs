@@ -127,6 +127,54 @@ impl KijukuDB {
         &self.options
     }
 
+    /// トランザクションを実行
+    ///
+    /// トランザクション内で複数の操作をアトミックに実行します。
+    /// クロージャ内でエラーが発生した場合、トランザクションは自動的にロールバックされます。
+    ///
+    /// # 引数
+    ///
+    /// * `f` - トランザクション内で実行する処理。`&KijukuDB`を受け取ります。
+    ///
+    /// # 戻り値
+    ///
+    /// トランザクション内の処理が成功した場合は`Ok(T)`、失敗した場合は`Err(E)`を返す
+    ///
+    /// # 例
+    ///
+    /// ```no_run
+    /// use kijuku_db::{KijukuDB, MediaInput, MediaType};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut db = KijukuDB::open("./data/kijuku.db")?;
+    /// db.migrate()?;
+    ///
+    /// db.transaction(|db| {
+    ///     let media = db.create_media(&MediaInput {
+    ///         title: "メディア1".to_string(),
+    ///         media_type: MediaType::Comic,
+    ///         ..Default::default()
+    ///     })?;
+    ///
+    ///     let tag = db.create_tag("新着")?;
+    ///     db.add_tag_to_media(media.id, tag.id)?;
+    ///
+    ///     Ok(())
+    /// })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn transaction<T, E, F>(&mut self, f: F) -> std::result::Result<T, E>
+    where
+        F: FnOnce(&Self) -> std::result::Result<T, E>,
+        E: From<rusqlite::Error>,
+    {
+        let tx = self.conn.transaction()?;
+        let result = f(self)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
     /// マイグレーションを実行
     pub fn migrate(&self) -> Result<()> {
         migration::migrate(&self.conn)
