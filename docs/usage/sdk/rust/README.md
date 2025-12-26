@@ -25,6 +25,15 @@ use kijuku_db::{KijukuDB, MediaInput, MediaType};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
     db.migrate()?;
+
+    // メディアを作成
+    let media = db.create_media(&MediaInput {
+        title: "サンプルコミック".to_string(),
+        media_type: MediaType::Comic,
+        ..Default::default()
+    })?;
+
+    println!("作成したメディアID: {}", media.id);
     Ok(())
 }
 ```
@@ -92,18 +101,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 2. メディアの作成
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
     db.migrate()?;
 
-    let media = db.create_media(MediaInput {
+    let media = db.create_media(&MediaInput {
         title: "ワンピース 第1巻".to_string(),
-        media_type: "comic".to_string(),
+        media_type: MediaType::Comic,
         artist: Some("尾田栄一郎".to_string()),
         series: Some("ワンピース".to_string()),
-        volume_number: Some(1),
+        volume_text: Some("1".to_string()),  // volume_numberは自動計算される
         path: Some("/media/comics/onepiece_v01.cbz".to_string()),
         ..Default::default()
     })?;
@@ -172,15 +181,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 5. トランザクション
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
 
-    db.transaction(|| {
-        let media = db.create_media(MediaInput {
+    db.connection().transaction(|| {
+        let media = db.create_media(&MediaInput {
             title: "メディア1".to_string(),
-            media_type: "comic".to_string(),
+            media_type: MediaType::Comic,
             ..Default::default()
         })?;
 
@@ -201,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 大量のメディアを効率的に登録：
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
@@ -209,12 +218,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let media_list = vec![
         MediaInput {
             title: "メディア1".to_string(),
-            media_type: "comic".to_string(),
+            media_type: MediaType::Comic,
             ..Default::default()
         },
         MediaInput {
             title: "メディア2".to_string(),
-            media_type: "comic".to_string(),
+            media_type: MediaType::Comic,
             ..Default::default()
         },
         // ... 大量のデータ
@@ -256,7 +265,7 @@ fn start_server() -> Result<(), Box<dyn std::error::Error>> {
 ## エラーハンドリング
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() {
     let db = match KijukuDB::open("./data/kijuku.db") {
@@ -267,9 +276,9 @@ fn main() {
         }
     };
 
-    let result = db.create_media(MediaInput {
+    let result = db.create_media(&MediaInput {
         title: "サンプル".to_string(),
-        media_type: "comic".to_string(),
+        media_type: MediaType::Comic,
         ..Default::default()
     });
 
@@ -293,16 +302,16 @@ fn main() {
 大量のデータ操作はトランザクション内で実行してください：
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
 
-    db.transaction(|| {
+    db.connection().transaction(|| {
         for i in 0..1000 {
-            db.create_media(MediaInput {
+            db.create_media(&MediaInput {
                 title: format!("メディア{}", i),
-                media_type: "comic".to_string(),
+                media_type: MediaType::Comic,
                 ..Default::default()
             })?;
         }
@@ -322,9 +331,9 @@ fn process_large_dataset(db: &KijukuDB, items: Vec<MediaInput>) -> Result<(), Bo
     const BATCH_SIZE: usize = 1000;
 
     for chunk in items.chunks(BATCH_SIZE) {
-        db.transaction(|| {
+        db.connection().transaction(|| {
             for item in chunk {
-                db.create_media(item.clone())?;
+                db.create_media(item)?;
             }
             Ok(())
         })?;
@@ -394,14 +403,14 @@ mod tests {
         let db = KijukuDB::open(":memory:")?;
         db.migrate()?;
 
-        let media = db.create_media(MediaInput {
+        let media = db.create_media(&MediaInput {
             title: "テストメディア".to_string(),
-            media_type: "comic".to_string(),
+            media_type: MediaType::Comic,
             ..Default::default()
         })?;
 
         assert_eq!(media.title, "テストメディア");
-        assert_eq!(media.media_type, "comic");
+        assert_eq!(media.media_type, MediaType::Comic);
 
         Ok(())
     }

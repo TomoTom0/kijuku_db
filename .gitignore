@@ -10,6 +10,9 @@ node_modules
 dist
 target
 
+# Workspace Cargo.lock (rust-sdk/Cargo.lock is kept for CLI binary)
+/Cargo.lock
+
 # Database files
 *.db
 *.db-wal
