@@ -176,7 +176,7 @@ impl BackupManager {
 
             if file_name_str.starts_with("kijuku-backup-") && file_name_str.ends_with(".db") {
                 let metadata = fs::metadata(&path)?;
-                let created_at = metadata.modified().unwrap_or(SystemTime::now());
+                let created_at = metadata.modified()?;
 
                 backups.push(BackupInfo {
                     name: file_name_str.to_string(),
