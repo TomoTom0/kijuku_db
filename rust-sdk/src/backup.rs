@@ -100,13 +100,13 @@ impl BackupManager {
             .as_millis() as u64;
 
         {
-            let mut last_op = self.last_operation_time.lock().unwrap();
+            let mut last_op = self.last_operation_time.lock().map_err(|e| KijukuError::Other(format!("Mutex lock failed: {}", e)))?;
             *last_op = Some(now);
         }
 
         // 前回のバックアップからの経過時間をチェック
         let should_backup = {
-            let last_backup = self.last_backup_time.lock().unwrap();
+            let last_backup = self.last_backup_time.lock().map_err(|e| KijukuError::Other(format!("Mutex lock failed: {}", e)))?;
             match *last_backup {
                 None => true,
                 Some(last) => now - last >= self.interval_ms,
@@ -149,7 +149,7 @@ impl BackupManager {
 
         // 最後のバックアップ時刻を更新
         {
-            let mut last_backup = self.last_backup_time.lock().unwrap();
+            let mut last_backup = self.last_backup_time.lock().map_err(|e| KijukuError::Other(format!("Mutex lock failed: {}", e)))?;
             *last_backup = Some(timestamp.as_millis() as u64);
         }
 
@@ -194,7 +194,7 @@ impl BackupManager {
 
     /// 最後のバックアップ時刻を取得
     pub fn get_last_backup_time(&self) -> Option<SystemTime> {
-        let last_backup = self.last_backup_time.lock().unwrap();
+        let last_backup = self.last_backup_time.lock().ok()?;
         last_backup.map(|ms| {
             UNIX_EPOCH + std::time::Duration::from_millis(ms)
         })
@@ -202,7 +202,7 @@ impl BackupManager {
 
     /// 最後の操作時刻を取得
     pub fn get_last_operation_time(&self) -> Option<SystemTime> {
-        let last_op = self.last_operation_time.lock().unwrap();
+        let last_op = self.last_operation_time.lock().ok()?;
         last_op.map(|ms| {
             UNIX_EPOCH + std::time::Duration::from_millis(ms)
         })
@@ -210,7 +210,7 @@ impl BackupManager {
 
     /// 次回バックアップまでの残り時間（ミリ秒）を取得
     pub fn get_time_until_next_backup(&self) -> Option<u64> {
-        let last_backup = self.last_backup_time.lock().unwrap();
+        let last_backup = self.last_backup_time.lock().ok()?;
         match *last_backup {
             None => Some(0), // 次の操作で即座にバックアップ
             Some(last) => {
