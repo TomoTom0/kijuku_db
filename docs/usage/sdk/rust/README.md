@@ -101,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 2. メディアの作成
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
@@ -181,12 +181,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 5. トランザクション
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
 
-    db.transaction(|| {
+    db.connection().transaction(|| {
         let media = db.create_media(&MediaInput {
             title: "メディア1".to_string(),
             media_type: MediaType::Comic,
@@ -210,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 大量のメディアを効率的に登録：
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
@@ -265,7 +265,7 @@ fn start_server() -> Result<(), Box<dyn std::error::Error>> {
 ## エラーハンドリング
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() {
     let db = match KijukuDB::open("./data/kijuku.db") {
@@ -302,12 +302,12 @@ fn main() {
 大量のデータ操作はトランザクション内で実行してください：
 
 ```rust
-use kijuku_db::{KijukuDB, MediaInput};
+use kijuku_db::{KijukuDB, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
 
-    db.transaction(|| {
+    db.connection().transaction(|| {
         for i in 0..1000 {
             db.create_media(&MediaInput {
                 title: format!("メディア{}", i),
@@ -331,7 +331,7 @@ fn process_large_dataset(db: &KijukuDB, items: Vec<MediaInput>) -> Result<(), Bo
     const BATCH_SIZE: usize = 1000;
 
     for chunk in items.chunks(BATCH_SIZE) {
-        db.transaction(|| {
+        db.connection().transaction(|| {
             for item in chunk {
                 db.create_media(item)?;
             }
