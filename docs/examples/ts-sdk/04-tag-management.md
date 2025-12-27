@@ -190,10 +190,11 @@ console.log(`${onePiece.length}件に「完結済み」タグを付与しまし�
 
 ### タグの使用状況を調べる
 
+> **⚠️ パフォーマンス注意**: この実装はタグの数だけクエリを発行するため、タグ数が多い場合はパフォーマンスが低下します（N+1クエリ問題）。実際のアプリケーションでは、単一のSQLクエリで集計するか、SDKに集計機能が追加されるまでは使用を控えてください。
+
 ```typescript
 function getTagUsageStats() {
   const allTags = db.getAllTags();
-  const allMedia = db.findMedia({});
   
   const stats = allTags.map(tag => {
     const mediaWithTag = db.findMedia({ tag_ids: [tag.id] });
@@ -214,6 +215,15 @@ console.log('タグの使用状況:');
 stats.forEach(({ tag, count }) => {
   console.log(`- ${tag}: ${count}件`);
 });
+```
+
+**より効率的な実装例（SQLを直接使用できる場合）:**
+```sql
+SELECT t.name, COUNT(mt.media_id) as count
+FROM tags t
+LEFT JOIN media_tags mt ON t.id = mt.tag_id
+GROUP BY t.id
+ORDER BY count DESC;
 ```
 
 ### 未使用のタグを見つける
