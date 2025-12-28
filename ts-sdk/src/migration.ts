@@ -22,7 +22,7 @@ function getSchemaPath(): string {
  */
 export function migrate(db: Database.Database): void {
   const currentVersion = getSchemaVersion(db);
-  const targetVersion = 3;
+  const targetVersion = 4;
 
   if (currentVersion === 0) {
     // 初回マイグレーション: schema.sqlを実行

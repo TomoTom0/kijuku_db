@@ -9,6 +9,7 @@
 //! - 全文検索
 //! - 一括操作
 //! - トランザクション管理
+//! - スキーマ情報取得
 //!
 //! # 使用例
 //!
@@ -46,6 +47,7 @@ pub mod types;
 
 pub use backup::{BackupInfo, BackupManager, BackupOptions};
 pub use error::{KijukuError, Result};
+pub use migration::TableColumnInfo;
 pub use remote::{RemoteConfig, RemoteKijukuDB};
 pub use server::auth::{AuthManager, generate_password};
 pub use server::{ServerOptions, start_server};
@@ -145,6 +147,11 @@ impl KijukuDB {
     /// 外部キー制約が有効かチェック
     pub fn is_foreign_keys_enabled(&self) -> Result<bool> {
         migration::is_foreign_keys_enabled(&self.conn)
+    }
+
+    /// 特定テーブルのカラム情報を取得
+    pub fn get_table_info(&self, table_name: &str) -> Result<Vec<TableColumnInfo>> {
+        migration::get_table_info(&self.conn, table_name)
     }
 
     /// メディアを作成
