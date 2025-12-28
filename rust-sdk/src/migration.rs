@@ -1,5 +1,16 @@
 use crate::error::Result;
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableColumnInfo {
+    pub cid: i64,
+    pub name: String,
+    pub type_name: String,
+    pub notnull: bool,
+    pub dflt_value: Option<String>,
+    pub pk: bool,
+}
 
 /// スキーマSQLを取得
 fn get_schema_sql() -> &'static str {
@@ -99,6 +110,27 @@ pub fn get_tables(conn: &Connection) -> Result<Vec<String>> {
 pub fn is_foreign_keys_enabled(conn: &Connection) -> Result<bool> {
     let enabled: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
     Ok(enabled == 1)
+}
+
+/// 特定テーブルのカラム情報を取得
+pub fn get_table_info(conn: &Connection, table_name: &str) -> Result<Vec<TableColumnInfo>> {
+    let query = format!("PRAGMA table_info({})", table_name);
+    let mut stmt = conn.prepare(&query)?;
+
+    let columns = stmt
+        .query_map([], |row| {
+            Ok(TableColumnInfo {
+                cid: row.get(0)?,
+                name: row.get(1)?,
+                type_name: row.get(2)?,
+                notnull: row.get::<_, i64>(3)? == 1,
+                dflt_value: row.get(4)?,
+                pk: row.get::<_, i64>(5)? == 1,
+            })
+        })?
+        .collect::<std::result::Result<Vec<TableColumnInfo>, _>>()?;
+
+    Ok(columns)
 }
 
 #[cfg(test)]

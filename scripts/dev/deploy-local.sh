@@ -20,13 +20,16 @@ echo "Rustバイナリをビルド中..."
 cd "$RUST_SDK_DIR"
 cargo build --release
 
+# ワークスペースのtargetディレクトリから取得
+WORKSPACE_TARGET="$PROJECT_ROOT/target/release"
+
 # ローカルデプロイ
 echo "ローカルにデプロイ中..."
 LOCAL_BINARY_DIR="$HOME/.local/kijuku-db/bin"
 LOCAL_SYMLINK_DIR="$HOME/.local/bin"
 
 mkdir -p "$LOCAL_BINARY_DIR" "$LOCAL_SYMLINK_DIR"
-cp "$RUST_SDK_DIR/target/release/$BINARY_NAME" "$LOCAL_BINARY_DIR/"
+cp "$WORKSPACE_TARGET/$BINARY_NAME" "$LOCAL_BINARY_DIR/"
 chmod +x "$LOCAL_BINARY_DIR/$BINARY_NAME"
 ln -sf "$LOCAL_BINARY_DIR/$BINARY_NAME" "$LOCAL_SYMLINK_DIR/$BINARY_NAME"
 
@@ -53,7 +56,7 @@ if [ -n "$REMOTE_SSH_HOST" ]; then
 
   # バイナリを転送
   echo "バイナリを転送中..."
-  scp "$RUST_SDK_DIR/target/release/$BINARY_NAME" "$REMOTE_SSH_HOST:$REMOTE_BINARY_PATH"
+  scp "$WORKSPACE_TARGET/$BINARY_NAME" "$REMOTE_SSH_HOST:$REMOTE_BINARY_PATH"
 
   # 実行権限を付与
   echo "実行権限を付与中..."

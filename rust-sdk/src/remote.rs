@@ -1,9 +1,11 @@
 use crate::{KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, QueryOptions, Result, Tag};
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
+use ssh2_config::{ParseRule, SshConfig};
 use std::io::Read;
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::env;
 
 /// リモート接続設定
 #[derive(Debug, Clone)]
@@ -61,14 +63,63 @@ impl RemoteKijukuDB {
         Self { config }
     }
 
+    /// SSH設定を読み込む
+    fn load_ssh_config(&self) -> Result<(String, u16, String, Option<PathBuf>)> {
+        let home = env::var("HOME").map_err(|_| KijukuError::Other("HOME environment variable not set".to_string()))?;
+        let ssh_config_path = PathBuf::from(&home).join(".ssh").join("config");
+
+        // SSH configが存在しない場合はデフォルト値を使用
+        if !ssh_config_path.exists() {
+            return Ok((
+                self.config.ssh_host.clone(),
+                self.config.port.unwrap_or(22),
+                self.config.username.clone(),
+                self.config.private_key_path.clone(),
+            ));
+        }
+
+        let config_content = std::fs::read_to_string(&ssh_config_path)
+            .map_err(|e| KijukuError::Other(format!("Failed to read SSH config: {}", e)))?;
+
+        let mut reader = std::io::Cursor::new(config_content.as_bytes());
+        let ssh_config = SshConfig::default()
+            .parse(&mut reader, ParseRule::ALLOW_UNKNOWN_FIELDS)
+            .map_err(|e| KijukuError::Other(format!("Failed to parse SSH config: {}", e)))?;
+
+        // ホスト設定を取得
+        let params = ssh_config.query(&self.config.ssh_host);
+
+        // 各フィールドを取得（明示的な設定が優先）
+        let hostname = params.host_name.unwrap_or_else(|| self.config.ssh_host.clone());
+        let port = self.config.port.or(params.port).unwrap_or(22);
+        let username = if !self.config.username.is_empty() {
+            self.config.username.clone()
+        } else {
+            params.user.unwrap_or_else(|| env::var("USER").unwrap_or_default())
+        };
+        let identity_file = self.config.private_key_path.clone().or_else(|| {
+            params.identity_file.and_then(|files| {
+                files.first().map(|path| {
+                    // ~/ を展開
+                    let path_str = path.to_string_lossy();
+                    if path_str.starts_with("~/") {
+                        PathBuf::from(&home).join(&path_str[2..])
+                    } else {
+                        path.clone()
+                    }
+                })
+            })
+        });
+
+        Ok((hostname, port, username, identity_file))
+    }
+
     /// SSH接続を確立
     fn connect(&self) -> Result<Session> {
-        let tcp = TcpStream::connect(format!(
-            "{}:{}",
-            self.config.ssh_host,
-            self.config.port.unwrap_or(22)
-        ))
-        .map_err(|e| KijukuError::Other(format!("TCP connection failed: {}", e)))?;
+        let (hostname, port, username, identity_file) = self.load_ssh_config()?;
+
+        let tcp = TcpStream::connect(format!("{}:{}", hostname, port))
+            .map_err(|e| KijukuError::Other(format!("TCP connection failed: {}", e)))?;
 
         let mut sess = Session::new()
             .map_err(|e| KijukuError::Other(format!("SSH session creation failed: {}", e)))?;
@@ -78,12 +129,12 @@ impl RemoteKijukuDB {
             .map_err(|e| KijukuError::Other(format!("SSH handshake failed: {}", e)))?;
 
         // 認証
-        if let Some(key_path) = &self.config.private_key_path {
-            sess.userauth_pubkey_file(&self.config.username, None, key_path, None)
+        if let Some(key_path) = &identity_file {
+            sess.userauth_pubkey_file(&username, None, key_path, None)
                 .map_err(|e| KijukuError::Other(format!("SSH authentication failed: {}", e)))?;
         } else {
             return Err(KijukuError::Other(
-                "Private key path is required".to_string(),
+                "Private key path is required (set in RemoteConfig or SSH config)".to_string(),
             ));
         }
 

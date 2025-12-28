@@ -1,6 +1,7 @@
 //! Kijuku DB CLI
 //!
 //! JSON形式の入出力でリモート操作を可能にするCLIツール
+//! Version: 0.1.0
 
 use clap::Parser;
 use include_dir::{include_dir, Dir};
@@ -93,6 +94,12 @@ struct CreateTagParams {
 #[derive(Debug, Deserialize)]
 struct GetTagByNameParams {
     name: String,
+}
+
+/// テーブル情報取得のパラメータ
+#[derive(Debug, Deserialize)]
+struct GetTableInfoParams {
+    table_name: String,
 }
 
 /// タグ追加のパラメータ
@@ -310,6 +317,8 @@ fn execute_command(db: &KijukuDB, request: &CommandRequest) -> CommandResponse {
     match request.operation.as_str() {
         "migrate" => handle_migrate(db),
         "getSchemaVersion" => handle_get_schema_version(db),
+        "getTables" => handle_get_tables(db),
+        "getTableInfo" => handle_get_table_info(db, &request.params),
         "createMedia" => handle_create_media(db, &request.params),
         "getMedia" => handle_get_media(db, &request.params),
         "updateMedia" => handle_update_media(db, &request.params),
@@ -342,6 +351,31 @@ fn handle_get_schema_version(db: &KijukuDB) -> CommandResponse {
     match db.get_schema_version() {
         Ok(version) => CommandResponse::success(serde_json::json!({"version": version})),
         Err(e) => CommandResponse::error(format!("スキーマバージョン取得エラー: {}", e)),
+    }
+}
+
+fn handle_get_tables(db: &KijukuDB) -> CommandResponse {
+    match db.get_tables() {
+        Ok(tables) => {
+            let data = serde_json::to_value(tables).unwrap();
+            CommandResponse::success(data)
+        }
+        Err(e) => CommandResponse::error(format!("テーブル一覧取得エラー: {}", e)),
+    }
+}
+
+fn handle_get_table_info(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: GetTableInfoParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+
+    match db.get_table_info(&params.table_name) {
+        Ok(columns) => {
+            let data = serde_json::to_value(columns).unwrap();
+            CommandResponse::success(data)
+        }
+        Err(e) => CommandResponse::error(format!("テーブル情報取得エラー: {}", e)),
     }
 }
 

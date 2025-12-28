@@ -141,3 +141,15 @@ export interface MediaAttribute {
   value?: string;
   value_type: 'string' | 'integer' | 'boolean';
 }
+
+/**
+ * テーブルカラム情報
+ */
+export interface TableColumnInfo {
+  cid: number;
+  name: string;
+  type_name: string;
+  notnull: boolean;
+  dflt_value?: string;
+  pk: boolean;
+}
