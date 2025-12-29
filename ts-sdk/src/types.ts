@@ -105,6 +105,14 @@ export interface QueryOptions {
 }
 
 /**
+ * 一括更新時の個別アイテム
+ */
+export interface BulkUpdateItem {
+  id: number;
+  data: Partial<MediaInput>;
+}
+
+/**
  * タグ情報
  */
 export interface Tag {

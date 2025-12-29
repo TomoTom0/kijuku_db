@@ -188,6 +188,16 @@ impl KijukuDB {
         bulk::bulk_create_media(&self.conn, data_list)
     }
 
+    /// 複数のメディアを一括削除
+    pub fn bulk_delete_media(&self, ids: &[i64]) -> Result<()> {
+        bulk::bulk_delete_media(&self.conn, ids)
+    }
+
+    /// 複数のメディアを一括更新
+    pub fn bulk_update_media(&self, updates: &[BulkUpdateItem]) -> Result<()> {
+        bulk::bulk_update_media(&self.conn, updates)
+    }
+
     /// タグを作成
     pub fn create_tag(&self, name: &str) -> Result<Tag> {
         tag::create_tag(&self.conn, name)

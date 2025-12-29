@@ -137,6 +137,13 @@ impl SortOrder {
     }
 }
 
+/// 一括更新時の個別アイテム
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkUpdateItem {
+    pub id: i64,
+    pub data: MediaInput,
+}
+
 /// クエリオプション（ソート、ページネーション）
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct QueryOptions {

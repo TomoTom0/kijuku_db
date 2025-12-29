@@ -14,6 +14,7 @@ import type {
   Tag,
   MediaAttribute,
   TableColumnInfo,
+  BulkUpdateItem,
 } from './types.js';
 
 /**
@@ -388,6 +389,28 @@ export class RemoteKijukuDB {
       params: { data_list: dataList },
     });
     return this.checkResponse(response);
+  }
+
+  /**
+   * 複数のメディアを一括削除
+   */
+  async bulkDeleteMedia(ids: number[]): Promise<void> {
+    const response = await this.executeRemoteCommand({
+      operation: 'bulkDeleteMedia',
+      params: { ids },
+    });
+    this.checkResponse(response);
+  }
+
+  /**
+   * 複数のメディアを一括更新
+   */
+  async bulkUpdateMedia(updates: BulkUpdateItem[]): Promise<void> {
+    const response = await this.executeRemoteCommand({
+      operation: 'bulkUpdateMedia',
+      params: { updates },
+    });
+    this.checkResponse(response);
   }
 
   /**

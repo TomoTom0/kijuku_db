@@ -10,6 +10,7 @@ import type {
   Tag,
   DBOptions,
   MediaAttribute,
+  BulkUpdateItem,
 } from './types.js';
 import * as migration from './migration.js';
 import * as crud from './crud.js';
@@ -132,6 +133,26 @@ export class KijukuDB {
       console.error('Backup operation failed:', err);
     });
     return result;
+  }
+
+  /**
+   * 複数のメディアを一括削除
+   */
+  bulkDeleteMedia(ids: number[]): void {
+    bulk.bulkDeleteMedia(this.db, ids);
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
+  }
+
+  /**
+   * 複数のメディアを一括更新
+   */
+  bulkUpdateMedia(updates: BulkUpdateItem[]): void {
+    bulk.bulkUpdateMedia(this.db, updates);
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
   }
 
   /**
