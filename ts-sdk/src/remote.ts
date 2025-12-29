@@ -66,15 +66,13 @@ export class RemoteKijukuDB {
     const hostConfig = config.compute(this.config.sshHost);
 
     // Portの型を適切に処理（数値または文字列の可能性）
-    // 注意: ssh-configライブラリは小文字のプロパティ名を使用
+    // ssh-configライブラリはプロパティ名の大文字・小文字が揺れる可能性があるため両方チェック
     let port = 22; // デフォルト
     if (this.config.port !== undefined) {
       port = this.config.port;
-    } else if ((hostConfig as any).port !== undefined) {
-      const portValue = (hostConfig as any).port;
-      port = typeof portValue === 'number'
-        ? portValue
-        : parseInt(String(portValue), 10);
+    } else if ((hostConfig as any).port !== undefined || hostConfig.Port !== undefined) {
+      const portValue = (hostConfig as any).port ?? hostConfig.Port;
+      port = Number(portValue);
     }
 
     const connectConfig: ConnectConfig = {

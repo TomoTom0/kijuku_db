@@ -356,10 +356,10 @@ fn handle_get_schema_version(db: &KijukuDB) -> CommandResponse {
 
 fn handle_get_tables(db: &KijukuDB) -> CommandResponse {
     match db.get_tables() {
-        Ok(tables) => {
-            let data = serde_json::to_value(tables).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(tables) => match serde_json::to_value(tables) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         Err(e) => CommandResponse::error(format!("テーブル一覧取得エラー: {}", e)),
     }
 }
@@ -371,10 +371,10 @@ fn handle_get_table_info(db: &KijukuDB, params: &serde_json::Value) -> CommandRe
     };
 
     match db.get_table_info(&params.table_name) {
-        Ok(columns) => {
-            let data = serde_json::to_value(columns).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(columns) => match serde_json::to_value(columns) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("テーブル情報取得エラー: {}", e)),
+        },
         Err(e) => CommandResponse::error(format!("テーブル情報取得エラー: {}", e)),
     }
 }
