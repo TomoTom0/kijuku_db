@@ -13,6 +13,7 @@ import type {
   QueryOptions,
   Tag,
   MediaAttribute,
+  TableColumnInfo,
 } from './types.js';
 
 /**
@@ -64,10 +65,20 @@ export class RemoteKijukuDB {
 
     const hostConfig = config.compute(this.config.sshHost);
 
+    // Portの型を適切に処理（数値または文字列の可能性）
+    // ssh-configライブラリはプロパティ名の大文字・小文字が揺れる可能性があるため両方チェック
+    let port = 22; // デフォルト
+    if (this.config.port !== undefined) {
+      port = this.config.port;
+    } else if ((hostConfig as any).port !== undefined || hostConfig.Port !== undefined) {
+      const portValue = (hostConfig as any).port ?? hostConfig.Port;
+      port = Number(portValue);
+    }
+
     const connectConfig: ConnectConfig = {
-      host: hostConfig.HostName as string,
-      port: this.config.port || parseInt((hostConfig.Port as string) || '22'),
-      username: hostConfig.User as string,
+      host: String(hostConfig.HostName || ''),
+      port,
+      username: String(hostConfig.User || ''),
     };
 
     // 認証情報
@@ -79,7 +90,7 @@ export class RemoteKijukuDB {
       if (typeof identityFile === 'string' && identityFile.startsWith('~/')) {
         identityFile = resolve(homedir(), identityFile.substring(2));
       }
-      connectConfig.privateKey = readFileSync(identityFile as string);
+      connectConfig.privateKey = readFileSync(String(identityFile));
     }
 
     return connectConfig;
@@ -289,6 +300,28 @@ export class RemoteKijukuDB {
     });
     const data = this.checkResponse(response);
     return data.version;
+  }
+
+  /**
+   * テーブル一覧を取得
+   */
+  async getTables(): Promise<string[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'getTables',
+      params: {},
+    });
+    return this.checkResponse(response);
+  }
+
+  /**
+   * 特定テーブルのカラム情報を取得
+   */
+  async getTableInfo(tableName: string): Promise<TableColumnInfo[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'getTableInfo',
+      params: { table_name: tableName },
+    });
+    return this.checkResponse(response);
   }
 
   /**
