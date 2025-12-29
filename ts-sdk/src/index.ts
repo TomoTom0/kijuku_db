@@ -18,12 +18,13 @@ import * as tag from './tag.js';
 import * as search from './search.js';
 import * as bulk from './bulk.js';
 import * as attribute from './attribute.js';
-import { BackupManager } from './backup.js';
+import { BackupManager, BackupSelector } from './backup.js';
 
 export * from './types.js';
 export * from './errors.js';
 export * from './remote.js';
-export { BackupManager } from './backup.js';
+export { BackupManager, BackupSelector } from './backup.js';
+export type { BackupInfo, BackupSelector as BackupSelectorType } from './backup.js';
 export { startServer } from './server/index.js';
 export { AuthManager, generatePassword } from './server/auth.js';
 
@@ -47,7 +48,7 @@ export class KijukuDB {
 
     // バックアップマネージャーの初期化
     if (options?.backup) {
-      this.backupManager = new BackupManager(this.db, options.backup);
+      this.backupManager = new BackupManager(this.db, dbPath, options.backup);
     }
   }
 
@@ -293,5 +294,174 @@ export class KijukuDB {
    */
   close(): void {
     this.db.close();
+  }
+
+  // ========== バックアップからの取得メソッド ==========
+
+  /**
+   * バックアップからIDでメディアを取得
+   */
+  getMediaFromBackup(
+    id: number,
+    selector: BackupSelector = BackupSelector.latest()
+  ): Media | null {
+    if (!this.backupManager) {
+      throw new Error('Backup manager not configured');
+    }
+
+    const backupPath = this.backupManager.getBackupPath(selector);
+    if (!backupPath) {
+      throw new Error('No backup found matching selector');
+    }
+
+    const backupDb = new KijukuDB(backupPath, { readonly: true });
+    try {
+      return backupDb.getMedia(id);
+    } finally {
+      backupDb.close();
+    }
+  }
+
+  /**
+   * バックアップからメディアを検索
+   */
+  findMediaFromBackup(
+    filter: MediaFilter,
+    options?: QueryOptions,
+    selector: BackupSelector = BackupSelector.latest()
+  ): Media[] {
+    if (!this.backupManager) {
+      throw new Error('Backup manager not configured');
+    }
+
+    const backupPath = this.backupManager.getBackupPath(selector);
+    if (!backupPath) {
+      throw new Error('No backup found matching selector');
+    }
+
+    const backupDb = new KijukuDB(backupPath, { readonly: true });
+    try {
+      return backupDb.findMedia(filter, options);
+    } finally {
+      backupDb.close();
+    }
+  }
+
+  /**
+   * バックアップからタグ名でタグを取得
+   */
+  getTagByNameFromBackup(
+    name: string,
+    selector: BackupSelector = BackupSelector.latest()
+  ): Tag | null {
+    if (!this.backupManager) {
+      throw new Error('Backup manager not configured');
+    }
+
+    const backupPath = this.backupManager.getBackupPath(selector);
+    if (!backupPath) {
+      throw new Error('No backup found matching selector');
+    }
+
+    const backupDb = new KijukuDB(backupPath, { readonly: true });
+    try {
+      return backupDb.getTagByName(name);
+    } finally {
+      backupDb.close();
+    }
+  }
+
+  /**
+   * バックアップから全てのタグを取得
+   */
+  getAllTagsFromBackup(selector: BackupSelector = BackupSelector.latest()): Tag[] {
+    if (!this.backupManager) {
+      throw new Error('Backup manager not configured');
+    }
+
+    const backupPath = this.backupManager.getBackupPath(selector);
+    if (!backupPath) {
+      throw new Error('No backup found matching selector');
+    }
+
+    const backupDb = new KijukuDB(backupPath, { readonly: true });
+    try {
+      return backupDb.getAllTags();
+    } finally {
+      backupDb.close();
+    }
+  }
+
+  /**
+   * バックアップからメディアに関連付けられたタグを取得
+   */
+  getMediaTagsFromBackup(
+    mediaId: number,
+    selector: BackupSelector = BackupSelector.latest()
+  ): Tag[] {
+    if (!this.backupManager) {
+      throw new Error('Backup manager not configured');
+    }
+
+    const backupPath = this.backupManager.getBackupPath(selector);
+    if (!backupPath) {
+      throw new Error('No backup found matching selector');
+    }
+
+    const backupDb = new KijukuDB(backupPath, { readonly: true });
+    try {
+      return backupDb.getMediaTags(mediaId);
+    } finally {
+      backupDb.close();
+    }
+  }
+
+  /**
+   * バックアップからメディアの属性を取得
+   */
+  getMediaAttributeFromBackup(
+    mediaId: number,
+    key: string,
+    selector: BackupSelector = BackupSelector.latest()
+  ): MediaAttribute | null {
+    if (!this.backupManager) {
+      throw new Error('Backup manager not configured');
+    }
+
+    const backupPath = this.backupManager.getBackupPath(selector);
+    if (!backupPath) {
+      throw new Error('No backup found matching selector');
+    }
+
+    const backupDb = new KijukuDB(backupPath, { readonly: true });
+    try {
+      return backupDb.getMediaAttribute(mediaId, key);
+    } finally {
+      backupDb.close();
+    }
+  }
+
+  /**
+   * バックアップからメディアの全ての属性を取得
+   */
+  getMediaAttributesFromBackup(
+    mediaId: number,
+    selector: BackupSelector = BackupSelector.latest()
+  ): MediaAttribute[] {
+    if (!this.backupManager) {
+      throw new Error('Backup manager not configured');
+    }
+
+    const backupPath = this.backupManager.getBackupPath(selector);
+    if (!backupPath) {
+      throw new Error('No backup found matching selector');
+    }
+
+    const backupDb = new KijukuDB(backupPath, { readonly: true });
+    try {
+      return backupDb.getMediaAttributes(mediaId);
+    } finally {
+      backupDb.close();
+    }
   }
 }

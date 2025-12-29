@@ -15,7 +15,8 @@ pub struct BackupProgress {
 #[derive(Debug, Clone)]
 pub struct BackupOptions {
     /// バックアップファイルの保存先ディレクトリ
-    pub backup_dir: String,
+    /// Noneの場合はdb_pathの親ディレクトリに"backup"フォルダを作成
+    pub backup_dir: Option<String>,
     /// バックアップをトリガーする時間間隔（ミリ秒）
     /// デフォルト: 3600000 (1時間)
     pub interval_ms: Option<u64>,
@@ -33,7 +34,7 @@ pub struct BackupOptions {
 impl Default for BackupOptions {
     fn default() -> Self {
         Self {
-            backup_dir: String::from("./backups"),
+            backup_dir: None, // db_pathから自動決定
             interval_ms: Some(3600000), // 1時間
             enabled: Some(true),
             max_backups: None,
@@ -50,14 +51,36 @@ pub struct BackupInfo {
     pub created_at: SystemTime,
 }
 
+/// バックアップ選択条件
+#[derive(Debug, Clone)]
+pub enum BackupSelector {
+    /// 最新のバックアップ
+    Latest,
+    /// 最新からn番目のバックアップ（0が最新）
+    Nth(usize),
+    /// 指定日時より前の最新バックアップ
+    Before(SystemTime),
+    /// 指定日時より後の最古バックアップ
+    After(SystemTime),
+    /// 指定日時に最も近いバックアップ
+    ClosestTo(SystemTime),
+}
+
+impl Default for BackupSelector {
+    fn default() -> Self {
+        Self::Latest
+    }
+}
+
 /// バックアップマネージャークラス
 pub struct BackupManager {
     last_backup_time: Arc<Mutex<Option<u64>>>,
     last_operation_time: Arc<Mutex<Option<u64>>>,
-    backup_dir: String,
+    backup_dir: PathBuf,
     interval_ms: u64,
     enabled: bool,
     db_path: PathBuf,
+    db_stem: String,
     max_backups: Option<usize>,
     max_age_days: Option<u64>,
 }
@@ -65,14 +88,32 @@ pub struct BackupManager {
 impl BackupManager {
     /// 新しいバックアップマネージャーを作成
     pub fn new<P: AsRef<Path>>(db_path: P, options: BackupOptions) -> Result<Self> {
-        let backup_dir = options.backup_dir.clone();
+        let db_path_buf = db_path.as_ref().to_path_buf();
+
+        // DBファイル名のステム（拡張子を除いた部分）を取得
+        let db_stem = db_path_buf
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("database")
+            .to_string();
+
+        // バックアップディレクトリを決定
+        // 指定がない場合はdb_pathの親ディレクトリに"backup"フォルダを作成
+        let backup_dir = match options.backup_dir {
+            Some(dir) => PathBuf::from(dir),
+            None => {
+                let parent = db_path_buf.parent().unwrap_or(Path::new("."));
+                parent.join("backup")
+            }
+        };
+
         let interval_ms = options.interval_ms.unwrap_or(3600000);
         let enabled = options.enabled.unwrap_or(true);
         let max_backups = options.max_backups;
         let max_age_days = options.max_age_days;
 
         // バックアップディレクトリが存在しない場合は作成
-        if enabled && !Path::new(&backup_dir).exists() {
+        if enabled && !backup_dir.exists() {
             fs::create_dir_all(&backup_dir)?;
         }
 
@@ -82,7 +123,8 @@ impl BackupManager {
             backup_dir,
             interval_ms,
             enabled,
-            db_path: db_path.as_ref().to_path_buf(),
+            db_path: db_path_buf,
+            db_stem,
             max_backups,
             max_age_days,
         })
@@ -126,17 +168,18 @@ impl BackupManager {
             return Err(KijukuError::Other("Backup is disabled".to_string()));
         }
 
-        // タイムスタンプを生成
+        // タイムスタンプを生成 (yyyymmddhhmmss-mmm形式、ミリ秒を含む)
         let now = SystemTime::now();
         let timestamp = now
             .duration_since(UNIX_EPOCH)
             .map_err(|e| KijukuError::Other(e.to_string()))?;
 
         let datetime = chrono::DateTime::<chrono::Utc>::from(now);
-        let timestamp_str = datetime.format("%Y-%m-%dT%H-%M-%S-%3f").to_string();
+        let timestamp_str = datetime.format("%Y%m%d%H%M%S-%3f").to_string();
 
-        let backup_file_name = format!("kijuku-backup-{}.db", timestamp_str);
-        let backup_path = Path::new(&self.backup_dir).join(&backup_file_name);
+        // ファイル名形式: {db_stem}.backup-{yyyymmddhhmmss-mmm}.db
+        let backup_file_name = format!("{}.backup-{}.db", self.db_stem, timestamp_str);
+        let backup_path = self.backup_dir.join(&backup_file_name);
 
         // SQLite Online Backup APIを使用して安全にバックアップ
         let mut dst_conn = rusqlite::Connection::open(&backup_path)?;
@@ -161,20 +204,22 @@ impl BackupManager {
 
     /// バックアップ一覧を取得
     pub fn list_backups(&self) -> Result<Vec<BackupInfo>> {
-        let backup_dir = Path::new(&self.backup_dir);
-        if !backup_dir.exists() {
+        if !self.backup_dir.exists() {
             return Ok(Vec::new());
         }
 
         let mut backups = Vec::new();
 
-        for entry in fs::read_dir(backup_dir)? {
+        // このDBのバックアップファイルのプレフィックス: {db_stem}.backup-
+        let prefix = format!("{}.backup-", self.db_stem);
+
+        for entry in fs::read_dir(&self.backup_dir)? {
             let entry = entry?;
             let path = entry.path();
             let file_name = entry.file_name();
             let file_name_str = file_name.to_string_lossy();
 
-            if file_name_str.starts_with("kijuku-backup-") && file_name_str.ends_with(".db") {
+            if file_name_str.starts_with(&prefix) && file_name_str.ends_with(".db") {
                 let metadata = fs::metadata(&path)?;
                 let created_at = metadata.modified()?;
 
@@ -190,6 +235,48 @@ impl BackupManager {
         backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
         Ok(backups)
+    }
+
+    /// 条件に一致するバックアップを選択
+    pub fn select_backup(&self, selector: &BackupSelector) -> Result<Option<BackupInfo>> {
+        let backups = self.list_backups()?;
+
+        if backups.is_empty() {
+            return Ok(None);
+        }
+
+        match selector {
+            BackupSelector::Latest => Ok(backups.into_iter().next()),
+
+            BackupSelector::Nth(n) => Ok(backups.into_iter().nth(*n)),
+
+            BackupSelector::Before(time) => {
+                // 指定日時より前の最新バックアップ（降順なので最初に見つかったものが最新）
+                Ok(backups.into_iter().find(|b| b.created_at < *time))
+            }
+
+            BackupSelector::After(time) => {
+                // 指定日時より後の最古バックアップ（降順なので最後に見つかったものが最古）
+                Ok(backups.into_iter().filter(|b| b.created_at > *time).last())
+            }
+
+            BackupSelector::ClosestTo(time) => {
+                // 指定日時に最も近いバックアップ
+                Ok(backups.into_iter().min_by_key(|b| {
+                    let diff = if b.created_at > *time {
+                        b.created_at.duration_since(*time).unwrap_or_default()
+                    } else {
+                        time.duration_since(b.created_at).unwrap_or_default()
+                    };
+                    diff.as_millis()
+                }))
+            }
+        }
+    }
+
+    /// 条件に一致するバックアップのパスを取得
+    pub fn get_backup_path(&self, selector: &BackupSelector) -> Result<Option<PathBuf>> {
+        Ok(self.select_backup(selector)?.map(|b| b.path))
     }
 
     /// 最後のバックアップ時刻を取得
@@ -285,7 +372,7 @@ mod tests {
     #[test]
     fn test_backup_options_default() {
         let options = BackupOptions::default();
-        assert_eq!(options.backup_dir, "./backups");
+        assert_eq!(options.backup_dir, None); // db_pathから自動決定
         assert_eq!(options.interval_ms, Some(3600000));
         assert_eq!(options.enabled, Some(true));
     }
@@ -300,7 +387,7 @@ mod tests {
 
         let backup_dir = temp_dir.path().join("backups");
         let options = BackupOptions {
-            backup_dir: backup_dir.to_string_lossy().to_string(),
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
             interval_ms: Some(1000),
             enabled: Some(true),
             max_backups: None,
@@ -325,7 +412,7 @@ mod tests {
 
         let backup_dir = temp_dir.path().join("backups");
         let options = BackupOptions {
-            backup_dir: backup_dir.to_string_lossy().to_string(),
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
             interval_ms: Some(1000),
             enabled: Some(true),
             max_backups: None,
@@ -336,7 +423,8 @@ mod tests {
         let backup_path = manager.backup().unwrap();
 
         assert!(Path::new(&backup_path).exists());
-        assert!(backup_path.contains("kijuku-backup-"));
+        // 新しいファイル名形式: {db_stem}.backup-{yyyymmddhhmmss}.db
+        assert!(backup_path.contains("test.backup-"));
         assert!(backup_path.ends_with(".db"));
     }
 
@@ -354,7 +442,7 @@ mod tests {
 
         let backup_dir = temp_dir.path().join("backups");
         let options = BackupOptions {
-            backup_dir: backup_dir.to_string_lossy().to_string(),
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
             interval_ms: Some(1000),
             enabled: Some(true),
             max_backups: None,
@@ -389,7 +477,7 @@ mod tests {
 
         let backup_dir = temp_dir.path().join("backups");
         let options = BackupOptions {
-            backup_dir: backup_dir.to_string_lossy().to_string(),
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
             interval_ms: Some(1000),
             enabled: Some(true),
             max_backups: None,

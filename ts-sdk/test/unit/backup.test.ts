@@ -65,7 +65,8 @@ describe('BackupManager', () => {
 
       const backups = db.listBackups();
       expect(backups.length).toBe(2);
-      expect(backups[0].name).toMatch(/^kijuku-backup-.*\.db$/);
+      // 新しいファイル名形式: {db_stem}.backup-{yyyymmddhhmmss-mmm}.db
+      expect(backups[0].name).toMatch(/^test-backup-\d+\.backup-\d{14}-\d{3}\.db$/);
       expect(backups[0].createdAt).toBeInstanceOf(Date);
     });
 

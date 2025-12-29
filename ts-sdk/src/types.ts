@@ -124,7 +124,11 @@ export interface Tag {
  * バックアップ設定オプション
  */
 export interface BackupOptions {
-  backupDir: string;
+  /**
+   * バックアップファイルの保存先ディレクトリ
+   * 省略時はdbPathの親ディレクトリに"backup"フォルダを作成
+   */
+  backupDir?: string;
   intervalMs?: number;
   enabled?: boolean;
   onProgress?: (info: { totalPages: number; remainingPages: number }) => void;
