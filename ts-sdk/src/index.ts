@@ -299,12 +299,12 @@ export class KijukuDB {
   // ========== バックアップからの取得メソッド ==========
 
   /**
-   * バックアップからIDでメディアを取得
+   * バックアップDBに対して処理を実行するヘルパーメソッド
    */
-  getMediaFromBackup(
-    id: number,
-    selector: BackupSelector = BackupSelector.latest()
-  ): Media | null {
+  private withBackupDb<T>(
+    selector: BackupSelector,
+    fn: (db: KijukuDB) => T
+  ): T {
     if (!this.backupManager) {
       throw new Error('Backup manager not configured');
     }
@@ -316,10 +316,20 @@ export class KijukuDB {
 
     const backupDb = new KijukuDB(backupPath, { readonly: true });
     try {
-      return backupDb.getMedia(id);
+      return fn(backupDb);
     } finally {
       backupDb.close();
     }
+  }
+
+  /**
+   * バックアップからIDでメディアを取得
+   */
+  getMediaFromBackup(
+    id: number,
+    selector: BackupSelector = BackupSelector.latest()
+  ): Media | null {
+    return this.withBackupDb(selector, (db) => db.getMedia(id));
   }
 
   /**
@@ -330,21 +340,7 @@ export class KijukuDB {
     options?: QueryOptions,
     selector: BackupSelector = BackupSelector.latest()
   ): Media[] {
-    if (!this.backupManager) {
-      throw new Error('Backup manager not configured');
-    }
-
-    const backupPath = this.backupManager.getBackupPath(selector);
-    if (!backupPath) {
-      throw new Error('No backup found matching selector');
-    }
-
-    const backupDb = new KijukuDB(backupPath, { readonly: true });
-    try {
-      return backupDb.findMedia(filter, options);
-    } finally {
-      backupDb.close();
-    }
+    return this.withBackupDb(selector, (db) => db.findMedia(filter, options));
   }
 
   /**
@@ -354,42 +350,14 @@ export class KijukuDB {
     name: string,
     selector: BackupSelector = BackupSelector.latest()
   ): Tag | null {
-    if (!this.backupManager) {
-      throw new Error('Backup manager not configured');
-    }
-
-    const backupPath = this.backupManager.getBackupPath(selector);
-    if (!backupPath) {
-      throw new Error('No backup found matching selector');
-    }
-
-    const backupDb = new KijukuDB(backupPath, { readonly: true });
-    try {
-      return backupDb.getTagByName(name);
-    } finally {
-      backupDb.close();
-    }
+    return this.withBackupDb(selector, (db) => db.getTagByName(name));
   }
 
   /**
    * バックアップから全てのタグを取得
    */
   getAllTagsFromBackup(selector: BackupSelector = BackupSelector.latest()): Tag[] {
-    if (!this.backupManager) {
-      throw new Error('Backup manager not configured');
-    }
-
-    const backupPath = this.backupManager.getBackupPath(selector);
-    if (!backupPath) {
-      throw new Error('No backup found matching selector');
-    }
-
-    const backupDb = new KijukuDB(backupPath, { readonly: true });
-    try {
-      return backupDb.getAllTags();
-    } finally {
-      backupDb.close();
-    }
+    return this.withBackupDb(selector, (db) => db.getAllTags());
   }
 
   /**
@@ -399,21 +367,7 @@ export class KijukuDB {
     mediaId: number,
     selector: BackupSelector = BackupSelector.latest()
   ): Tag[] {
-    if (!this.backupManager) {
-      throw new Error('Backup manager not configured');
-    }
-
-    const backupPath = this.backupManager.getBackupPath(selector);
-    if (!backupPath) {
-      throw new Error('No backup found matching selector');
-    }
-
-    const backupDb = new KijukuDB(backupPath, { readonly: true });
-    try {
-      return backupDb.getMediaTags(mediaId);
-    } finally {
-      backupDb.close();
-    }
+    return this.withBackupDb(selector, (db) => db.getMediaTags(mediaId));
   }
 
   /**
@@ -424,21 +378,9 @@ export class KijukuDB {
     key: string,
     selector: BackupSelector = BackupSelector.latest()
   ): MediaAttribute | null {
-    if (!this.backupManager) {
-      throw new Error('Backup manager not configured');
-    }
-
-    const backupPath = this.backupManager.getBackupPath(selector);
-    if (!backupPath) {
-      throw new Error('No backup found matching selector');
-    }
-
-    const backupDb = new KijukuDB(backupPath, { readonly: true });
-    try {
-      return backupDb.getMediaAttribute(mediaId, key);
-    } finally {
-      backupDb.close();
-    }
+    return this.withBackupDb(selector, (db) =>
+      db.getMediaAttribute(mediaId, key)
+    );
   }
 
   /**
@@ -448,20 +390,8 @@ export class KijukuDB {
     mediaId: number,
     selector: BackupSelector = BackupSelector.latest()
   ): MediaAttribute[] {
-    if (!this.backupManager) {
-      throw new Error('Backup manager not configured');
-    }
-
-    const backupPath = this.backupManager.getBackupPath(selector);
-    if (!backupPath) {
-      throw new Error('No backup found matching selector');
-    }
-
-    const backupDb = new KijukuDB(backupPath, { readonly: true });
-    try {
-      return backupDb.getMediaAttributes(mediaId);
-    } finally {
-      backupDb.close();
-    }
+    return this.withBackupDb(selector, (db) =>
+      db.getMediaAttributes(mediaId)
+    );
   }
 }

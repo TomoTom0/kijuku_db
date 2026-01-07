@@ -268,12 +268,8 @@ impl KijukuDB {
 
     // ========== バックアップからの取得メソッド ==========
 
-    /// バックアップからIDでメディアを取得
-    pub fn get_media_from_backup(
-        &self,
-        id: i64,
-        selector: &BackupSelector,
-    ) -> Result<Option<Media>> {
+    /// バックアップDBを読み取り専用で開くヘルパーメソッド
+    fn get_backup_db(&self, selector: &BackupSelector) -> Result<KijukuDB> {
         let backup_path = self
             .backup_manager
             .as_ref()
@@ -281,7 +277,19 @@ impl KijukuDB {
             .get_backup_path(selector)?
             .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
 
-        let backup_db = KijukuDB::open(&backup_path)?;
+        KijukuDB::open_with_options(&backup_path, DBOptions {
+            readonly: true,
+            ..Default::default()
+        })
+    }
+
+    /// バックアップからIDでメディアを取得
+    pub fn get_media_from_backup(
+        &self,
+        id: i64,
+        selector: &BackupSelector,
+    ) -> Result<Option<Media>> {
+        let backup_db = self.get_backup_db(selector)?;
         Ok(backup_db.get_media(id))
     }
 
@@ -292,14 +300,7 @@ impl KijukuDB {
         options: Option<&QueryOptions>,
         selector: &BackupSelector,
     ) -> Result<Vec<Media>> {
-        let backup_path = self
-            .backup_manager
-            .as_ref()
-            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?
-            .get_backup_path(selector)?
-            .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
-
-        let backup_db = KijukuDB::open(&backup_path)?;
+        let backup_db = self.get_backup_db(selector)?;
         backup_db.find_media(filter, options)
     }
 
@@ -309,27 +310,13 @@ impl KijukuDB {
         name: &str,
         selector: &BackupSelector,
     ) -> Result<Option<Tag>> {
-        let backup_path = self
-            .backup_manager
-            .as_ref()
-            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?
-            .get_backup_path(selector)?
-            .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
-
-        let backup_db = KijukuDB::open(&backup_path)?;
+        let backup_db = self.get_backup_db(selector)?;
         Ok(backup_db.get_tag_by_name(name))
     }
 
     /// バックアップから全てのタグを取得
     pub fn get_all_tags_from_backup(&self, selector: &BackupSelector) -> Result<Vec<Tag>> {
-        let backup_path = self
-            .backup_manager
-            .as_ref()
-            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?
-            .get_backup_path(selector)?
-            .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
-
-        let backup_db = KijukuDB::open(&backup_path)?;
+        let backup_db = self.get_backup_db(selector)?;
         backup_db.get_all_tags()
     }
 
@@ -339,14 +326,7 @@ impl KijukuDB {
         media_id: i64,
         selector: &BackupSelector,
     ) -> Result<Vec<Tag>> {
-        let backup_path = self
-            .backup_manager
-            .as_ref()
-            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?
-            .get_backup_path(selector)?
-            .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
-
-        let backup_db = KijukuDB::open(&backup_path)?;
+        let backup_db = self.get_backup_db(selector)?;
         backup_db.get_media_tags(media_id)
     }
 
@@ -357,14 +337,7 @@ impl KijukuDB {
         key: &str,
         selector: &BackupSelector,
     ) -> Result<Option<MediaAttribute>> {
-        let backup_path = self
-            .backup_manager
-            .as_ref()
-            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?
-            .get_backup_path(selector)?
-            .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
-
-        let backup_db = KijukuDB::open(&backup_path)?;
+        let backup_db = self.get_backup_db(selector)?;
         backup_db.get_media_attribute(media_id, key)
     }
 
@@ -374,14 +347,7 @@ impl KijukuDB {
         media_id: i64,
         selector: &BackupSelector,
     ) -> Result<Vec<MediaAttribute>> {
-        let backup_path = self
-            .backup_manager
-            .as_ref()
-            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?
-            .get_backup_path(selector)?
-            .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
-
-        let backup_db = KijukuDB::open(&backup_path)?;
+        let backup_db = self.get_backup_db(selector)?;
         backup_db.get_media_attributes(media_id)
     }
 }
