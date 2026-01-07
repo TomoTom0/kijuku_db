@@ -137,11 +137,45 @@ impl SortOrder {
     }
 }
 
+/// メディア更新時の入力型（部分更新用）
+///
+/// 全てのフィールドがOptionであり、指定されたフィールドのみ更新されます。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MediaUpdateInput {
+    pub title: Option<String>,
+    pub media_type: Option<MediaType>,
+    pub title_id: Option<String>,
+    pub path: Option<String>,
+    pub thumbnail_path: Option<String>,
+    pub artist: Option<String>,
+    pub artist_id: Option<String>,
+    pub description: Option<String>,
+    pub file_size: Option<i64>,
+    pub duration_sec: Option<i32>,
+    pub page_count: Option<i32>,
+    pub series: Option<String>,
+    pub volume_text: Option<String>,
+    pub volume_title: Option<String>,
+    pub magazine: Option<String>,
+    pub magazine_id: Option<String>,
+    pub language: Option<String>,
+    pub source: Option<String>,
+    pub external_id: Option<String>,
+    pub artist_en: Option<String>,
+    pub title_en: Option<String>,
+    pub chapters: Option<String>,
+    pub extension: Option<String>,
+    pub flag_exist: Option<bool>,
+    pub title_pron: Option<String>,
+    pub artist_pron: Option<String>,
+    pub series_pron: Option<String>,
+}
+
 /// 一括更新時の個別アイテム
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BulkUpdateItem {
     pub id: i64,
-    pub data: MediaInput,
+    pub data: MediaUpdateInput,
 }
 
 /// クエリオプション（ソート、ページネーション）

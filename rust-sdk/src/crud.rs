@@ -1,5 +1,5 @@
 use crate::error::{KijukuError, Result};
-use crate::types::{Media, MediaInput, MediaType};
+use crate::types::{Media, MediaInput, MediaType, MediaUpdateInput};
 use rusqlite::{params, Connection, Row};
 
 /// volume_textからvolume_numberを計算
@@ -126,8 +126,11 @@ pub fn get_media(conn: &Connection, id: i64) -> Option<Media> {
         .ok()
 }
 
-/// メディアを更新
-pub fn update_media(conn: &Connection, id: i64, input: &MediaInput) -> Result<()> {
+/// メディアを更新（部分更新）
+///
+/// 指定されたフィールドのみ更新します。
+/// 更新するフィールドが1つも指定されていない場合はエラーを返します。
+pub fn update_media(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Result<()> {
     // メディアが存在するか確認
     if get_media(conn, id).is_none() {
         return Err(KijukuError::NotFound(format!(
@@ -137,10 +140,15 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaInput) -> Result<()
     }
 
     // 動的にUPDATE文を構築（指定されたフィールドのみ更新）
-    let mut update_fields = vec!["title = ?1".to_string()];
-    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(input.title.clone())];
-    let mut param_idx = 2;
+    let mut update_fields: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut param_idx = 1;
 
+    if let Some(ref val) = input.title {
+        update_fields.push(format!("title = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
     if let Some(ref val) = input.title_id {
         update_fields.push(format!("title_id = ?{}", param_idx));
         params.push(Box::new(val.clone()));
@@ -151,10 +159,11 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaInput) -> Result<()
         params.push(Box::new(val.clone()));
         param_idx += 1;
     }
-    update_fields.push(format!("media_type = ?{}", param_idx));
-    params.push(Box::new(input.media_type.as_str().to_string()));
-    param_idx += 1;
-    
+    if let Some(ref val) = input.media_type {
+        update_fields.push(format!("media_type = ?{}", param_idx));
+        params.push(Box::new(val.as_str().to_string()));
+        param_idx += 1;
+    }
     if let Some(ref val) = input.thumbnail_path {
         update_fields.push(format!("thumbnail_path = ?{}", param_idx));
         params.push(Box::new(val.clone()));
@@ -275,6 +284,13 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaInput) -> Result<()
         param_idx += 1;
     }
 
+    // 更新するフィールドがない場合はエラー
+    if update_fields.is_empty() {
+        return Err(KijukuError::Validation(
+            "更新するフィールドが指定されていません".to_string(),
+        ));
+    }
+
     let sql = format!(
         "UPDATE media SET {} WHERE id = ?{}",
         update_fields.join(", "),
@@ -336,14 +352,14 @@ mod tests {
         let input = MediaInput {
             title: "元のタイトル".to_string(),
             media_type: MediaType::Comic,
+            artist: Some("元の作者".to_string()),
             ..Default::default()
         };
 
         let media = create_media(&conn, &input).unwrap();
 
-        let update_input = MediaInput {
-            title: "更新されたタイトル".to_string(),
-            media_type: MediaType::Comic,
+        // descriptionのみ更新（titleやartistは変更されない）
+        let update_input = crate::types::MediaUpdateInput {
             description: Some("説明追加".to_string()),
             ..Default::default()
         };
@@ -351,8 +367,62 @@ mod tests {
         update_media(&conn, media.id, &update_input).unwrap();
 
         let updated = get_media(&conn, media.id).unwrap();
-        assert_eq!(updated.title, "更新されたタイトル");
+        // titleは元のまま
+        assert_eq!(updated.title, "元のタイトル");
+        // artistも元のまま
+        assert_eq!(updated.artist, Some("元の作者".to_string()));
+        // descriptionのみ更新された
         assert_eq!(updated.description, Some("説明追加".to_string()));
+    }
+
+    #[test]
+    fn test_update_media_partial() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "テストタイトル".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("作者A".to_string()),
+            series: Some("シリーズA".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+
+        // titleのみ更新
+        let update_input = crate::types::MediaUpdateInput {
+            title: Some("新しいタイトル".to_string()),
+            ..Default::default()
+        };
+
+        update_media(&conn, media.id, &update_input).unwrap();
+
+        let updated = get_media(&conn, media.id).unwrap();
+        assert_eq!(updated.title, "新しいタイトル");
+        // 他のフィールドは変更されていない
+        assert_eq!(updated.artist, Some("作者A".to_string()));
+        assert_eq!(updated.series, Some("シリーズA".to_string()));
+        assert_eq!(updated.media_type, MediaType::Comic);
+    }
+
+    #[test]
+    fn test_update_media_empty_input() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+
+        // 空の更新はエラーになる
+        let update_input = crate::types::MediaUpdateInput::default();
+        let result = update_media(&conn, media.id, &update_input);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -379,6 +449,131 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         let result = delete_media(&conn, 9999);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_volume_number_auto_calculation_integer() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // 整数のvolume_textはvolume_numberに変換される
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some("5".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, Some(5));
+        assert_eq!(media.volume_text, Some("5".to_string()));
+    }
+
+    #[test]
+    fn test_volume_number_auto_calculation_non_integer() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // 非整数のvolume_textはvolume_numberがNone
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some("1.5".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, None);
+        assert_eq!(media.volume_text, Some("1.5".to_string()));
+    }
+
+    #[test]
+    fn test_volume_number_auto_calculation_text() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // テキストのvolume_textはvolume_numberがNone
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some("上巻".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, None);
+        assert_eq!(media.volume_text, Some("上巻".to_string()));
+    }
+
+    #[test]
+    fn test_volume_number_auto_calculation_with_whitespace() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // 前後にスペースがある整数はトリムされてvolume_numberに変換
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some(" 10 ".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, Some(10));
+    }
+
+    #[test]
+    fn test_volume_number_update_recalculation() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some("1".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, Some(1));
+
+        // volume_textを更新するとvolume_numberも再計算される
+        let update_input = crate::types::MediaUpdateInput {
+            volume_text: Some("2".to_string()),
+            ..Default::default()
+        };
+        update_media(&conn, media.id, &update_input).unwrap();
+
+        let updated = get_media(&conn, media.id).unwrap();
+        assert_eq!(updated.volume_number, Some(2));
+        assert_eq!(updated.volume_text, Some("2".to_string()));
+    }
+
+    #[test]
+    fn test_duplicate_path_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let path = "/path/to/media.cbz";
+
+        // 1つ目のメディアを作成
+        let input1 = MediaInput {
+            title: "メディア1".to_string(),
+            media_type: MediaType::Comic,
+            path: Some(path.to_string()),
+            ..Default::default()
+        };
+        create_media(&conn, &input1).unwrap();
+
+        // 同じpathで2つ目のメディアを作成しようとするとエラー
+        let input2 = MediaInput {
+            title: "メディア2".to_string(),
+            media_type: MediaType::Comic,
+            path: Some(path.to_string()),
+            ..Default::default()
+        };
+        let result = create_media(&conn, &input2);
         assert!(result.is_err());
     }
 }

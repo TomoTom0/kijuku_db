@@ -164,8 +164,10 @@ impl KijukuDB {
         crud::get_media(&self.conn, id)
     }
 
-    /// メディアを更新
-    pub fn update_media(&self, id: i64, input: &MediaInput) -> Result<()> {
+    /// メディアを更新（部分更新）
+    ///
+    /// 指定されたフィールドのみ更新します。
+    pub fn update_media(&self, id: i64, input: &MediaUpdateInput) -> Result<()> {
         crud::update_media(&self.conn, id, input)
     }
 
