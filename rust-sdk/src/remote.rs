@@ -1,4 +1,4 @@
-use crate::{KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, QueryOptions, Result, Tag};
+use crate::{KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions, Result, Tag};
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
 use ssh2_config::{ParseRule, SshConfig};
@@ -264,8 +264,10 @@ impl RemoteKijukuDB {
         self.check_response(response)
     }
 
-    /// メディアを更新
-    pub fn update_media(&self, id: i64, data: &MediaInput) -> Result<()> {
+    /// メディアを更新（部分更新）
+    ///
+    /// 指定されたフィールドのみ更新します。
+    pub fn update_media(&self, id: i64, data: &MediaUpdateInput) -> Result<()> {
         let response = self.execute_remote_command(CommandRequest {
             operation: "updateMedia".to_string(),
             params: serde_json::json!({ "id": id, "data": data }),

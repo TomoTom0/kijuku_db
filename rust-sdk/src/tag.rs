@@ -156,4 +156,63 @@ mod tests {
         let media_tags = get_media_tags(&conn, media.id).unwrap();
         assert_eq!(media_tags.len(), 0);
     }
+
+    #[test]
+    fn test_duplicate_tag_name_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // 1つ目のタグを作成
+        create_tag(&conn, "重複タグ").unwrap();
+
+        // 同じ名前で2つ目のタグを作成しようとするとエラー
+        let result = create_tag(&conn, "重複タグ");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_duplicate_tag_to_media_ignored() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let media = create_media(
+            &conn,
+            &MediaInput {
+                title: "テスト".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let tag = create_tag(&conn, "テストタグ").unwrap();
+
+        // 1回目の追加
+        add_tag_to_media(&conn, media.id, tag.id).unwrap();
+
+        // 2回目の追加（INSERT OR IGNOREなのでエラーにならない）
+        add_tag_to_media(&conn, media.id, tag.id).unwrap();
+
+        // タグは1つだけ
+        let media_tags = get_media_tags(&conn, media.id).unwrap();
+        assert_eq!(media_tags.len(), 1);
+    }
+
+    #[test]
+    fn test_get_all_tags_sorted_by_name() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // 順番をバラバラに作成
+        create_tag(&conn, "タグC").unwrap();
+        create_tag(&conn, "タグA").unwrap();
+        create_tag(&conn, "タグB").unwrap();
+
+        let tags = get_all_tags(&conn).unwrap();
+        assert_eq!(tags.len(), 3);
+        // 名前順にソートされている
+        assert_eq!(tags[0].name, "タグA");
+        assert_eq!(tags[1].name, "タグB");
+        assert_eq!(tags[2].name, "タグC");
+    }
 }

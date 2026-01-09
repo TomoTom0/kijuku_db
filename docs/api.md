@@ -404,6 +404,88 @@ console.log(`Created ${created.length} media`);
 
 ---
 
+#### `bulkDeleteMedia(ids: number[]): void`
+
+複数のメディアを一括削除します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `ids` | `number[]` | ✓ | 削除対象のメディアIDの配列 |
+
+**戻り値:** なし
+
+**動作:**
+- トランザクション内で全ての削除処理を実行
+- 1件でもエラーがあれば全てロールバック
+- 関連するタグ・属性も自動削除（外部キー制約）
+
+**使用例:**
+
+```typescript
+// 複数のメディアを一括削除
+db.bulkDeleteMedia([1, 2, 3]);
+
+// 検索結果を一括削除
+const oldMedia = db.findMedia({ source: 'deprecated' });
+db.bulkDeleteMedia(oldMedia.map(m => m.id));
+```
+
+**エラー:**
+- 存在しないIDが含まれている場合、エラーが発生してロールバック
+
+---
+
+#### `bulkUpdateMedia(updates: BulkUpdateItem[]): void`
+
+複数のメディアを一括更新します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `updates` | `BulkUpdateItem[]` | ✓ | 更新情報の配列 |
+
+**BulkUpdateItem:**
+
+| プロパティ | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| `id` | `number` | ✓ | 更新対象のメディアID |
+| `data` | `Partial<MediaInput>` | ✓ | 更新する項目 |
+
+**戻り値:** なし
+
+**動作:**
+- トランザクション内で全ての更新処理を実行
+- 1件でもエラーがあれば全てロールバック
+
+**使用例:**
+
+```typescript
+// 複数のメディアを一括更新
+db.bulkUpdateMedia([
+  { id: 1, data: { artist: '新しい作者名' } },
+  { id: 2, data: { series: '新しいシリーズ名', volume_text: '1' } },
+  { id: 3, data: { flag_exist: false } },
+]);
+
+// 検索結果を一括更新
+const comics = db.findMedia({ media_type: 'comic' });
+db.bulkUpdateMedia(
+  comics.map(m => ({
+    id: m.id,
+    data: { source: 'migrated' }
+  }))
+);
+```
+
+**エラー:**
+- 存在しないIDが含まれている場合、エラーが発生してロールバック
+- `updateMedia()`と同じエラーが発生する可能性あり
+
+---
+
 ### タグ操作
 
 #### `createTag(name: string): Tag`
@@ -964,6 +1046,19 @@ interface QueryOptions {
 ```
 
 ソート・ページネーション設定。
+
+---
+
+### BulkUpdateItem
+
+```typescript
+interface BulkUpdateItem {
+  id: number;
+  data: Partial<MediaInput>;
+}
+```
+
+一括更新時の個別アイテム。
 
 ---
 

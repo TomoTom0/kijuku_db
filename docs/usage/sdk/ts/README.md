@@ -282,9 +282,11 @@ const db = new KijukuDB(process.env.DATABASE_PATH || './data/kijuku.db');
 
 ## パフォーマンス最適化
 
-### バルク挿入
+### バルク操作
 
-大量のメディアを登録する場合は、`bulkCreateMedia`を使用してください：
+大量のメディアを一括で操作する場合は、バルク操作メソッドを使用してください。
+
+#### 一括作成
 
 ```typescript
 const mediaList = [
@@ -295,6 +297,37 @@ const mediaList = [
 
 const createdMedia = db.bulkCreateMedia(mediaList);
 console.log(`${createdMedia.length}件のメディアを作成しました`);
+```
+
+#### 一括削除
+
+```typescript
+// 複数のメディアを一括削除
+db.bulkDeleteMedia([1, 2, 3]);
+
+// 検索結果を一括削除
+const oldMedia = db.findMedia({ source: 'deprecated' });
+db.bulkDeleteMedia(oldMedia.map(m => m.id));
+```
+
+#### 一括更新
+
+```typescript
+// 複数のメディアを一括更新
+db.bulkUpdateMedia([
+  { id: 1, data: { artist: '新しい作者名' } },
+  { id: 2, data: { series: '新しいシリーズ名' } },
+  { id: 3, data: { flag_exist: false } },
+]);
+
+// 検索結果を一括更新
+const comics = db.findMedia({ media_type: 'comic' });
+db.bulkUpdateMedia(
+  comics.map(m => ({
+    id: m.id,
+    data: { source: 'migrated' }
+  }))
+);
 ```
 
 ### トランザクションの活用
