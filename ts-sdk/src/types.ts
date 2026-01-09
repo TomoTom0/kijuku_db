@@ -92,6 +92,12 @@ export interface MediaFilter {
   series?: string;
   source?: string;
   tag_ids?: number[];
+  flag_exist?: boolean;
+  language?: string;
+  magazine?: string;
+  magazine_id?: string;
+  extension?: string;
+  external_id?: string;
 }
 
 /**

@@ -118,6 +118,12 @@ pub struct MediaFilter {
     pub series: Option<String>,
     pub source: Option<String>,
     pub tag_ids: Option<Vec<i64>>,
+    pub flag_exist: Option<bool>,
+    pub language: Option<String>,
+    pub magazine: Option<String>,
+    pub magazine_id: Option<String>,
+    pub extension: Option<String>,
+    pub external_id: Option<String>,
 }
 
 /// ソート順序
