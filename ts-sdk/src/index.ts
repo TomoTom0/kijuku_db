@@ -10,6 +10,7 @@ import type {
   Tag,
   DBOptions,
   MediaAttribute,
+  BulkUpdateItem,
 } from './types.js';
 import * as migration from './migration.js';
 import * as crud from './crud.js';
@@ -17,12 +18,13 @@ import * as tag from './tag.js';
 import * as search from './search.js';
 import * as bulk from './bulk.js';
 import * as attribute from './attribute.js';
-import { BackupManager } from './backup.js';
+import { BackupManager, BackupSelector } from './backup.js';
 
 export * from './types.js';
 export * from './errors.js';
 export * from './remote.js';
-export { BackupManager } from './backup.js';
+export { BackupManager, BackupSelector } from './backup.js';
+export type { BackupInfo, BackupSelector as BackupSelectorType } from './backup.js';
 export { startServer } from './server/index.js';
 export { AuthManager, generatePassword } from './server/auth.js';
 
@@ -46,7 +48,7 @@ export class KijukuDB {
 
     // バックアップマネージャーの初期化
     if (options?.backup) {
-      this.backupManager = new BackupManager(this.db, options.backup);
+      this.backupManager = new BackupManager(this.db, dbPath, options.backup);
     }
   }
 
@@ -132,6 +134,26 @@ export class KijukuDB {
       console.error('Backup operation failed:', err);
     });
     return result;
+  }
+
+  /**
+   * 複数のメディアを一括削除
+   */
+  bulkDeleteMedia(ids: number[]): void {
+    bulk.bulkDeleteMedia(this.db, ids);
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
+  }
+
+  /**
+   * 複数のメディアを一括更新
+   */
+  bulkUpdateMedia(updates: BulkUpdateItem[]): void {
+    bulk.bulkUpdateMedia(this.db, updates);
+    this.backupManager?.recordOperation().catch((err) => {
+      console.error('Backup operation failed:', err);
+    });
   }
 
   /**
@@ -272,5 +294,104 @@ export class KijukuDB {
    */
   close(): void {
     this.db.close();
+  }
+
+  // ========== バックアップからの取得メソッド ==========
+
+  /**
+   * バックアップDBに対して処理を実行するヘルパーメソッド
+   */
+  private withBackupDb<T>(
+    selector: BackupSelector,
+    fn: (db: KijukuDB) => T
+  ): T {
+    if (!this.backupManager) {
+      throw new Error('Backup manager not configured');
+    }
+
+    const backupPath = this.backupManager.getBackupPath(selector);
+    if (!backupPath) {
+      throw new Error('No backup found matching selector');
+    }
+
+    const backupDb = new KijukuDB(backupPath, { readonly: true });
+    try {
+      return fn(backupDb);
+    } finally {
+      backupDb.close();
+    }
+  }
+
+  /**
+   * バックアップからIDでメディアを取得
+   */
+  getMediaFromBackup(
+    id: number,
+    selector: BackupSelector = BackupSelector.latest()
+  ): Media | null {
+    return this.withBackupDb(selector, (db) => db.getMedia(id));
+  }
+
+  /**
+   * バックアップからメディアを検索
+   */
+  findMediaFromBackup(
+    filter: MediaFilter,
+    options?: QueryOptions,
+    selector: BackupSelector = BackupSelector.latest()
+  ): Media[] {
+    return this.withBackupDb(selector, (db) => db.findMedia(filter, options));
+  }
+
+  /**
+   * バックアップからタグ名でタグを取得
+   */
+  getTagByNameFromBackup(
+    name: string,
+    selector: BackupSelector = BackupSelector.latest()
+  ): Tag | null {
+    return this.withBackupDb(selector, (db) => db.getTagByName(name));
+  }
+
+  /**
+   * バックアップから全てのタグを取得
+   */
+  getAllTagsFromBackup(selector: BackupSelector = BackupSelector.latest()): Tag[] {
+    return this.withBackupDb(selector, (db) => db.getAllTags());
+  }
+
+  /**
+   * バックアップからメディアに関連付けられたタグを取得
+   */
+  getMediaTagsFromBackup(
+    mediaId: number,
+    selector: BackupSelector = BackupSelector.latest()
+  ): Tag[] {
+    return this.withBackupDb(selector, (db) => db.getMediaTags(mediaId));
+  }
+
+  /**
+   * バックアップからメディアの属性を取得
+   */
+  getMediaAttributeFromBackup(
+    mediaId: number,
+    key: string,
+    selector: BackupSelector = BackupSelector.latest()
+  ): MediaAttribute | null {
+    return this.withBackupDb(selector, (db) =>
+      db.getMediaAttribute(mediaId, key)
+    );
+  }
+
+  /**
+   * バックアップからメディアの全ての属性を取得
+   */
+  getMediaAttributesFromBackup(
+    mediaId: number,
+    selector: BackupSelector = BackupSelector.latest()
+  ): MediaAttribute[] {
+    return this.withBackupDb(selector, (db) =>
+      db.getMediaAttributes(mediaId)
+    );
   }
 }

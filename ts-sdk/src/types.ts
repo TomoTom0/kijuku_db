@@ -92,6 +92,12 @@ export interface MediaFilter {
   series?: string;
   source?: string;
   tag_ids?: number[];
+  flag_exist?: boolean;
+  language?: string;
+  magazine?: string;
+  magazine_id?: string;
+  extension?: string;
+  external_id?: string;
 }
 
 /**
@@ -102,6 +108,14 @@ export interface QueryOptions {
   order?: 'ASC' | 'DESC';
   limit?: number;
   offset?: number;
+}
+
+/**
+ * 一括更新時の個別アイテム
+ */
+export interface BulkUpdateItem {
+  id: number;
+  data: Partial<MediaInput>;
 }
 
 /**
@@ -116,7 +130,11 @@ export interface Tag {
  * バックアップ設定オプション
  */
 export interface BackupOptions {
-  backupDir: string;
+  /**
+   * バックアップファイルの保存先ディレクトリ
+   * 省略時はdbPathの親ディレクトリに"backup"フォルダを作成
+   */
+  backupDir?: string;
   intervalMs?: number;
   enabled?: boolean;
   onProgress?: (info: { totalPages: number; remainingPages: number }) => void;

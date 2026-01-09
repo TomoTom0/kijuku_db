@@ -16,7 +16,7 @@ fn test_backup_integration_with_kijukudb() {
         readonly: false,
         verbose: false,
         backup: Some(BackupOptions {
-            backup_dir: backup_dir.to_string_lossy().to_string(),
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
             interval_ms: Some(1000), // 1秒間隔
             enabled: Some(true),
             ..Default::default()
@@ -51,7 +51,7 @@ fn test_auto_backup_with_record_operation() {
 
     // 短い間隔でバックアップを設定
     let options = BackupOptions {
-        backup_dir: backup_dir.to_string_lossy().to_string(),
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
         interval_ms: Some(100), // 100ミリ秒間隔
         enabled: Some(true),
             ..Default::default()
@@ -93,7 +93,7 @@ fn test_manual_backup() {
     let backup_dir = temp_dir.path().join("backups");
 
     let options = BackupOptions {
-        backup_dir: backup_dir.to_string_lossy().to_string(),
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
         interval_ms: Some(3600000), // 1時間
         enabled: Some(true),
             ..Default::default()
@@ -130,7 +130,7 @@ fn test_backup_list() {
     let backup_dir = temp_dir.path().join("backups");
 
     let options = BackupOptions {
-        backup_dir: backup_dir.to_string_lossy().to_string(),
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
         interval_ms: Some(1000),
         enabled: Some(true),
             ..Default::default()
@@ -156,8 +156,9 @@ fn test_backup_list() {
     assert_eq!(backups.len(), 1);
 
     // バックアップ情報を確認
+    // 新しいファイル名形式: {db_stem}.backup-{yyyymmddhhmmss-mmm}.db
     let backup = &backups[0];
-    assert!(backup.name.starts_with("kijuku-backup-"));
+    assert!(backup.name.starts_with("test.backup-"));
     assert!(backup.name.ends_with(".db"));
     assert!(backup.path.exists());
 }
@@ -169,7 +170,7 @@ fn test_backup_timestamps() {
     let backup_dir = temp_dir.path().join("backups");
 
     let options = BackupOptions {
-        backup_dir: backup_dir.to_string_lossy().to_string(),
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
         interval_ms: Some(1000),
         enabled: Some(true),
             ..Default::default()
@@ -208,7 +209,7 @@ fn test_backup_disabled() {
     let backup_dir = temp_dir.path().join("backups");
 
     let options = BackupOptions {
-        backup_dir: backup_dir.to_string_lossy().to_string(),
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
         interval_ms: Some(1000),
         enabled: Some(false), // 無効化
         ..Default::default()
@@ -256,7 +257,7 @@ fn test_backup_with_actual_database() {
         readonly: false,
         verbose: false,
         backup: Some(BackupOptions {
-            backup_dir: backup_dir.to_string_lossy().to_string(),
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
             interval_ms: Some(1000),
             enabled: Some(true),
             ..Default::default()

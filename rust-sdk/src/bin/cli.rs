@@ -6,7 +6,7 @@
 use clap::Parser;
 use include_dir::{include_dir, Dir};
 use kijuku_db::{
-    AttributeValueType, KijukuDB, MediaFilter, MediaInput, QueryOptions,
+    AttributeValueType, BulkUpdateItem, KijukuDB, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -58,11 +58,11 @@ struct GetMediaParams {
     id: i64,
 }
 
-/// メディア更新のパラメータ
+/// メディア更新のパラメータ（部分更新）
 #[derive(Debug, Deserialize)]
 struct UpdateMediaParams {
     id: i64,
-    data: MediaInput,
+    data: MediaUpdateInput,
 }
 
 /// メディア削除のパラメータ
@@ -82,6 +82,18 @@ struct FindMediaParams {
 #[derive(Debug, Deserialize)]
 struct BulkCreateMediaParams {
     data_list: Vec<MediaInput>,
+}
+
+/// 一括削除のパラメータ
+#[derive(Debug, Deserialize)]
+struct BulkDeleteMediaParams {
+    ids: Vec<i64>,
+}
+
+/// 一括更新のパラメータ
+#[derive(Debug, Deserialize)]
+struct BulkUpdateMediaParams {
+    updates: Vec<BulkUpdateItem>,
 }
 
 /// タグ作成のパラメータ
@@ -325,6 +337,8 @@ fn execute_command(db: &KijukuDB, request: &CommandRequest) -> CommandResponse {
         "deleteMedia" => handle_delete_media(db, &request.params),
         "findMedia" => handle_find_media(db, &request.params),
         "bulkCreateMedia" => handle_bulk_create_media(db, &request.params),
+        "bulkDeleteMedia" => handle_bulk_delete_media(db, &request.params),
+        "bulkUpdateMedia" => handle_bulk_update_media(db, &request.params),
         "createTag" => handle_create_tag(db, &request.params),
         "getTagByName" => handle_get_tag_by_name(db, &request.params),
         "getAllTags" => handle_get_all_tags(db),
@@ -460,6 +474,30 @@ fn handle_bulk_create_media(db: &KijukuDB, params: &serde_json::Value) -> Comman
             CommandResponse::success(data)
         }
         Err(e) => CommandResponse::error(format!("一括作成エラー: {}", e)),
+    }
+}
+
+fn handle_bulk_delete_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: BulkDeleteMediaParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+
+    match db.bulk_delete_media(&params.ids) {
+        Ok(_) => CommandResponse::success(serde_json::json!({"deleted": true})),
+        Err(e) => CommandResponse::error(format!("一括削除エラー: {}", e)),
+    }
+}
+
+fn handle_bulk_update_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: BulkUpdateMediaParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+
+    match db.bulk_update_media(&params.updates) {
+        Ok(_) => CommandResponse::success(serde_json::json!({"updated": true})),
+        Err(e) => CommandResponse::error(format!("一括更新エラー: {}", e)),
     }
 }
 
