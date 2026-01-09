@@ -43,9 +43,10 @@ fn test_full_workflow() {
     assert_eq!(fetched.artist, Some("作者A".to_string()));
 
     // メディア更新（部分更新: 指定したフィールドのみ更新）
+    // Option<Option<T>>パターン: Some(Some(val))で値を設定
     db.update_media(media1.id, &MediaUpdateInput {
         title: Some("更新されたタイトル".to_string()),
-        description: Some("説明追加".to_string()),
+        description: Some(Some("説明追加".to_string())),
         ..Default::default()
     }).unwrap();
 

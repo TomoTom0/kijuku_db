@@ -144,18 +144,9 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Res
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let mut param_idx = 1;
 
+    // NOT NULLフィールド: titleとmedia_type
     if let Some(ref val) = input.title {
         update_fields.push(format!("title = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref val) = input.title_id {
-        update_fields.push(format!("title_id = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref val) = input.path {
-        update_fields.push(format!("path = ?{}", param_idx));
         params.push(Box::new(val.clone()));
         param_idx += 1;
     }
@@ -164,123 +155,139 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Res
         params.push(Box::new(val.as_str().to_string()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.thumbnail_path {
+
+    // NULLableフィールド: Option<Option<T>>パターン
+    // Some(Some(val)) -> 値を設定, Some(None) -> NULLを設定, None -> 更新しない
+    if let Some(ref opt_val) = input.title_id {
+        update_fields.push(format!("title_id = ?{}", param_idx));
+        params.push(Box::new(opt_val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref opt_val) = input.path {
+        update_fields.push(format!("path = ?{}", param_idx));
+        params.push(Box::new(opt_val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref opt_val) = input.thumbnail_path {
         update_fields.push(format!("thumbnail_path = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.artist {
+    if let Some(ref opt_val) = input.artist {
         update_fields.push(format!("artist = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.artist_id {
+    if let Some(ref opt_val) = input.artist_id {
         update_fields.push(format!("artist_id = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.description {
+    if let Some(ref opt_val) = input.description {
         update_fields.push(format!("description = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(val) = input.file_size {
+    if let Some(ref opt_val) = input.file_size {
         update_fields.push(format!("file_size = ?{}", param_idx));
-        params.push(Box::new(val));
+        params.push(Box::new(*opt_val));
         param_idx += 1;
     }
-    if let Some(val) = input.duration_sec {
+    if let Some(ref opt_val) = input.duration_sec {
         update_fields.push(format!("duration_sec = ?{}", param_idx));
-        params.push(Box::new(val));
+        params.push(Box::new(*opt_val));
         param_idx += 1;
     }
-    if let Some(val) = input.page_count {
+    if let Some(ref opt_val) = input.page_count {
         update_fields.push(format!("page_count = ?{}", param_idx));
-        params.push(Box::new(val));
+        params.push(Box::new(*opt_val));
         param_idx += 1;
     }
-    if let Some(ref val) = input.series {
+    if let Some(ref opt_val) = input.series {
         update_fields.push(format!("series = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.volume_text {
-        let volume_number = calculate_volume_number(Some(val.as_str()));
+    if let Some(ref opt_val) = input.volume_text {
+        // volume_textが更新される場合、volume_numberも再計算
+        let volume_number = opt_val.as_ref().and_then(|v| calculate_volume_number(Some(v.as_str())));
         update_fields.push(format!("volume_text = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
         update_fields.push(format!("volume_number = ?{}", param_idx));
         params.push(Box::new(volume_number));
         param_idx += 1;
     }
-    if let Some(ref val) = input.volume_title {
+    if let Some(ref opt_val) = input.volume_title {
         update_fields.push(format!("volume_title = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.magazine {
+    if let Some(ref opt_val) = input.magazine {
         update_fields.push(format!("magazine = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.magazine_id {
+    if let Some(ref opt_val) = input.magazine_id {
         update_fields.push(format!("magazine_id = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.language {
+    if let Some(ref opt_val) = input.language {
         update_fields.push(format!("language = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.source {
+    if let Some(ref opt_val) = input.source {
         update_fields.push(format!("source = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.external_id {
+    if let Some(ref opt_val) = input.external_id {
         update_fields.push(format!("external_id = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.artist_en {
+    if let Some(ref opt_val) = input.artist_en {
         update_fields.push(format!("artist_en = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.title_en {
+    if let Some(ref opt_val) = input.title_en {
         update_fields.push(format!("title_en = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.chapters {
+    if let Some(ref opt_val) = input.chapters {
         update_fields.push(format!("chapters = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.extension {
+    if let Some(ref opt_val) = input.extension {
         update_fields.push(format!("extension = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
+    // NOT NULLフィールド: flag_exist
     if let Some(val) = input.flag_exist {
         update_fields.push(format!("flag_exist = ?{}", param_idx));
         params.push(Box::new(val));
         param_idx += 1;
     }
-    if let Some(ref val) = input.title_pron {
+    // NULLableフィールド: pron系
+    if let Some(ref opt_val) = input.title_pron {
         update_fields.push(format!("title_pron = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.artist_pron {
+    if let Some(ref opt_val) = input.artist_pron {
         update_fields.push(format!("artist_pron = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.series_pron {
+    if let Some(ref opt_val) = input.series_pron {
         update_fields.push(format!("series_pron = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
 
@@ -359,8 +366,9 @@ mod tests {
         let media = create_media(&conn, &input).unwrap();
 
         // descriptionのみ更新（titleやartistは変更されない）
+        // Option<Option<T>>: Some(Some(val)) で値を設定
         let update_input = crate::types::MediaUpdateInput {
-            description: Some("説明追加".to_string()),
+            description: Some(Some("説明追加".to_string())),
             ..Default::default()
         };
 
@@ -539,8 +547,9 @@ mod tests {
         assert_eq!(media.volume_number, Some(1));
 
         // volume_textを更新するとvolume_numberも再計算される
+        // Option<Option<T>>: Some(Some(val)) で値を設定
         let update_input = crate::types::MediaUpdateInput {
-            volume_text: Some("2".to_string()),
+            volume_text: Some(Some("2".to_string())),
             ..Default::default()
         };
         update_media(&conn, media.id, &update_input).unwrap();
@@ -548,6 +557,67 @@ mod tests {
         let updated = get_media(&conn, media.id).unwrap();
         assert_eq!(updated.volume_number, Some(2));
         assert_eq!(updated.volume_text, Some("2".to_string()));
+    }
+
+    #[test]
+    fn test_update_media_set_null() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // artistとdescriptionを持つメディアを作成
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("作者名".to_string()),
+            description: Some("説明文".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.artist, Some("作者名".to_string()));
+        assert_eq!(media.description, Some("説明文".to_string()));
+
+        // artistをNULLに設定（Some(None)）、descriptionは更新しない（None）
+        let update_input = crate::types::MediaUpdateInput {
+            artist: Some(None),  // NULLに設定
+            // description: None - 更新しない
+            ..Default::default()
+        };
+        update_media(&conn, media.id, &update_input).unwrap();
+
+        let updated = get_media(&conn, media.id).unwrap();
+        // artistがNULLになった
+        assert_eq!(updated.artist, None);
+        // descriptionは元のまま
+        assert_eq!(updated.description, Some("説明文".to_string()));
+    }
+
+    #[test]
+    fn test_update_media_volume_text_to_null() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some("5".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, Some(5));
+        assert_eq!(media.volume_text, Some("5".to_string()));
+
+        // volume_textをNULLに設定するとvolume_numberもNULLになる
+        let update_input = crate::types::MediaUpdateInput {
+            volume_text: Some(None),  // NULLに設定
+            ..Default::default()
+        };
+        update_media(&conn, media.id, &update_input).unwrap();
+
+        let updated = get_media(&conn, media.id).unwrap();
+        assert_eq!(updated.volume_number, None);
+        assert_eq!(updated.volume_text, None);
     }
 
     #[test]

@@ -178,12 +178,13 @@ mod tests {
         assert_eq!(results.len(), 2);
 
         // 一括更新（部分更新: 指定したフィールドのみ更新）
+        // Option<Option<T>>パターン: Some(Some(val))で値を設定
         let updates = vec![
             BulkUpdateItem {
                 id: results[0].id,
                 data: MediaUpdateInput {
                     title: Some("更新後メディア1".to_string()),
-                    artist: Some("アーティスト1".to_string()),
+                    artist: Some(Some("アーティスト1".to_string())),
                     ..Default::default()
                 },
             },
@@ -191,7 +192,7 @@ mod tests {
                 id: results[1].id,
                 data: MediaUpdateInput {
                     title: Some("更新後メディア2".to_string()),
-                    artist: Some("アーティスト2".to_string()),
+                    artist: Some(Some("アーティスト2".to_string())),
                     ..Default::default()
                 },
             },
