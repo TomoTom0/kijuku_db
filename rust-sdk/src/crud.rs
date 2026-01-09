@@ -1,5 +1,5 @@
 use crate::error::{KijukuError, Result};
-use crate::types::{Media, MediaInput, MediaType};
+use crate::types::{Media, MediaInput, MediaType, MediaUpdateInput};
 use rusqlite::{params, Connection, Row};
 
 /// volume_textからvolume_numberを計算
@@ -273,6 +273,184 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaInput) -> Result<()
         update_fields.push(format!("series_pron = ?{}", param_idx));
         params.push(Box::new(val.clone()));
         param_idx += 1;
+    }
+
+    let sql = format!(
+        "UPDATE media SET {} WHERE id = ?{}",
+        update_fields.join(", "),
+        param_idx
+    );
+    params.push(Box::new(id));
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    conn.execute(&sql, params_refs.as_slice())?;
+
+    Ok(())
+}
+
+/// メディアを部分更新（指定されたフィールドのみ更新）
+///
+/// MediaUpdateInputを使用して、指定されたフィールドのみを更新します。
+/// 更新するフィールドが1つも指定されていない場合はエラーを返します。
+pub fn update_media_partial(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Result<()> {
+    // メディアが存在するか確認
+    if get_media(conn, id).is_none() {
+        return Err(KijukuError::NotFound(format!(
+            "メディアが見つかりません: id={}",
+            id
+        )));
+    }
+
+    // 動的にUPDATE文を構築（指定されたフィールドのみ更新）
+    let mut update_fields: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut param_idx = 1;
+
+    if let Some(ref val) = input.title {
+        update_fields.push(format!("title = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.title_id {
+        update_fields.push(format!("title_id = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.path {
+        update_fields.push(format!("path = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.media_type {
+        update_fields.push(format!("media_type = ?{}", param_idx));
+        params.push(Box::new(val.as_str().to_string()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.thumbnail_path {
+        update_fields.push(format!("thumbnail_path = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.artist {
+        update_fields.push(format!("artist = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.artist_id {
+        update_fields.push(format!("artist_id = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.description {
+        update_fields.push(format!("description = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(val) = input.file_size {
+        update_fields.push(format!("file_size = ?{}", param_idx));
+        params.push(Box::new(val));
+        param_idx += 1;
+    }
+    if let Some(val) = input.duration_sec {
+        update_fields.push(format!("duration_sec = ?{}", param_idx));
+        params.push(Box::new(val));
+        param_idx += 1;
+    }
+    if let Some(val) = input.page_count {
+        update_fields.push(format!("page_count = ?{}", param_idx));
+        params.push(Box::new(val));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.series {
+        update_fields.push(format!("series = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.volume_text {
+        let volume_number = calculate_volume_number(Some(val.as_str()));
+        update_fields.push(format!("volume_text = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+        update_fields.push(format!("volume_number = ?{}", param_idx));
+        params.push(Box::new(volume_number));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.volume_title {
+        update_fields.push(format!("volume_title = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.magazine {
+        update_fields.push(format!("magazine = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.magazine_id {
+        update_fields.push(format!("magazine_id = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.language {
+        update_fields.push(format!("language = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.source {
+        update_fields.push(format!("source = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.external_id {
+        update_fields.push(format!("external_id = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.artist_en {
+        update_fields.push(format!("artist_en = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.title_en {
+        update_fields.push(format!("title_en = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.chapters {
+        update_fields.push(format!("chapters = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.extension {
+        update_fields.push(format!("extension = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(val) = input.flag_exist {
+        update_fields.push(format!("flag_exist = ?{}", param_idx));
+        params.push(Box::new(val));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.title_pron {
+        update_fields.push(format!("title_pron = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.artist_pron {
+        update_fields.push(format!("artist_pron = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.series_pron {
+        update_fields.push(format!("series_pron = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+
+    // 更新するフィールドがない場合はエラー
+    if update_fields.is_empty() {
+        return Err(KijukuError::Validation(
+            "更新するフィールドが指定されていません".to_string(),
+        ));
     }
 
     let sql = format!(

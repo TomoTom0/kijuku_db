@@ -1,4 +1,4 @@
-use crate::crud::{create_media, delete_media, update_media};
+use crate::crud::{create_media, delete_media, update_media_partial};
 use crate::error::Result;
 use crate::types::{BulkUpdateItem, Media, MediaInput};
 use rusqlite::Connection;
@@ -41,7 +41,9 @@ pub fn bulk_delete_media(conn: &Connection, ids: &[i64]) -> Result<()> {
     Ok(())
 }
 
-/// 複数のメディアを一括更新
+/// 複数のメディアを一括更新（部分更新）
+///
+/// MediaUpdateInputを使用して、指定されたフィールドのみを更新します。
 pub fn bulk_update_media(conn: &Connection, updates: &[BulkUpdateItem]) -> Result<()> {
     if updates.is_empty() {
         return Ok(());
@@ -51,7 +53,7 @@ pub fn bulk_update_media(conn: &Connection, updates: &[BulkUpdateItem]) -> Resul
     let tx = conn.unchecked_transaction()?;
 
     for item in updates {
-        update_media(&tx, item.id, &item.data)?;
+        update_media_partial(&tx, item.id, &item.data)?;
     }
 
     tx.commit()?;
@@ -155,6 +157,7 @@ mod tests {
     #[test]
     fn test_bulk_update_media() {
         use crate::crud::get_media;
+        use crate::types::MediaUpdateInput;
 
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
@@ -176,22 +179,20 @@ mod tests {
         let results = bulk_create_media(&conn, &data_list).unwrap();
         assert_eq!(results.len(), 2);
 
-        // 一括更新
+        // 一括更新（部分更新: 指定したフィールドのみ更新）
         let updates = vec![
             BulkUpdateItem {
                 id: results[0].id,
-                data: MediaInput {
-                    title: "更新後メディア1".to_string(),
-                    media_type: MediaType::Comic,
+                data: MediaUpdateInput {
+                    title: Some("更新後メディア1".to_string()),
                     artist: Some("アーティスト1".to_string()),
                     ..Default::default()
                 },
             },
             BulkUpdateItem {
                 id: results[1].id,
-                data: MediaInput {
-                    title: "更新後メディア2".to_string(),
-                    media_type: MediaType::Video,
+                data: MediaUpdateInput {
+                    title: Some("更新後メディア2".to_string()),
                     artist: Some("アーティスト2".to_string()),
                     ..Default::default()
                 },
@@ -203,10 +204,14 @@ mod tests {
         let updated1 = get_media(&conn, results[0].id).unwrap();
         assert_eq!(updated1.title, "更新後メディア1");
         assert_eq!(updated1.artist, Some("アーティスト1".to_string()));
+        // media_typeは元のまま
+        assert_eq!(updated1.media_type, MediaType::Comic);
 
         let updated2 = get_media(&conn, results[1].id).unwrap();
         assert_eq!(updated2.title, "更新後メディア2");
         assert_eq!(updated2.artist, Some("アーティスト2".to_string()));
+        // media_typeは元のまま
+        assert_eq!(updated2.media_type, MediaType::Video);
     }
 
     #[test]
