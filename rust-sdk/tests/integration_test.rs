@@ -1,4 +1,4 @@
-use kijuku_db::{KijukuDB, MediaInput, MediaType, MediaFilter, QueryOptions, SortOrder};
+use kijuku_db::{KijukuDB, MediaInput, MediaUpdateInput, MediaType, MediaFilter, QueryOptions, SortOrder};
 use tempfile::NamedTempFile;
 
 #[test]
@@ -42,17 +42,19 @@ fn test_full_workflow() {
     assert_eq!(fetched.title, "テストコミック1");
     assert_eq!(fetched.artist, Some("作者A".to_string()));
 
-    // メディア更新
-    db.update_media(media1.id, &MediaInput {
-        title: "更新されたタイトル".to_string(),
-        media_type: MediaType::Comic,
-        description: Some("説明追加".to_string()),
+    // メディア更新（部分更新: 指定したフィールドのみ更新）
+    // Option<Option<T>>パターン: Some(Some(val))で値を設定
+    db.update_media(media1.id, &MediaUpdateInput {
+        title: Some("更新されたタイトル".to_string()),
+        description: Some(Some("説明追加".to_string())),
         ..Default::default()
     }).unwrap();
 
     let updated = db.get_media(media1.id).unwrap();
     assert_eq!(updated.title, "更新されたタイトル");
     assert_eq!(updated.description, Some("説明追加".to_string()));
+    // artistは元のまま（部分更新なので変更されない）
+    assert_eq!(updated.artist, Some("作者A".to_string()));
 
     // タグ作成
     let tag1 = db.create_tag("アクション").unwrap();
@@ -135,9 +137,8 @@ fn test_error_handling() {
     assert!(db.get_media(9999).is_none());
 
     // 存在しないメディアの更新
-    let result = db.update_media(9999, &MediaInput {
-        title: "存在しない".to_string(),
-        media_type: MediaType::Comic,
+    let result = db.update_media(9999, &MediaUpdateInput {
+        title: Some("存在しない".to_string()),
         ..Default::default()
     });
     assert!(result.is_err());

@@ -6,7 +6,7 @@
 use clap::Parser;
 use include_dir::{include_dir, Dir};
 use kijuku_db::{
-    AttributeValueType, BulkUpdateItem, KijukuDB, MediaFilter, MediaInput, QueryOptions,
+    AttributeValueType, BulkUpdateItem, KijukuDB, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -58,11 +58,11 @@ struct GetMediaParams {
     id: i64,
 }
 
-/// メディア更新のパラメータ
+/// メディア更新のパラメータ（部分更新）
 #[derive(Debug, Deserialize)]
 struct UpdateMediaParams {
     id: i64,
-    data: MediaInput,
+    data: MediaUpdateInput,
 }
 
 /// メディア削除のパラメータ

@@ -175,10 +175,13 @@ impl BackupManager {
             .map_err(|e| KijukuError::Other(e.to_string()))?;
 
         let datetime = chrono::DateTime::<chrono::Utc>::from(now);
-        let timestamp_str = datetime.format("%Y%m%d%H%M%S-%3f").to_string();
-
         // ファイル名形式: {db_stem}.backup-{yyyymmddhhmmss-mmm}.db
-        let backup_file_name = format!("{}.backup-{}.db", self.db_stem, timestamp_str);
+        let backup_file_name = format!(
+            "{}.backup-{}-{:03}.db",
+            self.db_stem,
+            datetime.format("%Y%m%d%H%M%S"),
+            datetime.timestamp_subsec_millis()
+        );
         let backup_path = self.backup_dir.join(&backup_file_name);
 
         // SQLite Online Backup APIを使用して安全にバックアップ

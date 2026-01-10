@@ -41,6 +41,30 @@ pub fn find_media(
         where_clauses.push("m.source = ?".to_string());
         params.push(Box::new(source.clone()));
     }
+    if let Some(flag_exist) = filter.flag_exist {
+        where_clauses.push("m.flag_exist = ?".to_string());
+        params.push(Box::new(if flag_exist { 1 } else { 0 }));
+    }
+    if let Some(ref language) = filter.language {
+        where_clauses.push("m.language = ?".to_string());
+        params.push(Box::new(language.clone()));
+    }
+    if let Some(ref magazine) = filter.magazine {
+        where_clauses.push("m.magazine LIKE ?".to_string());
+        params.push(Box::new(format!("%{}%", magazine)));
+    }
+    if let Some(ref magazine_id) = filter.magazine_id {
+        where_clauses.push("m.magazine_id = ?".to_string());
+        params.push(Box::new(magazine_id.clone()));
+    }
+    if let Some(ref extension) = filter.extension {
+        where_clauses.push("m.extension = ?".to_string());
+        params.push(Box::new(extension.clone()));
+    }
+    if let Some(ref external_id) = filter.external_id {
+        where_clauses.push("m.external_id = ?".to_string());
+        params.push(Box::new(external_id.clone()));
+    }
 
     // FROM句の構築
     let mut from_clause = "FROM media m".to_string();

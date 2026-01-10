@@ -180,12 +180,13 @@ mod tests {
         assert_eq!(results.len(), 2);
 
         // 一括更新（部分更新: 指定したフィールドのみ更新）
+        // Option<Option<T>>パターン: Some(Some(val))で値を設定
         let updates = vec![
             BulkUpdateItem {
                 id: results[0].id,
                 data: MediaUpdateInput {
                     title: Some("更新後メディア1".to_string()),
-                    artist: Some("アーティスト1".to_string()),
+                    artist: Some(Some("アーティスト1".to_string())),
                     ..Default::default()
                 },
             },
@@ -193,7 +194,7 @@ mod tests {
                 id: results[1].id,
                 data: MediaUpdateInput {
                     title: Some("更新後メディア2".to_string()),
-                    artist: Some("アーティスト2".to_string()),
+                    artist: Some(Some("アーティスト2".to_string())),
                     ..Default::default()
                 },
             },
@@ -221,5 +222,91 @@ mod tests {
 
         // 空のリストで更新してもエラーにならない
         bulk_update_media(&conn, &[]).unwrap();
+    }
+
+    #[test]
+    fn test_bulk_delete_rollback_on_failure() {
+        use crate::crud::get_media;
+
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // テスト用のメディアを作成
+        let data_list = vec![
+            MediaInput {
+                title: "メディア1".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+            MediaInput {
+                title: "メディア2".to_string(),
+                media_type: MediaType::Video,
+                ..Default::default()
+            },
+        ];
+
+        let results = bulk_create_media(&conn, &data_list).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let id1 = results[0].id;
+        let id2 = results[1].id;
+
+        // 存在しないIDを含めて削除を試みる
+        // 2番目は存在するが、3番目（9999）は存在しない
+        let ids_to_delete = vec![id1, 9999];
+        let result = bulk_delete_media(&conn, &ids_to_delete);
+
+        // エラーが発生するはず
+        assert!(result.is_err());
+
+        // ロールバックされているので、id1も削除されていない
+        assert!(get_media(&conn, id1).is_some());
+        assert!(get_media(&conn, id2).is_some());
+    }
+
+    #[test]
+    fn test_bulk_update_rollback_on_failure() {
+        use crate::crud::get_media;
+        use crate::types::MediaUpdateInput;
+
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // テスト用のメディアを作成
+        let data_list = vec![MediaInput {
+            title: "元のタイトル".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }];
+
+        let results = bulk_create_media(&conn, &data_list).unwrap();
+        let id1 = results[0].id;
+
+        // 1番目は有効、2番目は存在しないIDへの更新
+        let updates = vec![
+            BulkUpdateItem {
+                id: id1,
+                data: MediaUpdateInput {
+                    title: Some("更新後タイトル".to_string()),
+                    ..Default::default()
+                },
+            },
+            BulkUpdateItem {
+                id: 9999, // 存在しないID
+                data: MediaUpdateInput {
+                    title: Some("存在しない".to_string()),
+                    ..Default::default()
+                },
+            },
+        ];
+
+        let result = bulk_update_media(&conn, &updates);
+
+        // エラーが発生するはず
+        assert!(result.is_err());
+
+        // ロールバックされているので、id1の更新も取り消されている
+        let media1 = get_media(&conn, id1).unwrap();
+        assert_eq!(media1.title, "元のタイトル");
     }
 }
