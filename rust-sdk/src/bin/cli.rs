@@ -478,7 +478,7 @@ fn handle_bulk_create_media(db: &KijukuDB, params: &serde_json::Value) -> Comman
 }
 
 fn handle_bulk_delete_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
-    let params: BulkDeleteMediaParams = match serde_json::from_value(params.clone()) {
+    let params: BulkDeleteMediaParams = match BulkDeleteMediaParams::deserialize(params) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
@@ -490,7 +490,7 @@ fn handle_bulk_delete_media(db: &KijukuDB, params: &serde_json::Value) -> Comman
 }
 
 fn handle_bulk_update_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
-    let params: BulkUpdateMediaParams = match serde_json::from_value(params.clone()) {
+    let params: BulkUpdateMediaParams = match BulkUpdateMediaParams::deserialize(params) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };

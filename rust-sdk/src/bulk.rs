@@ -1,4 +1,4 @@
-use crate::crud::{create_media, delete_media, update_media};
+use crate::crud::{create_media, delete_media, update_media_partial};
 use crate::error::Result;
 use crate::types::{BulkUpdateItem, Media, MediaInput};
 use rusqlite::Connection;
@@ -41,7 +41,9 @@ pub fn bulk_delete_media(conn: &Connection, ids: &[i64]) -> Result<()> {
     Ok(())
 }
 
-/// 複数のメディアを一括更新
+/// 複数のメディアを一括更新（部分更新）
+///
+/// MediaUpdateInputを使用して、指定されたフィールドのみを更新します。
 pub fn bulk_update_media(conn: &Connection, updates: &[BulkUpdateItem]) -> Result<()> {
     if updates.is_empty() {
         return Ok(());
@@ -51,7 +53,7 @@ pub fn bulk_update_media(conn: &Connection, updates: &[BulkUpdateItem]) -> Resul
     let tx = conn.unchecked_transaction()?;
 
     for item in updates {
-        update_media(&tx, item.id, &item.data)?;
+        update_media_partial(&tx, item.id, &item.data)?;
     }
 
     tx.commit()?;

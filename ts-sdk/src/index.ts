@@ -299,16 +299,18 @@ export class KijukuDB {
   // ========== バックアップからの取得メソッド ==========
 
   /**
-   * バックアップDBに対して処理を実行するヘルパーメソッド
+   * バックアップDBに対してコールバックを実行するヘルパーメソッド
+   *
+   * バックアップファイルを読み取り専用で開き、コールバックを実行します。
+   * コールバック完了後、DBを自動的にクローズします。
    */
   private withBackupDb<T>(
     selector: BackupSelector,
-    fn: (db: KijukuDB) => T
+    callback: (db: KijukuDB) => T
   ): T {
     if (!this.backupManager) {
       throw new Error('Backup manager not configured');
     }
-
     const backupPath = this.backupManager.getBackupPath(selector);
     if (!backupPath) {
       throw new Error('No backup found matching selector');
@@ -316,7 +318,7 @@ export class KijukuDB {
 
     const backupDb = new KijukuDB(backupPath, { readonly: true });
     try {
-      return fn(backupDb);
+      return callback(backupDb);
     } finally {
       backupDb.close();
     }
@@ -329,7 +331,7 @@ export class KijukuDB {
     id: number,
     selector: BackupSelector = BackupSelector.latest()
   ): Media | null {
-    return this.withBackupDb(selector, (db) => db.getMedia(id));
+    return this.withBackupDb(selector, (backupDb) => backupDb.getMedia(id));
   }
 
   /**
@@ -340,7 +342,9 @@ export class KijukuDB {
     options?: QueryOptions,
     selector: BackupSelector = BackupSelector.latest()
   ): Media[] {
-    return this.withBackupDb(selector, (db) => db.findMedia(filter, options));
+    return this.withBackupDb(selector, (backupDb) =>
+      backupDb.findMedia(filter, options)
+    );
   }
 
   /**
@@ -350,14 +354,14 @@ export class KijukuDB {
     name: string,
     selector: BackupSelector = BackupSelector.latest()
   ): Tag | null {
-    return this.withBackupDb(selector, (db) => db.getTagByName(name));
+    return this.withBackupDb(selector, (backupDb) => backupDb.getTagByName(name));
   }
 
   /**
    * バックアップから全てのタグを取得
    */
   getAllTagsFromBackup(selector: BackupSelector = BackupSelector.latest()): Tag[] {
-    return this.withBackupDb(selector, (db) => db.getAllTags());
+    return this.withBackupDb(selector, (backupDb) => backupDb.getAllTags());
   }
 
   /**
@@ -367,7 +371,7 @@ export class KijukuDB {
     mediaId: number,
     selector: BackupSelector = BackupSelector.latest()
   ): Tag[] {
-    return this.withBackupDb(selector, (db) => db.getMediaTags(mediaId));
+    return this.withBackupDb(selector, (backupDb) => backupDb.getMediaTags(mediaId));
   }
 
   /**
@@ -378,8 +382,8 @@ export class KijukuDB {
     key: string,
     selector: BackupSelector = BackupSelector.latest()
   ): MediaAttribute | null {
-    return this.withBackupDb(selector, (db) =>
-      db.getMediaAttribute(mediaId, key)
+    return this.withBackupDb(selector, (backupDb) =>
+      backupDb.getMediaAttribute(mediaId, key)
     );
   }
 
@@ -390,8 +394,8 @@ export class KijukuDB {
     mediaId: number,
     selector: BackupSelector = BackupSelector.latest()
   ): MediaAttribute[] {
-    return this.withBackupDb(selector, (db) =>
-      db.getMediaAttributes(mediaId)
+    return this.withBackupDb(selector, (backupDb) =>
+      backupDb.getMediaAttributes(mediaId)
     );
   }
 }

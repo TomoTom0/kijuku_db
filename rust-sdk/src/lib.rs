@@ -268,8 +268,13 @@ impl KijukuDB {
 
     // ========== バックアップからの取得メソッド ==========
 
-    /// バックアップDBを読み取り専用で開くヘルパーメソッド
-    fn get_backup_db(&self, selector: &BackupSelector) -> Result<KijukuDB> {
+    /// バックアップDBに対してコールバックを実行するヘルパーメソッド
+    ///
+    /// バックアップファイルを読み取り専用で開き、コールバックを実行します。
+    fn with_backup_db<F, T>(&self, selector: &BackupSelector, f: F) -> Result<T>
+    where
+        F: FnOnce(&KijukuDB) -> Result<T>,
+    {
         let backup_path = self
             .backup_manager
             .as_ref()
@@ -277,10 +282,12 @@ impl KijukuDB {
             .get_backup_path(selector)?
             .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
 
-        KijukuDB::open_with_options(&backup_path, DBOptions {
-            readonly: true,
-            ..Default::default()
-        })
+        // バックアップファイルは読み取り専用で開く
+        let backup_db = KijukuDB::open_with_options(
+            &backup_path,
+            DBOptions { readonly: true, ..Default::default() },
+        )?;
+        f(&backup_db)
     }
 
     /// バックアップからIDでメディアを取得
@@ -289,8 +296,7 @@ impl KijukuDB {
         id: i64,
         selector: &BackupSelector,
     ) -> Result<Option<Media>> {
-        let backup_db = self.get_backup_db(selector)?;
-        Ok(backup_db.get_media(id))
+        self.with_backup_db(selector, |backup_db| Ok(backup_db.get_media(id)))
     }
 
     /// バックアップからメディアを検索
@@ -300,8 +306,7 @@ impl KijukuDB {
         options: Option<&QueryOptions>,
         selector: &BackupSelector,
     ) -> Result<Vec<Media>> {
-        let backup_db = self.get_backup_db(selector)?;
-        backup_db.find_media(filter, options)
+        self.with_backup_db(selector, |backup_db| backup_db.find_media(filter, options))
     }
 
     /// バックアップからタグ名でタグを取得
@@ -310,14 +315,12 @@ impl KijukuDB {
         name: &str,
         selector: &BackupSelector,
     ) -> Result<Option<Tag>> {
-        let backup_db = self.get_backup_db(selector)?;
-        Ok(backup_db.get_tag_by_name(name))
+        self.with_backup_db(selector, |backup_db| Ok(backup_db.get_tag_by_name(name)))
     }
 
     /// バックアップから全てのタグを取得
     pub fn get_all_tags_from_backup(&self, selector: &BackupSelector) -> Result<Vec<Tag>> {
-        let backup_db = self.get_backup_db(selector)?;
-        backup_db.get_all_tags()
+        self.with_backup_db(selector, |backup_db| backup_db.get_all_tags())
     }
 
     /// バックアップからメディアに関連付けられたタグを取得
@@ -326,8 +329,7 @@ impl KijukuDB {
         media_id: i64,
         selector: &BackupSelector,
     ) -> Result<Vec<Tag>> {
-        let backup_db = self.get_backup_db(selector)?;
-        backup_db.get_media_tags(media_id)
+        self.with_backup_db(selector, |backup_db| backup_db.get_media_tags(media_id))
     }
 
     /// バックアップからメディアの属性を取得
@@ -337,8 +339,7 @@ impl KijukuDB {
         key: &str,
         selector: &BackupSelector,
     ) -> Result<Option<MediaAttribute>> {
-        let backup_db = self.get_backup_db(selector)?;
-        backup_db.get_media_attribute(media_id, key)
+        self.with_backup_db(selector, |backup_db| backup_db.get_media_attribute(media_id, key))
     }
 
     /// バックアップからメディアの全ての属性を取得
@@ -347,8 +348,7 @@ impl KijukuDB {
         media_id: i64,
         selector: &BackupSelector,
     ) -> Result<Vec<MediaAttribute>> {
-        let backup_db = self.get_backup_db(selector)?;
-        backup_db.get_media_attributes(media_id)
+        self.with_backup_db(selector, |backup_db| backup_db.get_media_attributes(media_id))
     }
 }
 
