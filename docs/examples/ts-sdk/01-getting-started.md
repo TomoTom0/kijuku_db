@@ -175,8 +175,8 @@ KIJUKU_DB_VERBOSE=false
 ```
 
 ```typescript
-// 環境変数から自動的に読み込まれます
-const db = new KijukuDB(process.env.DATABASE_PATH!);
+// 環境変数から読み込み（未設定の場合はデフォルト値を使用）
+const db = new KijukuDB(process.env.DATABASE_PATH || './data/myapp.db');
 ```
 
 ## 次のステップ

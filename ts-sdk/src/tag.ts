@@ -2,7 +2,7 @@
  * タグ管理機能
  */
 import type Database from 'better-sqlite3';
-import type { Tag } from './types.js';
+import type { Tag, TagUsageStats } from './types.js';
 
 /**
  * タグを作成
@@ -115,5 +115,35 @@ export function getTagByName(
  */
 export function getAllTags(db: Database.Database): Tag[] {
   const stmt = db.prepare('SELECT id, name FROM tags ORDER BY name');
+  return stmt.all() as Tag[];
+}
+
+/**
+ * タグの使用数統計を取得
+ */
+export function getTagUsageStats(db: Database.Database): TagUsageStats[] {
+  const stmt = db.prepare(`
+    SELECT t.id as tag_id, t.name as tag_name, COUNT(mt.media_id) as count
+    FROM tags t
+    LEFT JOIN media_tags mt ON t.id = mt.tag_id
+    GROUP BY t.id, t.name
+    ORDER BY count DESC, t.name ASC
+  `);
+
+  return stmt.all() as TagUsageStats[];
+}
+
+/**
+ * 未使用のタグを取得
+ */
+export function findUnusedTags(db: Database.Database): Tag[] {
+  const stmt = db.prepare(`
+    SELECT t.id, t.name
+    FROM tags t
+    LEFT JOIN media_tags mt ON t.id = mt.tag_id
+    WHERE mt.media_id IS NULL
+    ORDER BY t.name
+  `);
+
   return stmt.all() as Tag[];
 }

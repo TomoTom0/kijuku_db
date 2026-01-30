@@ -8,6 +8,7 @@ import type {
   MediaFilter,
   QueryOptions,
   Tag,
+  TagUsageStats,
   DBOptions,
   MediaAttribute,
   BulkUpdateItem,
@@ -206,6 +207,20 @@ export class KijukuDB {
    */
   getAllTags(): Tag[] {
     return tag.getAllTags(this.db);
+  }
+
+  /**
+   * タグの使用数統計を取得
+   */
+  getTagUsageStats(): TagUsageStats[] {
+    return tag.getTagUsageStats(this.db);
+  }
+
+  /**
+   * 未使用のタグを取得
+   */
+  findUnusedTags(): Tag[] {
+    return tag.findUnusedTags(this.db);
   }
 
   /**

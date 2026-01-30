@@ -345,6 +345,8 @@ fn execute_command(db: &KijukuDB, request: &CommandRequest) -> CommandResponse {
         "addTagToMedia" => handle_add_tag_to_media(db, &request.params),
         "removeTagFromMedia" => handle_remove_tag_from_media(db, &request.params),
         "getMediaTags" => handle_get_media_tags(db, &request.params),
+        "getTagUsageStats" => handle_get_tag_usage_stats(db),
+        "findUnusedTags" => handle_find_unused_tags(db),
         "setMediaAttribute" => handle_set_media_attribute(db, &request.params),
         "getMediaAttribute" => handle_get_media_attribute(db, &request.params),
         "getMediaAttributes" => handle_get_media_attributes(db, &request.params),
@@ -577,6 +579,26 @@ fn handle_get_media_tags(db: &KijukuDB, params: &serde_json::Value) -> CommandRe
             CommandResponse::success(data)
         }
         Err(e) => CommandResponse::error(format!("メディアタグ取得エラー: {}", e)),
+    }
+}
+
+fn handle_get_tag_usage_stats(db: &KijukuDB) -> CommandResponse {
+    match db.get_tag_usage_stats() {
+        Ok(stats) => {
+            let data = serde_json::to_value(stats).unwrap();
+            CommandResponse::success(data)
+        }
+        Err(e) => CommandResponse::error(format!("タグ使用統計取得エラー: {}", e)),
+    }
+}
+
+fn handle_find_unused_tags(db: &KijukuDB) -> CommandResponse {
+    match db.find_unused_tags() {
+        Ok(tags) => {
+            let data = serde_json::to_value(tags).unwrap();
+            CommandResponse::success(data)
+        }
+        Err(e) => CommandResponse::error(format!("未使用タグ取得エラー: {}", e)),
     }
 }
 
