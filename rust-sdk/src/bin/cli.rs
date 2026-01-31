@@ -584,20 +584,20 @@ fn handle_get_media_tags(db: &KijukuDB, params: &serde_json::Value) -> CommandRe
 
 fn handle_get_tag_usage_stats(db: &KijukuDB) -> CommandResponse {
     match db.get_tag_usage_stats() {
-        Ok(stats) => {
-            let data = serde_json::to_value(stats).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(stats) => match serde_json::to_value(stats) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         Err(e) => CommandResponse::error(format!("タグ使用統計取得エラー: {}", e)),
     }
 }
 
 fn handle_find_unused_tags(db: &KijukuDB) -> CommandResponse {
     match db.find_unused_tags() {
-        Ok(tags) => {
-            let data = serde_json::to_value(tags).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(tags) => match serde_json::to_value(tags) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         Err(e) => CommandResponse::error(format!("未使用タグ取得エラー: {}", e)),
     }
 }
