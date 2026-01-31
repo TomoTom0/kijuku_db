@@ -224,6 +224,8 @@ const page3 = getPage(3, 20);
 
 ### 全件数の取得
 
+> **⚠️ パフォーマンス注意**: 以下の実装は全データをメモリにロードするため、データ量が多い場合はメモリ消費が大きくなります。件数のみが必要な場合は、データベースの集計機能を使用するか、SDKにカウント専用メソッドが追加されるまでは注意して使用してください。
+
 ```typescript
 const allComics = db.findMedia({ media_type: 'comic' });
 const totalCount = allComics.length;
@@ -232,6 +234,13 @@ const pageSize = 20;
 const totalPages = Math.ceil(totalCount / pageSize);
 
 console.log(`全${totalCount}件（全${totalPages}ページ）`);
+```
+
+**より効率的な実装例（SQLを直接使用できる場合）:**
+```sql
+SELECT COUNT(*) as count
+FROM media
+WHERE media_type = 'comic';
 ```
 
 ## タグでの検索
@@ -314,6 +323,8 @@ seriesList.forEach(series => {
 
 ### 作者別の作品数
 
+> **⚠️ パフォーマンス注意**: 以下の実装は全データをメモリにロードして集計するため、データ量が多い場合はメモリ消費が大きくなります。集計処理にはデータベースのGROUP BY機能を使用することを推奨します。
+
 ```typescript
 const allMedia = db.findMedia({ media_type: 'comic' });
 
@@ -333,6 +344,16 @@ console.log('作者別作品数（上位10名）:');
 sorted.slice(0, 10).forEach(([artist, count]) => {
   console.log(`- ${artist}: ${count}件`);
 });
+```
+
+**より効率的な実装例（SQLを直接使用できる場合）:**
+```sql
+SELECT artist, COUNT(*) as count
+FROM media
+WHERE media_type = 'comic' AND artist IS NOT NULL
+GROUP BY artist
+ORDER BY count DESC
+LIMIT 10;
 ```
 
 ## パフォーマンスのヒント

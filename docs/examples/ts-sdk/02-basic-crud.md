@@ -68,7 +68,9 @@ const media1 = db.createMedia({
 });
 
 const retrieved = db.getMedia(media1.id);
-console.log(retrieved.volume_number); // => 1（数値に変換されている）
+if (retrieved) {
+  console.log(retrieved.volume_number); // => 1（数値に変換されている）
+}
 
 // ソートやフィルタで使える
 const sorted = db.findMedia(
@@ -298,6 +300,7 @@ try {
 ### 2. 存在確認
 
 ```typescript
+const id = 1; // 取得したいメディアのID
 const media = db.getMedia(id);
 if (!media) {
   console.log('メディアが見つかりません');

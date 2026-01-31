@@ -269,6 +269,14 @@ pub struct Tag {
     pub name: String,
 }
 
+/// タグ使用統計情報
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagUsageStats {
+    pub tag_id: i64,
+    pub tag_name: String,
+    pub count: i64,
+}
+
 /// データベース接続オプション
 #[derive(Debug, Default, Clone)]
 pub struct DBOptions {

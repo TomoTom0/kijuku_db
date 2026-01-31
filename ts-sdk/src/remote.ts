@@ -12,6 +12,7 @@ import type {
   MediaFilter,
   QueryOptions,
   Tag,
+  TagUsageStats,
   MediaAttribute,
   TableColumnInfo,
   BulkUpdateItem,
@@ -475,6 +476,28 @@ export class RemoteKijukuDB {
     const response = await this.executeRemoteCommand({
       operation: 'getMediaTags',
       params: { media_id: mediaId },
+    });
+    return this.checkResponse(response);
+  }
+
+  /**
+   * タグの使用数統計を取得
+   */
+  async getTagUsageStats(): Promise<TagUsageStats[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'getTagUsageStats',
+      params: {},
+    });
+    return this.checkResponse(response);
+  }
+
+  /**
+   * 未使用のタグを取得
+   */
+  async findUnusedTags(): Promise<Tag[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'findUnusedTags',
+      params: {},
     });
     return this.checkResponse(response);
   }

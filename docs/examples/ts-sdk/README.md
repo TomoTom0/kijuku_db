@@ -36,6 +36,7 @@
    - トランザクションの使い方
    - パフォーマンスの最適化
 
+<!--
 6. **[06-advanced-queries.md](./06-advanced-queries.md)** - 高度なクエリ
    - ソート（昇順・降順）
    - ページネーション（limit/offset）
@@ -54,21 +55,28 @@
    - SSH経由でのDB操作
    - リモートDBのセットアップ
    - 自動デプロイ機能
+-->
 
 ## 実行方法
 
-各サンプルコードは以下のように実行できます：
+各ドキュメント（.md）内のコードスニペットを実行する方法：
+
+1. **コードをコピー**: 各ドキュメント内のTypeScriptコードブロックをコピー
+2. **ファイルに保存**: 新しい.tsファイルを作成して貼り付け（例: `test.ts`）
+3. **実行**: 以下のいずれかの方法で実行
 
 ```bash
 # Node.jsで実行
-node examples/01-basic-crud.ts
+node test.ts
 
 # Bunで実行（高速）
-bun examples/01-basic-crud.ts
+bun test.ts
 
 # TypeScriptで実行
-tsx examples/01-basic-crud.ts
+tsx test.ts
 ```
+
+または、自分のプロジェクト内で直接コードを使用することもできます。
 
 ## プロジェクトへの組み込み
 

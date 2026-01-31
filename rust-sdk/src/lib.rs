@@ -230,6 +230,16 @@ impl KijukuDB {
         tag::get_media_tags(&self.conn, media_id)
     }
 
+    /// タグの使用数統計を取得
+    pub fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {
+        tag::get_tag_usage_stats(&self.conn)
+    }
+
+    /// 未使用のタグを取得
+    pub fn find_unused_tags(&self) -> Result<Vec<Tag>> {
+        tag::find_unused_tags(&self.conn)
+    }
+
     /// メディアに属性を設定
     pub fn set_media_attribute(
         &self,
@@ -259,6 +269,159 @@ impl KijukuDB {
     /// メディアの全ての属性を削除
     pub fn delete_all_media_attributes(&self, media_id: i64) -> Result<()> {
         attribute::delete_all_media_attributes(&self.conn, media_id)
+    }
+
+    /// トランザクション内で複数の操作を実行
+    ///
+    /// # 引数
+    ///
+    /// * `f` - トランザクション内で実行するクロージャ
+    ///
+    /// # 戻り値
+    ///
+    /// クロージャの実行結果。クロージャがエラーを返した場合、トランザクションはロールバックされます。
+    ///
+    /// # 例
+    ///
+    /// ```no_run
+    /// # use kijuku_db::{KijukuDB, MediaInput, MediaType};
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let db = KijukuDB::open("test.db")?;
+    /// db.transaction(|db| {
+    ///     let input = MediaInput {
+    ///         title: "メディア1".to_string(),
+    ///         media_type: MediaType::Comic,
+    ///         ..Default::default()
+    ///     };
+    ///     db.create_media(&input)?;
+    ///
+    ///     let input2 = MediaInput {
+    ///         title: "メディア2".to_string(),
+    ///         media_type: MediaType::Comic,
+    ///         ..Default::default()
+    ///     };
+    ///     db.create_media(&input2)?;
+    ///
+    ///     Ok(())
+    /// })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn transaction<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&Self) -> Result<T>,
+    {
+        self.conn.execute("BEGIN TRANSACTION", [])?;
+
+        match f(self) {
+            Ok(result) => {
+                self.conn.execute("COMMIT", [])?;
+
+                // バックアップマネージャーがあれば操作を記録
+                if let Some(manager) = &self.backup_manager {
+                    // エラーは記録するが、トランザクションの成功は妨げない
+                    if let Err(e) = manager.record_operation() {
+                        eprintln!("Backup operation failed: {}", e);
+                    }
+                }
+
+                Ok(result)
+            }
+            Err(e) => {
+                let _ = self.conn.execute("ROLLBACK", []);
+                Err(e)
+            }
+        }
+    }
+
+    /// 手動でバックアップを実行
+    ///
+    /// バックアップマネージャーが設定されている場合、バックアップを作成します。
+    ///
+    /// # 戻り値
+    ///
+    /// バックアップファイルのパス。バックアップマネージャーが設定されていない場合は None。
+    ///
+    /// # 例
+    ///
+    /// ```no_run
+    /// # use kijuku_db::{KijukuDB, BackupOptions};
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let db = KijukuDB::open("test.db")?;
+    ///
+    /// // バックアップを実行
+    /// if let Some(backup_path) = db.backup()? {
+    ///     println!("Backup created: {}", backup_path);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn backup(&self) -> Result<Option<String>> {
+        match &self.backup_manager {
+            Some(manager) => manager.backup().map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// バックアップ一覧を取得
+    ///
+    /// バックアップマネージャーが設定されている場合、バックアップファイルの一覧を返します。
+    ///
+    /// # 戻り値
+    ///
+    /// バックアップ情報のリスト。バックアップマネージャーが設定されていない場合は空のリスト。
+    ///
+    /// # 例
+    ///
+    /// ```no_run
+    /// # use kijuku_db::{KijukuDB, BackupOptions};
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let db = KijukuDB::open("test.db")?;
+    ///
+    /// // バックアップ一覧を取得
+    /// let backups = db.list_backups()?;
+    /// for backup in backups {
+    ///     println!("Backup: {} at {:?}", backup.name, backup.created_at);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_backups(&self) -> Result<Vec<BackupInfo>> {
+        match &self.backup_manager {
+            Some(manager) => manager.list_backups(),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// データベース接続を明示的に閉じる
+    ///
+    /// Rustでは通常、Dropトレイトによって自動的にクローズされますが、
+    /// TypeScript SDKとのAPI互換性のため、明示的なクローズメソッドを提供します。
+    ///
+    /// # 注意
+    ///
+    /// このメソッドは所有権を取るため、呼び出し後はこのインスタンスを使用できません。
+    ///
+    /// # 例
+    ///
+    /// ```no_run
+    /// # use kijuku_db::KijukuDB;
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let db = KijukuDB::open("test.db")?;
+    ///
+    /// // データベースを使用
+    /// // ...
+    ///
+    /// // 明示的にクローズ
+    /// db.close();
+    ///
+    /// // この後、db は使用できない
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn close(self) {
+        // 所有権を取り、スコープを抜けることでDropトレイトが自動的に呼ばれる
+        // 明示的な処理は不要
     }
 
     /// バックアップマネージャーを取得

@@ -1,4 +1,4 @@
-use crate::{KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions, Result, Tag};
+use crate::{BulkUpdateItem, KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats};
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
 use ssh2_config::{ParseRule, SshConfig};
@@ -244,6 +244,26 @@ impl RemoteKijukuDB {
         Ok(data.version)
     }
 
+    /// テーブル一覧を取得
+    pub fn get_tables(&self) -> Result<Vec<String>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getTables".to_string(),
+            params: serde_json::json!({}),
+        })?;
+
+        self.check_response(response)
+    }
+
+    /// テーブルのカラム情報を取得
+    pub fn get_table_info(&self, table_name: &str) -> Result<Vec<TableColumnInfo>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getTableInfo".to_string(),
+            params: serde_json::json!({ "table_name": table_name }),
+        })?;
+
+        self.check_response(response)
+    }
+
     /// メディアを作成
     pub fn create_media(&self, data: &MediaInput) -> Result<Media> {
         let response = self.execute_remote_command(CommandRequest {
@@ -310,6 +330,40 @@ impl RemoteKijukuDB {
         self.check_response(response)
     }
 
+    /// 複数のメディアを一括削除
+    pub fn bulk_delete_media(&self, ids: &[i64]) -> Result<()> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "bulkDeleteMedia".to_string(),
+            params: serde_json::json!({ "ids": ids }),
+        })?;
+
+        #[derive(Deserialize)]
+        struct DeleteResponse {
+            #[allow(dead_code)]
+            deleted: bool,
+        }
+
+        let _data: DeleteResponse = self.check_response(response)?;
+        Ok(())
+    }
+
+    /// 複数のメディアを一括更新
+    pub fn bulk_update_media(&self, updates: &[BulkUpdateItem]) -> Result<()> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "bulkUpdateMedia".to_string(),
+            params: serde_json::json!({ "updates": updates }),
+        })?;
+
+        #[derive(Deserialize)]
+        struct UpdateResponse {
+            #[allow(dead_code)]
+            updated: bool,
+        }
+
+        let _data: UpdateResponse = self.check_response(response)?;
+        Ok(())
+    }
+
     /// タグを作成
     pub fn create_tag(&self, name: &str) -> Result<Tag> {
         let response = self.execute_remote_command(CommandRequest {
@@ -365,6 +419,26 @@ impl RemoteKijukuDB {
         let response = self.execute_remote_command(CommandRequest {
             operation: "getMediaTags".to_string(),
             params: serde_json::json!({ "media_id": media_id }),
+        })?;
+
+        self.check_response(response)
+    }
+
+    /// タグの使用数統計を取得
+    pub fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getTagUsageStats".to_string(),
+            params: serde_json::json!({}),
+        })?;
+
+        self.check_response(response)
+    }
+
+    /// 未使用のタグを取得
+    pub fn find_unused_tags(&self) -> Result<Vec<Tag>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "findUnusedTags".to_string(),
+            params: serde_json::json!({}),
         })?;
 
         self.check_response(response)
