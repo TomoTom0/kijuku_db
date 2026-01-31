@@ -289,3 +289,112 @@ fn test_backup_with_actual_database() {
     assert!(media.is_some());
     assert_eq!(media.unwrap().title, "テストメディア");
 }
+
+#[test]
+fn test_db_backup_method() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let backup_dir = temp_dir.path().join("backups");
+
+    // バックアップオプション付きでデータベースを開く
+    let options = DBOptions {
+        backup: Some(BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let db = KijukuDB::open_with_options(&db_path, options).unwrap();
+    db.migrate().unwrap();
+
+    // メディアを作成
+    db.create_media(&MediaInput {
+        title: "バックアップテスト".to_string(),
+        media_type: MediaType::Comic,
+        ..Default::default()
+    }).unwrap();
+
+    // backup()メソッドを直接呼び出す
+    let backup_path = db.backup().unwrap();
+    assert!(backup_path.is_some());
+
+    let backup_path = backup_path.unwrap();
+    assert!(std::path::Path::new(&backup_path).exists());
+
+    // バックアップファイルからデータベースを開いて内容を確認
+    let backup_db = KijukuDB::open(&backup_path).unwrap();
+    let all_media = backup_db.find_media(&Default::default(), None).unwrap();
+    assert_eq!(all_media.len(), 1);
+    assert_eq!(all_media[0].title, "バックアップテスト");
+}
+
+#[test]
+fn test_db_backup_method_without_backup_manager() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+
+    // バックアップマネージャーなしでデータベースを開く
+    let db = KijukuDB::open(&db_path).unwrap();
+    db.migrate().unwrap();
+
+    // backup()メソッドを呼び出すと None が返る
+    let result = db.backup().unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_db_list_backups_method() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let backup_dir = temp_dir.path().join("backups");
+
+    // バックアップオプション付きでデータベースを開く
+    let options = DBOptions {
+        backup: Some(BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let db = KijukuDB::open_with_options(&db_path, options).unwrap();
+    db.migrate().unwrap();
+
+    // 最初はバックアップがない
+    let backups = db.list_backups().unwrap();
+    assert_eq!(backups.len(), 0);
+
+    // バックアップを作成
+    db.backup().unwrap();
+
+    // バックアップ一覧を取得
+    let backups = db.list_backups().unwrap();
+    assert_eq!(backups.len(), 1);
+    assert!(backups[0].name.contains(".backup-"));
+    assert!(backups[0].path.exists());
+
+    // 2つ目のバックアップを作成
+    thread::sleep(Duration::from_millis(100)); // ファイル名が重複しないように待機
+    db.backup().unwrap();
+
+    // バックアップ一覧を取得
+    let backups = db.list_backups().unwrap();
+    assert_eq!(backups.len(), 2);
+}
+
+#[test]
+fn test_db_list_backups_method_without_backup_manager() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+
+    // バックアップマネージャーなしでデータベースを開く
+    let db = KijukuDB::open(&db_path).unwrap();
+    db.migrate().unwrap();
+
+    // list_backups()メソッドを呼び出すと空のリストが返る
+    let backups = db.list_backups().unwrap();
+    assert_eq!(backups.len(), 0);
+}

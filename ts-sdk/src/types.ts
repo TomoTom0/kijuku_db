@@ -127,6 +127,15 @@ export interface Tag {
 }
 
 /**
+ * タグ使用統計情報
+ */
+export interface TagUsageStats {
+  tag_id: number;
+  tag_name: string;
+  count: number;
+}
+
+/**
  * バックアップ設定オプション
  */
 export interface BackupOptions {

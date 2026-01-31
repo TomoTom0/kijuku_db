@@ -147,3 +147,125 @@ fn test_error_handling() {
     let result = db.delete_media(9999);
     assert!(result.is_err());
 }
+
+#[test]
+fn test_transaction_success() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path();
+    let db = KijukuDB::open(db_path).unwrap();
+    db.migrate().unwrap();
+
+    // トランザクション内で複数のメディアを作成
+    let result = db.transaction(|db| {
+        db.create_media(&MediaInput {
+            title: "トランザクション内メディア1".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        })?;
+
+        db.create_media(&MediaInput {
+            title: "トランザクション内メディア2".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        })?;
+
+        Ok(())
+    });
+
+    assert!(result.is_ok());
+
+    // 両方のメディアが作成されていることを確認
+    let all_media = db.find_media(&MediaFilter::default(), None).unwrap();
+    assert_eq!(all_media.len(), 2);
+}
+
+#[test]
+fn test_transaction_rollback() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path();
+    let db = KijukuDB::open(db_path).unwrap();
+    db.migrate().unwrap();
+
+    // トランザクション内でエラーが発生した場合、ロールバックされる
+    let result: Result<(), _> = db.transaction(|db| {
+        db.create_media(&MediaInput {
+            title: "メディア1".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        })?;
+
+        // 2つ目の作成は成功
+        db.create_media(&MediaInput {
+            title: "メディア2".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        })?;
+
+        // エラーを返す
+        Err(kijuku_db::KijukuError::Other("意図的なエラー".to_string()))
+    });
+
+    assert!(result.is_err());
+
+    // トランザクションがロールバックされたので、メディアは作成されていない
+    let all_media = db.find_media(&MediaFilter::default(), None).unwrap();
+    assert_eq!(all_media.len(), 0);
+}
+
+#[test]
+fn test_transaction_with_tags() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path();
+    let db = KijukuDB::open(db_path).unwrap();
+    db.migrate().unwrap();
+
+    // トランザクション内でメディアとタグを作成し、関連付ける
+    let (media_id, tag_id) = db.transaction(|db| {
+        let media = db.create_media(&MediaInput {
+            title: "タグ付きメディア".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        })?;
+
+        let tag = db.create_tag("アクション")?;
+        db.add_tag_to_media(media.id, tag.id)?;
+
+        Ok((media.id, tag.id))
+    }).unwrap();
+
+    // メディアとタグが正しく作成され、関連付けられていることを確認
+    let media = db.get_media(media_id).unwrap();
+    assert_eq!(media.title, "タグ付きメディア");
+
+    let tags = db.get_media_tags(media_id).unwrap();
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].id, tag_id);
+    assert_eq!(tags[0].name, "アクション");
+}
+
+#[test]
+fn test_close_method() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path();
+    let db = KijukuDB::open(db_path).unwrap();
+    db.migrate().unwrap();
+
+    // メディアを作成
+    db.create_media(&MediaInput {
+        title: "テストメディア".to_string(),
+        media_type: MediaType::Comic,
+        ..Default::default()
+    }).unwrap();
+
+    // 明示的にクローズ
+    db.close();
+
+    // この後、db は使用できない（コンパイル時にエラーになる）
+    // db.get_media(1); // これはコンパイルエラー
+
+    // データベースを再度開いてデータが保存されていることを確認
+    let db2 = KijukuDB::open(db_path).unwrap();
+    let media = db2.get_media(1);
+    assert!(media.is_some());
+    assert_eq!(media.unwrap().title, "テストメディア");
+}

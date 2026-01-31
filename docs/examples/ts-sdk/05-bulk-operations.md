@@ -112,7 +112,9 @@ try {
     });
   });
 } catch (error) {
-  console.log('エラー:', error.message);
+  if (error instanceof Error) {
+    console.log('エラー:', error.message);
+  }
   // トランザクション全体がロールバックされる
   // 「メディア1」も作成されていない
 }
@@ -289,6 +291,8 @@ function removeDuplicates() {
 removeDuplicates();
 ```
 
+> **パフォーマンス注意**: この実装は全データをメモリにロードするため、大量のデータがある場合はメモリ消費が大きくなります。データ量が多い場合は、GROUP BY句とHAVING句を使ったSQLクエリで重複を特定し、バッチ処理で削除することを検討してください。
+
 ## JSONからのインポート
 
 ### 基本的なインポート
@@ -373,6 +377,12 @@ exportComicsByArtist('尾田栄一郎', './oda-works.json');
 ## 実用的な例
 
 ### CSVからのインポート
+
+まず、csv-parseパッケージをインストールします:
+
+```bash
+npm install csv-parse
+```
 
 ```typescript
 import { parse } from 'csv-parse/sync';
@@ -523,6 +533,24 @@ for (let i = 0; i < 100; i++) {
 ### 3. 適切なバッチサイズ
 
 ```typescript
+// 大量データの例
+const largeDataset: MediaInput[] = Array.from({ length: 10000 }, (_, i) => ({
+  title: `Title ${i}`,
+  media_type: 'comic',
+}));
+
+// バッチ処理用のヘルパー関数
+function processBatches<T>(
+  data: T[],
+  batchSize: number,
+  callback: (batch: T[]) => void
+) {
+  for (let i = 0; i < data.length; i += batchSize) {
+    const batch = data.slice(i, i + batchSize);
+    callback(batch);
+  }
+}
+
 // メモリとパフォーマンスのバランスが重要
 const BATCH_SIZE = 100; // 100〜1000が推奨
 

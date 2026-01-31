@@ -67,6 +67,10 @@ console.log('タグを付与しました');
 ### 重複を気にせずタグ追加
 
 ```typescript
+// 前提：メディアとタグが既に存在する
+const media = db.createMedia({ title: 'サンプル作品', media_type: 'comic' });
+const favoriteTag = db.createTag('お気に入り');
+
 // 同じタグを複数回追加しても問題ない
 db.addTagToMedia(media.id, favoriteTag.id);
 db.addTagToMedia(media.id, favoriteTag.id); // 2回目は何もしない
@@ -190,12 +194,30 @@ console.log(`${onePiece.length}件に「完結済み」タグを付与しまし�
 
 ### タグの使用状況を調べる
 
-> **⚠️ パフォーマンス注意**: この実装はタグの数だけクエリを発行するため、タグ数が多い場合はパフォーマンスが低下します（N+1クエリ問題）。実際のアプリケーションでは、単一のSQLクエリで集計するか、SDKに集計機能が追加されるまでは使用を控えてください。
+**推奨: 組み込みAPIを使用**
 
 ```typescript
-function getTagUsageStats() {
+const stats = db.getTagUsageStats();
+
+console.log('タグの使用状況:');
+stats.forEach(({ tag_name, count }) => {
+  console.log(`- ${tag_name}: ${count}件`);
+});
+```
+
+`getTagUsageStats()`は効率的なSQLクエリでタグの使用数を集計し、使用数の降順で返します。
+
+**参考: 手動での集計方法（非推奨）**
+
+> **⚠️ パフォーマンス注意**: この実装はタグの数だけクエリを発行するため、タグ数が多い場合はパフォーマンスが低下します（N+1クエリ問題）。上記の`getTagUsageStats()`を使用してください。
+
+<details>
+<summary>非推奨の実装例を表示</summary>
+
+```typescript
+function getTagUsageStatsManual() {
   const allTags = db.getAllTags();
-  
+
   const stats = allTags.map(tag => {
     const mediaWithTag = db.findMedia({ tag_ids: [tag.id] });
     return {
@@ -203,67 +225,72 @@ function getTagUsageStats() {
       count: mediaWithTag.length,
     };
   });
-  
+
   // 使用数でソート
   stats.sort((a, b) => b.count - a.count);
-  
+
   return stats;
 }
-
-const stats = getTagUsageStats();
-console.log('タグの使用状況:');
-stats.forEach(({ tag, count }) => {
-  console.log(`- ${tag}: ${count}件`);
-});
 ```
 
-**より効率的な実装例（SQLを直接使用できる場合）:**
-```sql
-SELECT t.name, COUNT(mt.media_id) as count
-FROM tags t
-LEFT JOIN media_tags mt ON t.id = mt.tag_id
-GROUP BY t.id
-ORDER BY count DESC;
-```
+</details>
 
 ### 未使用のタグを見つける
 
-```typescript
-function findUnusedTags() {
-  const allTags = db.getAllTags();
-  
-  const unusedTags = allTags.filter(tag => {
-    const media = db.findMedia({ tag_ids: [tag.id] });
-    return media.length === 0;
-  });
-  
-  return unusedTags;
-}
+**推奨: 組み込みAPIを使用**
 
-const unused = findUnusedTags();
+```typescript
+const unused = db.findUnusedTags();
+
 console.log(`未使用のタグ: ${unused.length}件`);
 unused.forEach(tag => {
   console.log(`- ${tag.name}`);
 });
 ```
 
+`findUnusedTags()`は効率的なSQLクエリで未使用のタグを取得します。
+
+**参考: 手動での検索方法（非推奨）**
+
+> **⚠️ パフォーマンス注意**: この実装はタグの数だけクエリを発行するため、タグ数が多い場合はパフォーマンスが低下します（N+1クエリ問題）。上記の`findUnusedTags()`を使用してください。
+
+<details>
+<summary>非推奨の実装例を表示</summary>
+
+```typescript
+function findUnusedTagsManual() {
+  const allTags = db.getAllTags();
+
+  const unusedTags = allTags.filter(tag => {
+    const media = db.findMedia({ tag_ids: [tag.id] });
+    return media.length === 0;
+  });
+
+  return unusedTags;
+}
+```
+
+</details>
+
 ### メディアのタグを置き換える
 
 ```typescript
 function replaceMediaTags(mediaId: number, newTagNames: string[]) {
-  // 既存のタグをすべて削除
-  const currentTags = db.getMediaTags(mediaId);
-  currentTags.forEach(tag => {
-    db.removeTagFromMedia(mediaId, tag.id);
-  });
-  
-  // 新しいタグを追加
-  newTagNames.forEach(tagName => {
-    let tag = db.getTagByName(tagName);
-    if (!tag) {
-      tag = db.createTag(tagName);
-    }
-    db.addTagToMedia(mediaId, tag.id);
+  db.transaction(() => {
+    // 既存のタグをすべて削除
+    const currentTags = db.getMediaTags(mediaId);
+    currentTags.forEach(tag => {
+      db.removeTagFromMedia(mediaId, tag.id);
+    });
+
+    // 新しいタグを追加
+    newTagNames.forEach(tagName => {
+      let tag = db.getTagByName(tagName);
+      if (!tag) {
+        tag = db.createTag(tagName);
+      }
+      db.addTagToMedia(mediaId, tag.id);
+    });
   });
 }
 
