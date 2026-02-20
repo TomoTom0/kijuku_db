@@ -207,16 +207,10 @@ if (media) {
 ### 条件に一致するメディアを削除
 
 ```typescript
-// 注意: 一括削除APIは提供されていないため、ループで削除します
-db.transaction(() => {
-  const oldMedia = db.findMedia({ source: 'old-source' });
-  
-  oldMedia.forEach(m => {
-    db.deleteMedia(m.id);
-  });
-  
-  console.log(`${oldMedia.length}件のメディアを削除しました`);
-});
+// 一括削除APIを使用
+const oldMedia = db.findMedia({ source: 'old-source' });
+db.bulkDeleteMedia(oldMedia.map(m => m.id));
+console.log(`${oldMedia.length}件のメディアを削除しました`);
 ```
 
 ## 完全な例

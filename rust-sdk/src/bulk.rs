@@ -1,4 +1,4 @@
-use crate::crud::{create_media, delete_media, update_media_partial};
+use crate::crud::{create_media, delete_media, update_media};
 use crate::error::Result;
 use crate::types::{BulkUpdateItem, Media, MediaInput};
 use rusqlite::Connection;
@@ -53,7 +53,7 @@ pub fn bulk_update_media(conn: &Connection, updates: &[BulkUpdateItem]) -> Resul
     let tx = conn.unchecked_transaction()?;
 
     for item in updates {
-        update_media_partial(&tx, item.id, &item.data)?;
+        update_media(&tx, item.id, &item.data)?;
     }
 
     tx.commit()?;

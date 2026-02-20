@@ -115,19 +115,19 @@ if (favoriteTag) {
 }
 ```
 
-### 複数タグでの検索（AND条件）
+### 複数タグでの検索（OR条件）
 
 ```typescript
 const favoriteTag = db.getTagByName('お気に入り');
 const readTag = db.getTagByName('既読');
 
 if (favoriteTag && readTag) {
-  // 両方のタグを持つメディアのみ
+  // いずれかのタグを持つメディア（OR条件）
   const results = db.findMedia({
     tag_ids: [favoriteTag.id, readTag.id],
   });
-  
-  console.log(`お気に入り AND 既読: ${results.length}件`);
+
+  console.log(`お気に入り OR 既読: ${results.length}件`);
 }
 ```
 
@@ -428,4 +428,3 @@ db.close();
 ## 次のステップ
 
 - [05-bulk-operations.md](./05-bulk-operations.md) - バルク操作
-- [06-advanced-queries.md](./06-advanced-queries.md) - 高度なクエリ

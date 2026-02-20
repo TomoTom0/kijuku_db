@@ -262,15 +262,15 @@ const favorites = db.findMedia({ tag_ids: [favoriteTag.id] });
 console.log(`お気に入り: ${favorites.length}件`);
 ```
 
-### 複数タグでの検索（AND条件）
+### 複数タグでの検索（OR条件）
 
 ```typescript
 const tag1 = db.createTag('完結');
 const tag2 = db.createTag('お気に入り');
 
-// 両方のタグを持つメディアを検索
+// いずれかのタグを持つメディアを検索（OR条件）
 const results = db.findMedia({ tag_ids: [tag1.id, tag2.id] });
-console.log(`完結 AND お気に入り: ${results.length}件`);
+console.log(`完結 OR お気に入り: ${results.length}件`);
 ```
 
 ## 複雑な検索の例
@@ -408,4 +408,3 @@ const filtered = all.filter(m =>
 
 - [04-tag-management.md](./04-tag-management.md) - タグ管理
 - [05-bulk-operations.md](./05-bulk-operations.md) - バルク操作
-- [06-advanced-queries.md](./06-advanced-queries.md) - 高度なクエリ
