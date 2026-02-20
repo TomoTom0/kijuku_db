@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 3. メディアの検索
 
 ```rust
-use kijuku_db::{KijukuDB, MediaFilter, QueryOptions};
+use kijuku_db::{KijukuDB, MediaFilter, QueryOptions, SortOrder};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
@@ -139,11 +139,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let options = QueryOptions {
         order_by: Some("volume_number".to_string()),
-        order: Some("ASC".to_string()),
+        order: Some(SortOrder::Asc),
         ..Default::default()
     };
 
-    let results = db.find_media(&filter, &options)?;
+    let results = db.find_media(&filter, Some(&options))?;
 
     println!("見つかったメディア: {}件", results.len());
     for media in results {
@@ -186,7 +186,7 @@ use kijuku_db::{KijukuDB, MediaInput, MediaType};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
 
-    db.connection().transaction(|| {
+    db.transaction(|db| {
         let media = db.create_media(&MediaInput {
             title: "メディア1".to_string(),
             media_type: MediaType::Comic,
@@ -307,7 +307,7 @@ use kijuku_db::{KijukuDB, MediaInput, MediaType};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
 
-    db.connection().transaction(|| {
+    db.transaction(|db| {
         for i in 0..1000 {
             db.create_media(&MediaInput {
                 title: format!("メディア{}", i),
@@ -331,7 +331,7 @@ fn process_large_dataset(db: &KijukuDB, items: Vec<MediaInput>) -> Result<(), Bo
     const BATCH_SIZE: usize = 1000;
 
     for chunk in items.chunks(BATCH_SIZE) {
-        db.connection().transaction(|| {
+        db.transaction(|db| {
             for item in chunk {
                 db.create_media(item)?;
             }
@@ -348,11 +348,24 @@ fn process_large_dataset(db: &KijukuDB, items: Vec<MediaInput>) -> Result<(), Bo
 Rust SDKは以下の主要な型を提供しています：
 
 ```rust
+// メディアタイプ
+pub enum MediaType {
+    Comic,
+    Video,
+    Music,
+}
+
+// ソート順序
+pub enum SortOrder {
+    Asc,
+    Desc,
+}
+
 // メディア情報
 pub struct Media {
     pub id: i64,
     pub title: String,
-    pub media_type: String,
+    pub media_type: MediaType,
     pub artist: Option<String>,
     // ... その他のフィールド
 }
@@ -360,7 +373,7 @@ pub struct Media {
 // メディア作成用の入力データ
 pub struct MediaInput {
     pub title: String,
-    pub media_type: String,
+    pub media_type: MediaType,
     pub artist: Option<String>,
     // ... その他のフィールド
 }
@@ -368,15 +381,16 @@ pub struct MediaInput {
 // 検索フィルタ
 pub struct MediaFilter {
     pub title: Option<String>,
-    pub media_type: Option<String>,
+    pub media_type: Option<MediaType>,
     pub series: Option<String>,
+    pub tag_ids: Option<Vec<i64>>,
     // ... その他のフィールド
 }
 
 // クエリオプション
 pub struct QueryOptions {
     pub order_by: Option<String>,
-    pub order: Option<String>,
+    pub order: Option<SortOrder>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -454,5 +468,4 @@ cargo build --target x86_64-pc-windows-gnu --release
 ## 注意事項
 
 - Rust SDKはまだTypeScript SDKほど機能が充実していません
-- リモートDB操作はRust SDKでは未対応（TypeScript SDKを使用してください）
 - Web GUIサーバーはCLIツールとしてのみ利用可能

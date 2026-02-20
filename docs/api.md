@@ -40,7 +40,7 @@
 | `timeout` | `number` | `5000` | クエリタイムアウト（ミリ秒） |
 | `readonly` | `boolean` | `false` | 読み取り専用モードで開く |
 | `verbose` | `boolean` | `false` | SQLログを標準出力に表示 |
-| `backup` | `BackupOptions` | `undefined` | 自動バックアップ設定（backupDirが必須） |
+| `backup` | `BackupOptions` | `undefined` | 自動バックアップ設定 |
 
 **戻り値:** `KijukuDB`インスタンス
 
@@ -147,8 +147,8 @@ console.log(`Schema version: ${version}`);
 | `duration_sec` | `number` | | 再生時間（秒）※video/music |
 | `page_count` | `number` | | ページ数 ※comic |
 | `series` | `string` | | シリーズ名 |
-| `volume_number` | `number` | | 巻数 |
-| `volume_text` | `string` | | 巻数テキスト表記 |
+| `volume_number` | `number` | | 巻数（非推奨: 手動設定は無視されます。`volume_text`を使用してください） |
+| `volume_text` | `string` | | 巻数テキスト表記（整数を設定すると`volume_number`が自動計算されます） |
 | `volume_title` | `string` | | 巻タイトル |
 | `magazine` | `string` | | 雑誌名 |
 | `magazine_id` | `string` | | 雑誌ID |
@@ -317,6 +317,12 @@ console.log(media === null); // true
 | `series` | `string` | シリーズ部分一致検索 |
 | `source` | `string` | データソース完全一致 |
 | `tag_ids` | `number[]` | タグIDの配列（指定されたタグを持つメディア） |
+| `flag_exist` | `boolean` | ファイル存在フラグで絞り込み |
+| `language` | `string` | 言語コード完全一致 |
+| `magazine` | `string` | 雑誌名部分一致検索 |
+| `magazine_id` | `string` | 雑誌ID完全一致 |
+| `extension` | `string` | 拡張子完全一致 |
+| `external_id` | `string` | 外部ID完全一致 |
 
 **QueryOptions:**
 
@@ -576,9 +582,9 @@ const tag = db.createTag('新着');
 db.addTagToMedia(media.id, tag.id);
 ```
 
-**エラー:**
-- 同じ組み合わせが既に存在: `Error: UNIQUE constraint failed: media_tags.media_id, media_tags.tag_id`
-- 存在しない`mediaId`または`tagId`: `Error: FOREIGN KEY constraint failed`
+**注意:**
+- 同じ組み合わせが既に存在する場合: エラーをスローせず、何もしない（冪等）
+- 存在しない`mediaId`または`tagId`: `Error: Media X or Tag Y not found`
 
 ---
 
@@ -674,30 +680,26 @@ console.log(result.media1.id, result.media2.id);
 
 ### バックアップ操作
 
-#### `backup(destinationPath?: string): Promise<void>`
+#### `backup(): Promise<string | undefined>`
 
 データベースを手動でバックアップします。
 
-**パラメータ:**
+**パラメータ:** なし
 
-| 名前 | 型 | 必須 | 説明 |
-|------|-----|------|------|
-| `destinationPath` | `string` | | バックアップ先のパス。省略時は自動生成 |
-
-**戻り値:** `Promise<void>`
+**戻り値:** `Promise<string | undefined>` - バックアップファイルのパス。バックアップマネージャーが設定されていない場合は`undefined`
 
 **動作:**
-- `destinationPath`省略時: `{dbname}.backup.{timestamp}.db`形式で保存
+- バックアップファイルは`BackupOptions.backupDir`で指定したディレクトリに`{dbname}.{timestamp}.db`形式で保存
 - better-sqlite3のバックアップAPIを使用して安全にコピー
 
 **使用例:**
 
 ```typescript
-// 自動生成されたパスにバックアップ
-await db.backup();
-
-// 特定のパスにバックアップ
-await db.backup('./backups/manual-backup.db');
+// バックアップを実行
+const backupPath = await db.backup();
+if (backupPath) {
+  console.log(`バックアップを作成しました: ${backupPath}`);
+}
 ```
 
 **エラー:**
@@ -706,38 +708,42 @@ await db.backup('./backups/manual-backup.db');
 
 ---
 
-#### `listBackups(): string[]`
+#### `listBackups(): Array<{ name: string; path: string; createdAt: Date }>`
 
 バックアップファイルの一覧を取得します。
 
 **パラメータ:** なし
 
-**戻り値:** `string[]` - バックアップファイルパスの配列（作成日時の降順）
+**戻り値:** `Array<{ name: string; path: string; createdAt: Date }>` - バックアップ情報の配列（作成日時の降順）
 
 **使用例:**
 
 ```typescript
 const backups = db.listBackups();
 console.log(`バックアップファイル数: ${backups.length}`);
-backups.forEach(backup => console.log(backup));
+backups.forEach(backup => {
+  console.log(`${backup.name} - ${backup.createdAt.toISOString()} (${backup.path})`);
+});
 ```
 
 ---
 
-#### `getBackupManager(): BackupManager`
+#### `getBackupManager(): BackupManager | undefined`
 
 BackupManagerインスタンスを取得します（高度な使用）。
 
 **パラメータ:** なし
 
-**戻り値:** `BackupManager` - バックアップマネージャー
+**戻り値:** `BackupManager | undefined` - バックアップマネージャー。バックアップ設定なしで初期化した場合は`undefined`
 
 **使用例:**
 
 ```typescript
 const manager = db.getBackupManager();
-// バックアップ設定を変更
-manager.setInterval(1800000); // 30分間隔に変更
+if (manager) {
+  const backups = manager.listBackups();
+  console.log(`バックアップ数: ${backups.length}`);
+}
 ```
 
 ---
@@ -802,7 +808,7 @@ db.close();
 
 | プロパティ | 型 | 必須 | デフォルト | 説明 |
 |-----------|-----|------|----------|------|
-| `port` | `number` | ✓ | `40001` | サーバーのポート番号 |
+| `port` | `number` | | `40001` | サーバーのポート番号 |
 | `password` | `string` | | (自動生成) | 認証パスワード |
 
 **戻り値:** なし
@@ -1027,6 +1033,12 @@ interface MediaFilter {
   series?: string;
   source?: string;
   tag_ids?: number[];
+  flag_exist?: boolean;
+  language?: string;
+  magazine?: string;
+  magazine_id?: string;
+  extension?: string;
+  external_id?: string;
 }
 ```
 
@@ -1094,7 +1106,7 @@ interface DBOptions {
 
 ```typescript
 interface BackupOptions {
-  backupDir: string;          // バックアップ保存先（必須）
+  backupDir?: string;         // バックアップ保存先（省略時: dbPathの親ディレクトリ/backup/）
   intervalMs?: number;        // バックアップ間隔（ミリ秒、デフォルト: 3600000 = 1時間）
   enabled?: boolean;          // バックアップを有効化（デフォルト: true）
   onProgress?: (info: { totalPages: number; remainingPages: number }) => void;  // バックアップ進捗コールバック

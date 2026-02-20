@@ -73,7 +73,7 @@ const media = db.createMedia({
   media_type: 'comic',
   artist: '尾田栄一郎',
   series: 'ワンピース',
-  volume_number: 1,
+  volume_text: '1',  // volume_numberは自動計算されるためvolume_textを使用
   path: '/media/comics/onepiece_v01.cbz',
 });
 
@@ -211,12 +211,12 @@ kijuku-cli server --db ./data/kijuku.db --port 40001
 既存アプリケーションに組み込む必要がある場合のみ、プログラムから起動できます：
 
 ```typescript
-import { startServer } from 'kijuku-db';
+import { KijukuDB, startServer } from 'kijuku-db';
 
-const server = await startServer({
-  dbPath: './data/kijuku.db',
-  port: 40001,
-});
+const db = new KijukuDB('./data/kijuku.db');
+db.migrate();
+
+startServer(db, { port: 40001 });
 ```
 
 ## TypeScript型定義
@@ -242,6 +242,7 @@ function processMedia(media: Media): void {
 const filter: MediaFilter = {
   media_type: 'comic',
   series: 'ワンピース',
+  tag_ids: [1, 2],  // タグIDで絞り込む場合
 };
 
 const options: QueryOptions = {
@@ -363,10 +364,11 @@ try {
 
 より詳細なサンプルコードは以下を参照してください：
 
-- [基本的なCRUD操作](../../../../examples/01-basic-crud.ts)
-- [検索とフィルタリング](../../../../examples/02-search-filter.ts)
-- [バルク操作](../../../../examples/03-bulk-operations.ts)
-- [リモート操作](../../../../examples/04-remote-operations.ts)
+- [はじめに](../../../examples/ts-sdk/01-getting-started.md)
+- [基本的なCRUD操作](../../../examples/ts-sdk/02-basic-crud.md)
+- [検索とフィルタリング](../../../examples/ts-sdk/03-search-and-filter.md)
+- [タグ管理](../../../examples/ts-sdk/04-tag-management.md)
+- [バルク操作](../../../examples/ts-sdk/05-bulk-operations.md)
 
 ## トラブルシューティング
 
