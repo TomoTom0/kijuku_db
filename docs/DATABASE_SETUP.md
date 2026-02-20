@@ -130,7 +130,6 @@ for (const media of allMedia) {
   const newPath = `${basePath}/${media.id}`;
 
   db.updateMedia(media.id, {
-    ...media,
     path: newPath,
     thumbnail_path: `${newPath}/thumb.jpg`,
   });

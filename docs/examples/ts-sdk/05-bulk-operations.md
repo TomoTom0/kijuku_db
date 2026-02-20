@@ -561,5 +561,4 @@ processBatches(largeDataset, BATCH_SIZE, (batch) => {
 
 ## 次のステップ
 
-- [06-advanced-queries.md](./06-advanced-queries.md) - 高度なクエリ
-- [07-import-export.md](./07-import-export.md) - インポート/エクスポート
+- [API仕様書](../../api.md) - 全メソッドの詳細仕様

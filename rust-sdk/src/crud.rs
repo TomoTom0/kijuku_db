@@ -129,7 +129,7 @@ pub fn get_media(conn: &Connection, id: i64) -> Option<Media> {
 /// メディアを更新（部分更新）
 ///
 /// 指定されたフィールドのみ更新します。
-/// 更新するフィールドが1つも指定されていない場合はエラーを返します。
+/// 更新するフィールドが1つも指定されていない場合は何もしません。
 pub fn update_media(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Result<()> {
     // メディアが存在するか確認
     if get_media(conn, id).is_none() {
@@ -291,196 +291,9 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Res
         param_idx += 1;
     }
 
-    // 更新するフィールドがない場合はエラー
+    // 更新するフィールドがない場合は何もしない（TypeScript SDKとの動作統一）
     if update_fields.is_empty() {
-        return Err(KijukuError::Validation(
-            "更新するフィールドが指定されていません".to_string(),
-        ));
-    }
-
-    let sql = format!(
-        "UPDATE media SET {} WHERE id = ?{}",
-        update_fields.join(", "),
-        param_idx
-    );
-    params.push(Box::new(id));
-
-    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    conn.execute(&sql, params_refs.as_slice())?;
-
-    Ok(())
-}
-
-/// メディアを部分更新（指定されたフィールドのみ更新）
-///
-/// MediaUpdateInputを使用して、指定されたフィールドのみを更新します。
-/// 更新するフィールドが1つも指定されていない場合はエラーを返します。
-pub fn update_media_partial(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Result<()> {
-    // メディアが存在するか確認
-    if get_media(conn, id).is_none() {
-        return Err(KijukuError::NotFound(format!(
-            "メディアが見つかりません: id={}",
-            id
-        )));
-    }
-
-    // 動的にUPDATE文を構築（指定されたフィールドのみ更新）
-    let mut update_fields: Vec<String> = Vec::new();
-    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-    let mut param_idx = 1;
-
-    // NOT NULLフィールド: titleとmedia_type
-    if let Some(ref val) = input.title {
-        update_fields.push(format!("title = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref val) = input.media_type {
-        update_fields.push(format!("media_type = ?{}", param_idx));
-        params.push(Box::new(val.as_str().to_string()));
-        param_idx += 1;
-    }
-
-    // NULLableフィールド: Option<Option<T>>パターン
-    // Some(Some(val)) -> 値を設定, Some(None) -> NULLを設定, None -> 更新しない
-    if let Some(ref opt_val) = input.title_id {
-        update_fields.push(format!("title_id = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.path {
-        update_fields.push(format!("path = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.thumbnail_path {
-        update_fields.push(format!("thumbnail_path = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.artist {
-        update_fields.push(format!("artist = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.artist_id {
-        update_fields.push(format!("artist_id = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.description {
-        update_fields.push(format!("description = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.file_size {
-        update_fields.push(format!("file_size = ?{}", param_idx));
-        params.push(Box::new(*opt_val));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.duration_sec {
-        update_fields.push(format!("duration_sec = ?{}", param_idx));
-        params.push(Box::new(*opt_val));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.page_count {
-        update_fields.push(format!("page_count = ?{}", param_idx));
-        params.push(Box::new(*opt_val));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.series {
-        update_fields.push(format!("series = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.volume_text {
-        // volume_textが更新される場合、volume_numberも再計算
-        let volume_number = opt_val.as_ref().and_then(|v| calculate_volume_number(Some(v.as_str())));
-        update_fields.push(format!("volume_text = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-        update_fields.push(format!("volume_number = ?{}", param_idx));
-        params.push(Box::new(volume_number));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.volume_title {
-        update_fields.push(format!("volume_title = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.magazine {
-        update_fields.push(format!("magazine = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.magazine_id {
-        update_fields.push(format!("magazine_id = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.language {
-        update_fields.push(format!("language = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.source {
-        update_fields.push(format!("source = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.external_id {
-        update_fields.push(format!("external_id = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.artist_en {
-        update_fields.push(format!("artist_en = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.title_en {
-        update_fields.push(format!("title_en = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.chapters {
-        update_fields.push(format!("chapters = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.extension {
-        update_fields.push(format!("extension = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    // NOT NULLフィールド: flag_exist
-    if let Some(val) = input.flag_exist {
-        update_fields.push(format!("flag_exist = ?{}", param_idx));
-        params.push(Box::new(val));
-        param_idx += 1;
-    }
-    // NULLableフィールド: pron系
-    if let Some(ref opt_val) = input.title_pron {
-        update_fields.push(format!("title_pron = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.artist_pron {
-        update_fields.push(format!("artist_pron = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-    if let Some(ref opt_val) = input.series_pron {
-        update_fields.push(format!("series_pron = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
-    }
-
-    // 更新するフィールドがない場合はエラー
-    if update_fields.is_empty() {
-        return Err(KijukuError::Validation(
-            "更新するフィールドが指定されていません".to_string(),
-        ));
+        return Ok(());
     }
 
     let sql = format!(
@@ -612,10 +425,15 @@ mod tests {
 
         let media = create_media(&conn, &input).unwrap();
 
-        // 空の更新はエラーになる
+        // 空の更新はエラーにならず、何もしない（TypeScript SDKとの動作統一）
         let update_input = crate::types::MediaUpdateInput::default();
         let result = update_media(&conn, media.id, &update_input);
-        assert!(result.is_err());
+        assert!(result.is_ok());
+
+        // メディアの内容が変更されていないことを確認
+        let fetched = get_media(&conn, media.id).unwrap();
+        assert_eq!(fetched.title, "テスト");
+        assert_eq!(fetched.media_type, MediaType::Comic);
     }
 
     #[test]

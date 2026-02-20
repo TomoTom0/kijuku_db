@@ -79,12 +79,11 @@ for (const item of items) {
 db.bulkCreateMedia(items);
 
 // または手動でトランザクションを使用
-const insertMany = db.transaction((items) => {
+db.transaction(() => {
   for (const item of items) {
     db.createMedia(item);
   }
 });
-insertMany(items);
 ```
 
 ### 2. インデックスの活用
@@ -104,7 +103,7 @@ insertMany(items);
 大量のデータを扱う場合は、LIMIT/OFFSETを使用してページネーションを実装してください。
 
 ```typescript
-const results = findMedia(db, {}, { limit: 100, offset: 0 });
+const results = db.findMedia({}, { limit: 100, offset: 0 });
 ```
 
 ### 4. 適切なフィルタ条件の使用
