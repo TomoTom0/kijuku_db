@@ -129,7 +129,7 @@ pub fn get_media(conn: &Connection, id: i64) -> Option<Media> {
 /// メディアを更新（部分更新）
 ///
 /// 指定されたフィールドのみ更新します。
-/// 更新するフィールドが1つも指定されていない場合はエラーを返します。
+/// 更新するフィールドが1つも指定されていない場合は何もしません。
 pub fn update_media(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Result<()> {
     // メディアが存在するか確認
     if get_media(conn, id).is_none() {
@@ -291,11 +291,9 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Res
         param_idx += 1;
     }
 
-    // 更新するフィールドがない場合はエラー
+    // 更新するフィールドがない場合は何もしない（TypeScript SDKとの動作統一）
     if update_fields.is_empty() {
-        return Err(KijukuError::Validation(
-            "更新するフィールドが指定されていません".to_string(),
-        ));
+        return Ok(());
     }
 
     let sql = format!(
@@ -427,10 +425,15 @@ mod tests {
 
         let media = create_media(&conn, &input).unwrap();
 
-        // 空の更新はエラーになる
+        // 空の更新はエラーにならず、何もしない（TypeScript SDKとの動作統一）
         let update_input = crate::types::MediaUpdateInput::default();
         let result = update_media(&conn, media.id, &update_input);
-        assert!(result.is_err());
+        assert!(result.is_ok());
+
+        // メディアの内容が変更されていないことを確認
+        let fetched = get_media(&conn, media.id).unwrap();
+        assert_eq!(fetched.title, "テスト");
+        assert_eq!(fetched.media_type, MediaType::Comic);
     }
 
     #[test]
