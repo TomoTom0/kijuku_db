@@ -56,6 +56,18 @@ export function findMedia(
     whereClauses.push('m.source = @source');
     params.source = filter.source;
   }
+  if (filter.volume_title !== undefined) {
+    whereClauses.push('m.volume_title LIKE @volume_title');
+    params.volume_title = `%${filter.volume_title}%`;
+  }
+  if (filter.title_en !== undefined) {
+    whereClauses.push('m.title_en LIKE @title_en');
+    params.title_en = `%${filter.title_en}%`;
+  }
+  if (filter.artist_en !== undefined) {
+    whereClauses.push('m.artist_en LIKE @artist_en');
+    params.artist_en = `%${filter.artist_en}%`;
+  }
 
   // タグフィルタの処理
   let fromClause = 'FROM media m';

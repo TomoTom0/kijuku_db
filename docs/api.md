@@ -323,6 +323,9 @@ console.log(media === null); // true
 | `magazine_id` | `string` | 雑誌ID完全一致 |
 | `extension` | `string` | 拡張子完全一致 |
 | `external_id` | `string` | 外部ID完全一致 |
+| `volume_title` | `string` | 巻タイトル部分一致検索 |
+| `title_en` | `string` | タイトル（英語）部分一致検索 |
+| `artist_en` | `string` | 作者名（英語）部分一致検索 |
 
 **QueryOptions:**
 
@@ -1039,6 +1042,9 @@ interface MediaFilter {
   magazine_id?: string;
   extension?: string;
   external_id?: string;
+  volume_title?: string;
+  title_en?: string;
+  artist_en?: string;
 }
 ```
 
