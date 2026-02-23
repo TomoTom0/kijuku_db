@@ -3,6 +3,18 @@ use crate::error::Result;
 use crate::types::{Media, MediaFilter, QueryOptions};
 use rusqlite::Connection;
 
+fn add_like_filter(
+    where_clauses: &mut Vec<String>,
+    params: &mut Vec<Box<dyn rusqlite::ToSql>>,
+    column_name: &str,
+    value: &Option<String>,
+) {
+    if let Some(ref val) = value {
+        where_clauses.push(format!("m.{} LIKE ?", column_name));
+        params.push(Box::new(format!("%{}%", val)));
+    }
+}
+
 /// メディアを検索
 pub fn find_media(
     conn: &Connection,
@@ -13,18 +25,12 @@ pub fn find_media(
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     // フィルタ条件を構築
-    if let Some(ref title) = filter.title {
-        where_clauses.push("m.title LIKE ?".to_string());
-        params.push(Box::new(format!("%{}%", title)));
-    }
+    add_like_filter(&mut where_clauses, &mut params, "title", &filter.title);
     if let Some(ref title_id) = filter.title_id {
         where_clauses.push("m.title_id = ?".to_string());
         params.push(Box::new(title_id.clone()));
     }
-    if let Some(ref artist) = filter.artist {
-        where_clauses.push("m.artist LIKE ?".to_string());
-        params.push(Box::new(format!("%{}%", artist)));
-    }
+    add_like_filter(&mut where_clauses, &mut params, "artist", &filter.artist);
     if let Some(ref artist_id) = filter.artist_id {
         where_clauses.push("m.artist_id = ?".to_string());
         params.push(Box::new(artist_id.clone()));
@@ -33,10 +39,7 @@ pub fn find_media(
         where_clauses.push("m.media_type = ?".to_string());
         params.push(Box::new(media_type.as_str().to_string()));
     }
-    if let Some(ref series) = filter.series {
-        where_clauses.push("m.series LIKE ?".to_string());
-        params.push(Box::new(format!("%{}%", series)));
-    }
+    add_like_filter(&mut where_clauses, &mut params, "series", &filter.series);
     if let Some(ref source) = filter.source {
         where_clauses.push("m.source = ?".to_string());
         params.push(Box::new(source.clone()));
@@ -49,10 +52,7 @@ pub fn find_media(
         where_clauses.push("m.language = ?".to_string());
         params.push(Box::new(language.clone()));
     }
-    if let Some(ref magazine) = filter.magazine {
-        where_clauses.push("m.magazine LIKE ?".to_string());
-        params.push(Box::new(format!("%{}%", magazine)));
-    }
+    add_like_filter(&mut where_clauses, &mut params, "magazine", &filter.magazine);
     if let Some(ref magazine_id) = filter.magazine_id {
         where_clauses.push("m.magazine_id = ?".to_string());
         params.push(Box::new(magazine_id.clone()));
@@ -65,6 +65,9 @@ pub fn find_media(
         where_clauses.push("m.external_id = ?".to_string());
         params.push(Box::new(external_id.clone()));
     }
+    add_like_filter(&mut where_clauses, &mut params, "volume_title", &filter.volume_title);
+    add_like_filter(&mut where_clauses, &mut params, "title_en", &filter.title_en);
+    add_like_filter(&mut where_clauses, &mut params, "artist_en", &filter.artist_en);
 
     // FROM句の構築
     let mut from_clause = "FROM media m".to_string();
@@ -217,6 +220,87 @@ mod tests {
 
         let results = find_media(&conn, &filter, Some(&options)).unwrap();
         assert_eq!(results.len(), 5);
+    }
+
+    #[test]
+    fn test_find_by_volume_title() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "冒険コミック".to_string(),
+            media_type: MediaType::Comic,
+            volume_title: Some("序章".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "別作品".to_string(),
+            media_type: MediaType::Comic,
+            volume_title: Some("最終章".to_string()),
+            ..Default::default()
+        }).unwrap();
+
+        let filter = MediaFilter {
+            volume_title: Some("序".to_string()),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "冒険コミック");
+    }
+
+    #[test]
+    fn test_find_by_title_en() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "作品A".to_string(),
+            media_type: MediaType::Comic,
+            title_en: Some("Adventure Story".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品B".to_string(),
+            media_type: MediaType::Comic,
+            title_en: Some("Mystery Novel".to_string()),
+            ..Default::default()
+        }).unwrap();
+
+        let filter = MediaFilter {
+            title_en: Some("venture".to_string()),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "作品A");
+    }
+
+    #[test]
+    fn test_find_by_artist_en() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "作品A".to_string(),
+            media_type: MediaType::Comic,
+            artist_en: Some("John Smith".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品B".to_string(),
+            media_type: MediaType::Comic,
+            artist_en: Some("Jane Doe".to_string()),
+            ..Default::default()
+        }).unwrap();
+
+        let filter = MediaFilter {
+            artist_en: Some("Smith".to_string()),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "作品A");
     }
 
     #[test]

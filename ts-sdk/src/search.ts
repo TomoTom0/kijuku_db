@@ -4,6 +4,19 @@
 import type Database from 'better-sqlite3';
 import type { Media, MediaFilter, QueryOptions } from './types.js';
 
+function addLikeFilter(
+  whereClauses: string[],
+  params: Record<string, unknown>,
+  filterValue: string | undefined,
+  dbColumn: string,
+  paramName: string
+): void {
+  if (filterValue !== undefined) {
+    whereClauses.push(`m.${dbColumn} LIKE @${paramName}`);
+    params[paramName] = `%${filterValue}%`;
+  }
+}
+
 /**
  * SQLiteの行データをMediaオブジェクトに変換
  */
@@ -56,6 +69,9 @@ export function findMedia(
     whereClauses.push('m.source = @source');
     params.source = filter.source;
   }
+  addLikeFilter(whereClauses, params, filter.volume_title, 'volume_title', 'volume_title');
+  addLikeFilter(whereClauses, params, filter.title_en, 'title_en', 'title_en');
+  addLikeFilter(whereClauses, params, filter.artist_en, 'artist_en', 'artist_en');
 
   // タグフィルタの処理
   let fromClause = 'FROM media m';

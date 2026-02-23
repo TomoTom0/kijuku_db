@@ -124,6 +124,9 @@ pub struct MediaFilter {
     pub magazine_id: Option<String>,
     pub extension: Option<String>,
     pub external_id: Option<String>,
+    pub volume_title: Option<String>,
+    pub title_en: Option<String>,
+    pub artist_en: Option<String>,
 }
 
 /// ソート順序
