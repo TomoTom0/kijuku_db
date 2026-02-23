@@ -98,6 +98,9 @@ export interface MediaFilter {
   magazine_id?: string;
   extension?: string;
   external_id?: string;
+  volume_title?: string;
+  title_en?: string;
+  artist_en?: string;
 }
 
 /**

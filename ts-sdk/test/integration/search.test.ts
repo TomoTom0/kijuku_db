@@ -207,6 +207,59 @@ describe('Search and Filter', () => {
     });
   });
 
+  describe('findMedia - 部分一致フィルタ', () => {
+    test('volume_titleで部分一致フィルタできる', () => {
+      db.createMedia({
+        title: '巻タイトルA',
+        media_type: 'comic',
+        volume_title: '序章',
+      });
+      db.createMedia({
+        title: '巻タイトルB',
+        media_type: 'comic',
+        volume_title: '最終章',
+      });
+
+      const results = db.findMedia({ volume_title: '序' });
+      expect(results).toHaveLength(1);
+      expect(results[0].title).toBe('巻タイトルA');
+    });
+
+    test('title_enで部分一致フィルタできる', () => {
+      db.createMedia({
+        title: '作品A',
+        media_type: 'comic',
+        title_en: 'Adventure Story',
+      });
+      db.createMedia({
+        title: '作品B',
+        media_type: 'comic',
+        title_en: 'Mystery Novel',
+      });
+
+      const results = db.findMedia({ title_en: 'venture' });
+      expect(results).toHaveLength(1);
+      expect(results[0].title).toBe('作品A');
+    });
+
+    test('artist_enで部分一致フィルタできる', () => {
+      db.createMedia({
+        title: '作品A',
+        media_type: 'comic',
+        artist_en: 'John Smith',
+      });
+      db.createMedia({
+        title: '作品B',
+        media_type: 'comic',
+        artist_en: 'Jane Doe',
+      });
+
+      const results = db.findMedia({ artist_en: 'Smith' });
+      expect(results).toHaveLength(1);
+      expect(results[0].title).toBe('作品A');
+    });
+  });
+
   describe('findMedia - 複合条件', () => {
     test('フィルタ、ソート、ページネーションを組み合わせられる', () => {
       const results = db.findMedia(
