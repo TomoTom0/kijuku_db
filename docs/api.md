@@ -326,6 +326,7 @@ console.log(media === null); // true
 | `volume_title` | `string` | 巻タイトル部分一致検索 |
 | `title_en` | `string` | タイトル（英語）部分一致検索 |
 | `artist_en` | `string` | 作者名（英語）部分一致検索 |
+| `or_filters` | `MediaFilter[]` | OR条件で結合する追加フィルタ（ネスト可能） |
 
 **QueryOptions:**
 
@@ -369,11 +370,31 @@ const page2 = db.findMedia({}, { limit: 10, offset: 10 });
 
 // タグで検索
 const favorites = db.findMedia({ tag_ids: [1, 2] }); // タグID 1 or 2を持つメディア
+
+// OR条件で検索
+const results = db.findMedia({
+  or_filters: [
+    { artist: 'Author1' },
+    { artist: 'Author2' }
+  ]
+});
+
+// 複雑なOR条件（ネスト可能）
+const complex = db.findMedia({
+  or_filters: [
+    { artist: 'A', series: 'X' },
+    { artist: 'B' }
+  ]
+});
 ```
 
 **注意:**
 - `tag_ids`を指定した場合、いずれかのタグを持つメディアが返されます（OR条件）
 - 複数の検索条件は AND 条件で結合されます
+- `or_filters`を使用するとOR条件で検索できます
+  - 各フィルタ内の条件はAND結合
+  - `or_filters`間はOR結合
+  - ネスト可能（`or_filters`の中にさらに`or_filters`）
 - 部分一致検索は大文字小文字を区別します
 
 ---
