@@ -432,7 +432,7 @@ pub struct Media {
     pub duration_sec: Option<i32>,
     pub page_count: Option<i32>,
     pub series: Option<String>,
-    pub volume_number: Option<i32>,
+    pub volume_number: Option<i32>,  // volume_textから自動計算（ソート・フィルタ可能）
     pub volume_text: Option<String>,
     pub volume_title: Option<String>,
     pub magazine: Option<String>,
