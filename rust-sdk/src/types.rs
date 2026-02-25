@@ -127,6 +127,10 @@ pub struct MediaFilter {
     pub volume_title: Option<String>,
     pub title_en: Option<String>,
     pub artist_en: Option<String>,
+    /// OR条件で結合する追加フィルタ
+    /// 各フィルタ内の条件はAND結合、or_filters間はOR結合される
+    #[serde(default)]
+    pub or_filters: Option<Vec<MediaFilter>>,
 }
 
 /// ソート順序

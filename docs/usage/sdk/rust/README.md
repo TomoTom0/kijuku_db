@@ -154,6 +154,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+#### OR条件での検索
+
+`or_filters`を使用すると、複雑なOR条件で検索できます：
+
+```rust
+use kijuku_db::{KijukuDB, MediaFilter};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = KijukuDB::open("./data/kijuku.db")?;
+
+    // artist="A" OR artist="B"
+    let filter = MediaFilter {
+        or_filters: Some(vec![
+            MediaFilter {
+                artist: Some("Author1".to_string()),
+                ..Default::default()
+            },
+            MediaFilter {
+                artist: Some("Author2".to_string()),
+                ..Default::default()
+            },
+        ]),
+        ..Default::default()
+    };
+
+    let results = db.find_media(&filter, None)?;
+    println!("見つかったメディア: {}件", results.len());
+
+    // 複雑なOR条件: (artist="A" AND series="X") OR (artist="B")
+    let complex_filter = MediaFilter {
+        or_filters: Some(vec![
+            MediaFilter {
+                artist: Some("A".to_string()),
+                series: Some("X".to_string()),
+                ..Default::default()
+            },
+            MediaFilter {
+                artist: Some("B".to_string()),
+                ..Default::default()
+            },
+        ]),
+        ..Default::default()
+    };
+
+    let complex_results = db.find_media(&complex_filter, None)?;
+    println!("複雑条件の結果: {}件", complex_results.len());
+
+    Ok(())
+}
+```
+
+**セマンティクス:**
+- 同一フィルタ内の条件: AND結合
+- `or_filters`間: OR結合
+- ネスト可能（`or_filters`の中にさらに`or_filters`）
+
 ### 4. タグの管理
 
 ```rust
@@ -384,6 +440,7 @@ pub struct MediaFilter {
     pub media_type: Option<MediaType>,
     pub series: Option<String>,
     pub tag_ids: Option<Vec<i64>>,
+    pub or_filters: Option<Vec<MediaFilter>>,  // OR条件（ネスト可能）
     // ... その他のフィールド
 }
 

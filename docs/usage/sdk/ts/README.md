@@ -95,6 +95,48 @@ results.forEach(m => {
 });
 ```
 
+#### OR条件での検索
+
+`or_filters`を使用すると、複雑なOR条件で検索できます：
+
+```typescript
+// artist="A" OR artist="B"
+const results = db.findMedia({
+  or_filters: [
+    { artist: 'Author1' },
+    { artist: 'Author2' }
+  ]
+});
+
+// (artist="A" AND series="X") OR (artist="B")
+const complex = db.findMedia({
+  or_filters: [
+    { artist: 'A', series: 'X' },
+    { artist: 'B' }
+  ]
+});
+
+// ネストしたOR条件
+const nested = db.findMedia({
+  or_filters: [
+    {
+      media_type: 'comic',
+      or_filters: [
+        { series: 'X' },
+        { series: 'Y' }
+      ]
+    },
+    { artist: 'C' }
+  ]
+});
+// => (media_type='comic' AND (series='X' OR series='Y')) OR (artist='C')
+```
+
+**セマンティクス:**
+- 同一フィルタ内の条件: AND結合
+- `or_filters`間: OR結合
+- ネスト可能
+
 ### 4. タグの管理
 
 ```typescript

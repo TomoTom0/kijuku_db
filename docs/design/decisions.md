@@ -329,6 +329,7 @@ interface MediaFilter {
   series?: string;
   source?: string;
   tag_ids?: number[];
+  or_filters?: MediaFilter[];  // OR条件（ネスト可能）
 }
 
 interface QueryOptions {
