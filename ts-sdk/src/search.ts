@@ -41,102 +41,110 @@ interface FilterConditions {
   needsTagJoin: boolean;
 }
 
-/** パラメータ名のカウンター（OR条件で重複を避けるため） */
-let paramCounter = 0;
+/** パラメータ名カウンターの型 */
+interface ParamCounter {
+  value: number;
+}
 
-function getUniqueParamName(base: string): string {
-  paramCounter++;
-  return `${base}_${paramCounter}`;
+/**
+ * ユニークなパラメータ名を生成
+ * カウンターは参照渡しで、findMediaのスコープ内で管理
+ */
+function getUniqueParamName(base: string, counter: ParamCounter): string {
+  counter.value++;
+  return `${base}_${counter.value}`;
 }
 
 /**
  * 単一のMediaFilterから条件を構築
+ * @param filter - メディアフィルタ
+ * @param counter - パラメータ名カウンター（スコープ内で管理）
  */
-function buildFilterConditions(filter: MediaFilter): FilterConditions {
+function buildFilterConditions(filter: MediaFilter, counter: ParamCounter): FilterConditions {
   const whereClauses: string[] = [];
   const params: Record<string, unknown> = {};
   let needsTagJoin = false;
 
   // 各フィルタ条件を追加
   if (filter.title !== undefined) {
-    const paramName = getUniqueParamName('title');
+    const paramName = getUniqueParamName('title', counter);
     whereClauses.push(`m.title = @${paramName}`);
     params[paramName] = filter.title;
   }
   if (filter.title_id !== undefined) {
-    const paramName = getUniqueParamName('title_id');
+    const paramName = getUniqueParamName('title_id', counter);
     whereClauses.push(`m.title_id = @${paramName}`);
     params[paramName] = filter.title_id;
   }
   if (filter.artist !== undefined) {
-    const paramName = getUniqueParamName('artist');
+    const paramName = getUniqueParamName('artist', counter);
     whereClauses.push(`m.artist = @${paramName}`);
     params[paramName] = filter.artist;
   }
   if (filter.artist_id !== undefined) {
-    const paramName = getUniqueParamName('artist_id');
+    const paramName = getUniqueParamName('artist_id', counter);
     whereClauses.push(`m.artist_id = @${paramName}`);
     params[paramName] = filter.artist_id;
   }
   if (filter.media_type !== undefined) {
-    const paramName = getUniqueParamName('media_type');
+    const paramName = getUniqueParamName('media_type', counter);
     whereClauses.push(`m.media_type = @${paramName}`);
     params[paramName] = filter.media_type;
   }
   if (filter.series !== undefined) {
-    const paramName = getUniqueParamName('series');
+    const paramName = getUniqueParamName('series', counter);
     whereClauses.push(`m.series = @${paramName}`);
     params[paramName] = filter.series;
   }
   if (filter.source !== undefined) {
-    const paramName = getUniqueParamName('source');
+    const paramName = getUniqueParamName('source', counter);
     whereClauses.push(`m.source = @${paramName}`);
     params[paramName] = filter.source;
   }
   if (filter.flag_exist !== undefined) {
-    const paramName = getUniqueParamName('flag_exist');
+    const paramName = getUniqueParamName('flag_exist', counter);
     whereClauses.push(`m.flag_exist = @${paramName}`);
     params[paramName] = filter.flag_exist ? 1 : 0;
   }
   if (filter.language !== undefined) {
-    const paramName = getUniqueParamName('language');
+    const paramName = getUniqueParamName('language', counter);
     whereClauses.push(`m.language = @${paramName}`);
     params[paramName] = filter.language;
   }
   if (filter.magazine !== undefined) {
-    const paramName = getUniqueParamName('magazine');
+    const paramName = getUniqueParamName('magazine', counter);
     whereClauses.push(`m.magazine = @${paramName}`);
     params[paramName] = filter.magazine;
   }
   if (filter.magazine_id !== undefined) {
-    const paramName = getUniqueParamName('magazine_id');
+    const paramName = getUniqueParamName('magazine_id', counter);
     whereClauses.push(`m.magazine_id = @${paramName}`);
     params[paramName] = filter.magazine_id;
   }
   if (filter.extension !== undefined) {
-    const paramName = getUniqueParamName('extension');
+    const paramName = getUniqueParamName('extension', counter);
     whereClauses.push(`m.extension = @${paramName}`);
     params[paramName] = filter.extension;
   }
   if (filter.external_id !== undefined) {
-    const paramName = getUniqueParamName('external_id');
+    const paramName = getUniqueParamName('external_id', counter);
     whereClauses.push(`m.external_id = @${paramName}`);
     params[paramName] = filter.external_id;
   }
 
   // 部分一致フィルタ
   if (filter.volume_title !== undefined) {
-    const paramName = getUniqueParamName('volume_title');
+    const paramName = getUniqueParamName('volume_title', counter);
     whereClauses.push(`m.volume_title LIKE @${paramName}`);
     params[paramName] = `%${filter.volume_title}%`;
   }
   if (filter.title_en !== undefined) {
-    const paramName = getUniqueParamName('title_en');
+    const paramName = getUniqueParamName('title_en', counter);
     whereClauses.push(`m.title_en LIKE @${paramName}`);
     params[paramName] = `%${filter.title_en}%`;
   }
   if (filter.artist_en !== undefined) {
-    const paramName = getUniqueParamName('artist_en');
+    const paramName = getUniqueParamName('artist_en', counter);
     whereClauses.push(`m.artist_en LIKE @${paramName}`);
     params[paramName] = `%${filter.artist_en}%`;
   }
@@ -146,7 +154,7 @@ function buildFilterConditions(filter: MediaFilter): FilterConditions {
     needsTagJoin = true;
     const tagParamNames: string[] = [];
     filter.tag_ids.forEach((tagId) => {
-      const paramName = getUniqueParamName('tag_id');
+      const paramName = getUniqueParamName('tag_id', counter);
       tagParamNames.push(paramName);
       params[paramName] = tagId;
     });
@@ -197,11 +205,11 @@ export function findMedia(
   filter: MediaFilter,
   options?: QueryOptions
 ): Media[] {
-  // パラメータカウンターをリセット
-  paramCounter = 0;
+  // パラメータカウンターをfindMediaスコープ内で管理
+  const counter: ParamCounter = { value: 0 };
 
   // メインフィルタの条件を構築
-  const mainConditions = buildFilterConditions(filter);
+  const mainConditions = buildFilterConditions(filter, counter);
   let needsTagJoin = mainConditions.needsTagJoin;
   const allParams: Record<string, unknown> = { ...mainConditions.params };
 
@@ -209,7 +217,7 @@ export function findMedia(
   const orConditions: string[] = [];
   if (filter.or_filters) {
     for (const orFilter of filter.or_filters) {
-      const conditions = buildFilterConditions(orFilter);
+      const conditions = buildFilterConditions(orFilter, counter);
       if (conditions.needsTagJoin) {
         needsTagJoin = true;
       }
