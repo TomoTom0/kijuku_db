@@ -15,16 +15,23 @@ fn add_like_filter(
     }
 }
 
-/// メディアを検索
-pub fn find_media(
-    conn: &Connection,
-    filter: &MediaFilter,
-    options: Option<&QueryOptions>,
-) -> Result<Vec<Media>> {
+/// フィルタ条件の構築結果
+struct FilterConditions {
+    /// WHERE句の条件（AND結合済み）
+    condition: Option<String>,
+    /// パラメータ
+    params: Vec<Box<dyn rusqlite::ToSql>>,
+    /// タグフィルタを使用するか
+    needs_tag_join: bool,
+}
+
+/// 単一のMediaFilterから条件を構築
+fn build_filter_conditions(filter: &MediaFilter) -> FilterConditions {
     let mut where_clauses = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut needs_tag_join = false;
 
-    // フィルタ条件を構築
+    // 各フィルタ条件を追加
     add_like_filter(&mut where_clauses, &mut params, "title", &filter.title);
     if let Some(ref title_id) = filter.title_id {
         where_clauses.push("m.title_id = ?".to_string());
@@ -69,13 +76,10 @@ pub fn find_media(
     add_like_filter(&mut where_clauses, &mut params, "title_en", &filter.title_en);
     add_like_filter(&mut where_clauses, &mut params, "artist_en", &filter.artist_en);
 
-    // FROM句の構築
-    let mut from_clause = "FROM media m".to_string();
-
     // タグフィルタの処理
     if let Some(ref tag_ids) = filter.tag_ids {
         if !tag_ids.is_empty() {
-            from_clause = "FROM media m INNER JOIN media_tags mt ON m.id = mt.media_id".to_string();
+            needs_tag_join = true;
             let placeholders: Vec<String> = tag_ids.iter().map(|_| "?".to_string()).collect();
             where_clauses.push(format!("mt.tag_id IN ({})", placeholders.join(", ")));
             for tag_id in tag_ids {
@@ -84,15 +88,58 @@ pub fn find_media(
         }
     }
 
-    // WHERE句の構築
-    let where_clause = if !where_clauses.is_empty() {
-        format!("WHERE {}", where_clauses.join(" AND "))
+    // 条件をAND結合
+    let condition = if !where_clauses.is_empty() {
+        Some(where_clauses.join(" AND "))
     } else {
-        String::new()
+        None
+    };
+
+    FilterConditions {
+        condition,
+        params,
+        needs_tag_join,
+    }
+}
+
+/// メディアを検索
+pub fn find_media(
+    conn: &Connection,
+    filter: &MediaFilter,
+    options: Option<&QueryOptions>,
+) -> Result<Vec<Media>> {
+    // メインフィルタの条件を構築
+    let main_conditions = build_filter_conditions(filter);
+    let mut needs_tag_join = main_conditions.needs_tag_join;
+    let mut all_params = main_conditions.params;
+
+    // or_filtersの条件を構築
+    let mut or_conditions: Vec<String> = Vec::new();
+    if let Some(ref or_filters) = filter.or_filters {
+        for or_filter in or_filters {
+            let conditions = build_filter_conditions(or_filter);
+            if conditions.needs_tag_join {
+                needs_tag_join = true;
+            }
+            all_params.extend(conditions.params);
+            if let Some(cond) = conditions.condition {
+                or_conditions.push(cond);
+            }
+        }
+    }
+
+    // WHERE句の構築
+    let where_clause = build_where_clause(&main_conditions.condition, &or_conditions);
+
+    // FROM句の構築
+    let from_clause = if needs_tag_join {
+        "FROM media m INNER JOIN media_tags mt ON m.id = mt.media_id"
+    } else {
+        "FROM media m"
     };
 
     // GROUP BY句（タグフィルタ使用時に重複を排除）
-    let group_by_clause = if filter.tag_ids.is_some() && !filter.tag_ids.as_ref().unwrap().is_empty() {
+    let group_by_clause = if needs_tag_join {
         "GROUP BY m.id"
     } else {
         ""
@@ -133,7 +180,7 @@ pub fn find_media(
     );
 
     let mut stmt = conn.prepare(&sql)?;
-    let params_ref: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let params_ref: Vec<&dyn rusqlite::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
     let rows = stmt.query_map(params_ref.as_slice(), row_to_media)?;
 
     let mut media_list = Vec::new();
@@ -142,6 +189,27 @@ pub fn find_media(
     }
 
     Ok(media_list)
+}
+
+/// WHERE句を構築（OR条件を含む）
+fn build_where_clause(main_condition: &Option<String>, or_conditions: &[String]) -> String {
+    let mut all_conditions = Vec::new();
+
+    // メイン条件を追加
+    if let Some(cond) = main_condition {
+        all_conditions.push(format!("({})", cond));
+    }
+
+    // OR条件を追加
+    for cond in or_conditions {
+        all_conditions.push(format!("({})", cond));
+    }
+
+    if all_conditions.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", all_conditions.join(" OR "))
+    }
 }
 
 #[cfg(test)]
@@ -337,5 +405,164 @@ mod tests {
         assert_eq!(results[0].title, "A");
         assert_eq!(results[1].title, "B");
         assert_eq!(results[2].title, "C");
+    }
+
+    #[test]
+    fn test_find_with_or_filters() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // テストデータを作成
+        create_media(&conn, &MediaInput {
+            title: "作品A".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author1".to_string()),
+            series: Some("Series1".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品B".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author2".to_string()),
+            series: Some("Series2".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品C".to_string(),
+            media_type: MediaType::Video,
+            artist: Some("Author3".to_string()),
+            series: Some("Series3".to_string()),
+            ..Default::default()
+        }).unwrap();
+
+        // OR条件: artist="Author1" OR artist="Author2"
+        let filter = MediaFilter {
+            or_filters: Some(vec![
+                MediaFilter {
+                    artist: Some("Author1".to_string()),
+                    ..Default::default()
+                },
+                MediaFilter {
+                    artist: Some("Author2".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let titles: Vec<&str> = results.iter().map(|m| m.title.as_str()).collect();
+        assert!(titles.contains(&"作品A"));
+        assert!(titles.contains(&"作品B"));
+        assert!(!titles.contains(&"作品C"));
+    }
+
+    #[test]
+    fn test_find_with_or_filters_complex() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // テストデータを作成
+        create_media(&conn, &MediaInput {
+            title: "作品A".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author1".to_string()),
+            series: Some("Series1".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品B".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author1".to_string()),
+            series: Some("Series2".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品C".to_string(),
+            media_type: MediaType::Video,
+            artist: Some("Author2".to_string()),
+            series: Some("Series1".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品D".to_string(),
+            media_type: MediaType::Music,
+            artist: Some("Author3".to_string()),
+            series: Some("Series3".to_string()),
+            ..Default::default()
+        }).unwrap();
+
+        // 複雑なOR条件: (artist="Author1" AND series="Series1") OR (artist="Author2")
+        let filter = MediaFilter {
+            or_filters: Some(vec![
+                MediaFilter {
+                    artist: Some("Author1".to_string()),
+                    series: Some("Series1".to_string()),
+                    ..Default::default()
+                },
+                MediaFilter {
+                    artist: Some("Author2".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let titles: Vec<&str> = results.iter().map(|m| m.title.as_str()).collect();
+        assert!(titles.contains(&"作品A")); // Author1 + Series1
+        assert!(titles.contains(&"作品C")); // Author2
+        assert!(!titles.contains(&"作品B")); // Author1 but Series2
+        assert!(!titles.contains(&"作品D")); // Author3
+    }
+
+    #[test]
+    fn test_find_with_main_condition_and_or_filters() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // テストデータを作成
+        create_media(&conn, &MediaInput {
+            title: "作品A".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author1".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品B".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author2".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品C".to_string(),
+            media_type: MediaType::Video,
+            artist: Some("Author1".to_string()),
+            ..Default::default()
+        }).unwrap();
+
+        // メイン条件 + OR条件: (media_type=Comic) OR (artist="Author1")
+        let filter = MediaFilter {
+            media_type: Some(MediaType::Comic),
+            or_filters: Some(vec![
+                MediaFilter {
+                    artist: Some("Author1".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 3); // A, B (Comic), C (Author1)
+
+        let titles: Vec<&str> = results.iter().map(|m| m.title.as_str()).collect();
+        assert!(titles.contains(&"作品A"));
+        assert!(titles.contains(&"作品B"));
+        assert!(titles.contains(&"作品C"));
     }
 }

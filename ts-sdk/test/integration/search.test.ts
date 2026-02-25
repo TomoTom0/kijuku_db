@@ -294,4 +294,75 @@ describe('Search and Filter', () => {
       expect(results[1].title).toBe('コミック2');
     });
   });
+
+  describe('findMedia - OR条件フィルタ', () => {
+    test('or_filtersで複数の条件をOR結合できる', () => {
+      // artist="作者A" OR artist="作者B"
+      const results = db.findMedia({
+        or_filters: [
+          { artist: '作者A' },
+          { artist: '作者B' },
+        ],
+      });
+
+      expect(results).toHaveLength(3);
+      const artists = results.map((m) => m.artist);
+      expect(artists).toContain('作者A');
+      expect(artists).toContain('作者B');
+      expect(artists).not.toContain('作者C');
+    });
+
+    test('or_filters内で複数条件をAND結合できる', () => {
+      // (artist="作者A" AND series="シリーズX") OR (artist="作者C")
+      const results = db.findMedia({
+        or_filters: [
+          { artist: '作者A', series: 'シリーズX' },
+          { artist: '作者C' },
+        ],
+      });
+
+      expect(results).toHaveLength(2);
+      const titles = results.map((m) => m.title);
+      expect(titles).toContain('コミック1'); // 作者A + シリーズX
+      expect(titles).toContain('ミュージック1'); // 作者C
+    });
+
+    test('メイン条件とor_filtersを組み合わせられる', () => {
+      // (media_type="comic") OR (artist="作者A")
+      const results = db.findMedia({
+        media_type: 'comic',
+        or_filters: [
+          { artist: '作者A' },
+        ],
+      });
+
+      expect(results).toHaveLength(3);
+      const titles = results.map((m) => m.title);
+      expect(titles).toContain('コミック1');
+      expect(titles).toContain('コミック2');
+      expect(titles).toContain('ビデオ1'); // 作者Aだがcomicではない
+    });
+
+    test('or_filtersが空の場合は無視される', () => {
+      const results = db.findMedia({
+        artist: '作者A',
+        or_filters: [],
+      });
+
+      expect(results).toHaveLength(2);
+    });
+
+    test('or_filters内の空のフィルタは無視される', () => {
+      const results = db.findMedia({
+        or_filters: [
+          { artist: '作者A' },
+          {}, // 空のフィルタ
+        ],
+      });
+
+      // 空のフィルタは条件なしとなり、全件マッチするわけではない
+      // 実装では空のフィルタは条件として追加されない
+      expect(results).toHaveLength(2); // 作者Aのみ
+    });
+  });
 });
