@@ -421,27 +421,89 @@ pub enum SortOrder {
 pub struct Media {
     pub id: i64,
     pub title: String,
+    pub title_id: Option<String>,
+    pub path: Option<String>,
     pub media_type: MediaType,
+    pub thumbnail_path: Option<String>,
     pub artist: Option<String>,
-    // ... その他のフィールド
+    pub artist_id: Option<String>,
+    pub description: Option<String>,
+    pub file_size: Option<i64>,
+    pub duration_sec: Option<i32>,
+    pub page_count: Option<i32>,
+    pub series: Option<String>,
+    pub volume_number: Option<i32>,
+    pub volume_text: Option<String>,
+    pub volume_title: Option<String>,
+    pub magazine: Option<String>,
+    pub magazine_id: Option<String>,
+    pub language: Option<String>,
+    pub source: Option<String>,
+    pub external_id: Option<String>,
+    pub artist_en: Option<String>,
+    pub title_en: Option<String>,
+    pub chapters: Option<String>,
+    pub extension: Option<String>,
+    pub flag_exist: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub title_pron: Option<String>,
+    pub artist_pron: Option<String>,
+    pub series_pron: Option<String>,
 }
 
 // メディア作成用の入力データ
 pub struct MediaInput {
     pub title: String,
     pub media_type: MediaType,
+    pub title_id: Option<String>,
+    pub path: Option<String>,
+    pub thumbnail_path: Option<String>,
     pub artist: Option<String>,
-    // ... その他のフィールド
+    pub artist_id: Option<String>,
+    pub description: Option<String>,
+    pub file_size: Option<i64>,
+    pub duration_sec: Option<i32>,
+    pub page_count: Option<i32>,
+    pub series: Option<String>,
+    pub volume_number: Option<i32>,  // 手動設定は無視される
+    pub volume_text: Option<String>,
+    pub volume_title: Option<String>,
+    pub magazine: Option<String>,
+    pub magazine_id: Option<String>,
+    pub language: Option<String>,
+    pub source: Option<String>,
+    pub external_id: Option<String>,
+    pub artist_en: Option<String>,
+    pub title_en: Option<String>,
+    pub chapters: Option<String>,
+    pub extension: Option<String>,
+    pub flag_exist: Option<bool>,
+    pub title_pron: Option<String>,
+    pub artist_pron: Option<String>,
+    pub series_pron: Option<String>,
 }
 
 // 検索フィルタ
 pub struct MediaFilter {
     pub title: Option<String>,
+    pub title_id: Option<String>,
+    pub artist: Option<String>,
+    pub artist_id: Option<String>,
     pub media_type: Option<MediaType>,
     pub series: Option<String>,
+    pub source: Option<String>,
     pub tag_ids: Option<Vec<i64>>,
+    pub flag_exist: Option<bool>,
+    pub language: Option<String>,
+    pub magazine: Option<String>,
+    pub magazine_id: Option<String>,
+    pub extension: Option<String>,
+    pub external_id: Option<String>,
+    pub volume_title: Option<String>,
+    pub title_en: Option<String>,
+    pub artist_en: Option<String>,
     pub or_filters: Option<Vec<MediaFilter>>,  // OR条件（ネスト可能）
-    // ... その他のフィールド
 }
 
 // クエリオプション
