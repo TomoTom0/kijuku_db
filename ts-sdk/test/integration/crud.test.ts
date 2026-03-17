@@ -238,4 +238,32 @@ describe('CRUD Operations', () => {
       expect(created2.title).toBe('テストコミック2');
     });
   });
+
+  describe('UUID', () => {
+    test('作成時にUUIDが自動生成される', () => {
+      const media = db.createMedia({ title: 'UUID自動生成', media_type: 'comic' });
+      expect(media.uuid).toBeTruthy();
+      expect(media.uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    });
+
+    test('UUIDを手動指定して作成できる', () => {
+      const manualUuid = '550e8400-e29b-41d4-a716-446655440000';
+      const media = db.createMedia({ title: 'UUID手動', media_type: 'comic', uuid: manualUuid });
+      expect(media.uuid).toBe(manualUuid);
+    });
+
+    test('UUIDを更新できる', () => {
+      const media = db.createMedia({ title: 'UUID更新', media_type: 'comic' });
+      const newUuid = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+      db.updateMedia(media.id, { uuid: newUuid });
+      const updated = db.getMedia(media.id);
+      expect(updated?.uuid).toBe(newUuid);
+    });
+
+    test('重複UUIDはエラーになる', () => {
+      const uuid = '550e8400-e29b-41d4-a716-446655440001';
+      db.createMedia({ title: 'UUID重複1', media_type: 'comic', uuid });
+      expect(() => db.createMedia({ title: 'UUID重複2', media_type: 'comic', uuid })).toThrow();
+    });
+  });
 });

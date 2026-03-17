@@ -11,6 +11,7 @@ export type MediaType = 'comic' | 'video' | 'music';
  */
 export interface Media {
   id: number;
+  uuid: string;
   title: string;
   title_id?: string;
   path?: string;
@@ -52,6 +53,8 @@ export interface Media {
 export interface MediaInput {
   title: string;
   media_type: MediaType;
+  /** UUIDを手動指定する場合はここに設定。省略時は自動生成。 */
+  uuid?: string;
   title_id?: string;
   path?: string;
   thumbnail_path?: string;
