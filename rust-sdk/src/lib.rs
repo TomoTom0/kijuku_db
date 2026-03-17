@@ -521,6 +521,7 @@ impl Default for MediaInput {
         Self {
             title: String::new(),
             media_type: MediaType::Comic,
+            uuid: None,
             title_id: None,
             path: None,
             thumbnail_path: None,

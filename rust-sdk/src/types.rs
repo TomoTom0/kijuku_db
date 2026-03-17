@@ -38,6 +38,7 @@ impl MediaType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Media {
     pub id: i64,
+    pub uuid: String,
     pub title: String,
     pub title_id: Option<String>,
     pub path: Option<String>,
@@ -78,6 +79,8 @@ pub struct Media {
 pub struct MediaInput {
     pub title: String,
     pub media_type: MediaType,
+    /// UUIDを手動指定する場合はここに設定。省略時は自動生成。
+    pub uuid: Option<String>,
     pub title_id: Option<String>,
     pub path: Option<String>,
     pub thumbnail_path: Option<String>,
@@ -160,6 +163,9 @@ impl SortOrder {
 /// 注意: title, media_type, flag_existはNOT NULL制約があるためOption<T>のまま
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MediaUpdateInput {
+    /// UUID - Noneで更新しない、Some(Some(v))で更新（空文字列は不可）
+    #[serde(default, deserialize_with = "deserialize_nullable_field")]
+    pub uuid: Option<Option<String>>,
     /// タイトル（NOT NULL）- Noneで更新しない、Someで更新
     pub title: Option<String>,
     /// メディアタイプ（NOT NULL）- Noneで更新しない、Someで更新
