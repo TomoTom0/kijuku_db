@@ -14,49 +14,50 @@ fn calculate_volume_number(volume_text: Option<&str>) -> Option<i32> {
 /// SQLiteの行データをMediaオブジェクトに変換
 pub(crate) fn row_to_media(row: &Row) -> rusqlite::Result<Media> {
     Ok(Media {
-        id: row.get(0)?,
-        title: row.get(1)?,
-        title_id: row.get(2)?,
-        path: row.get(3)?,
+        id: row.get("id")?,
+        uuid: row.get("uuid")?,
+        title: row.get("title")?,
+        title_id: row.get("title_id")?,
+        path: row.get("path")?,
         media_type: {
-            let type_str: String = row.get(4)?;
+            let type_str: String = row.get("media_type")?;
             MediaType::from_str(&type_str).ok_or_else(|| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    4,
+                    0,
                     rusqlite::types::Type::Text,
                     Box::new(KijukuError::Parse(format!("Invalid media_type: {}", type_str))),
                 )
             })?
         },
-        thumbnail_path: row.get(5)?,
-        artist: row.get(6)?,
-        artist_id: row.get(7)?,
-        description: row.get(8)?,
-        file_size: row.get(9)?,
-        duration_sec: row.get(10)?,
-        page_count: row.get(11)?,
-        series: row.get(12)?,
-        volume_number: row.get(13)?,
-        volume_text: row.get(14)?,
-        volume_title: row.get(15)?,
-        magazine: row.get(16)?,
-        magazine_id: row.get(17)?,
-        language: row.get(18)?,
-        source: row.get(19)?,
-        external_id: row.get(20)?,
-        artist_en: row.get(21)?,
-        title_en: row.get(22)?,
-        chapters: row.get(23)?,
-        extension: row.get(24)?,
+        thumbnail_path: row.get("thumbnail_path")?,
+        artist: row.get("artist")?,
+        artist_id: row.get("artist_id")?,
+        description: row.get("description")?,
+        file_size: row.get("file_size")?,
+        duration_sec: row.get("duration_sec")?,
+        page_count: row.get("page_count")?,
+        series: row.get("series")?,
+        volume_number: row.get("volume_number")?,
+        volume_text: row.get("volume_text")?,
+        volume_title: row.get("volume_title")?,
+        magazine: row.get("magazine")?,
+        magazine_id: row.get("magazine_id")?,
+        language: row.get("language")?,
+        source: row.get("source")?,
+        external_id: row.get("external_id")?,
+        artist_en: row.get("artist_en")?,
+        title_en: row.get("title_en")?,
+        chapters: row.get("chapters")?,
+        extension: row.get("extension")?,
         flag_exist: {
-            let flag: i64 = row.get(25)?;
+            let flag: i64 = row.get("flag_exist")?;
             flag != 0
         },
-        created_at: row.get(26)?,
-        updated_at: row.get(27)?,
-        title_pron: row.get(28)?,
-        artist_pron: row.get(29)?,
-        series_pron: row.get(30)?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+        title_pron: row.get("title_pron")?,
+        artist_pron: row.get("artist_pron")?,
+        series_pron: row.get("series_pron")?,
     })
 }
 
@@ -71,9 +72,12 @@ pub fn create_media(conn: &Connection, input: &MediaInput) -> Result<Media> {
     // volume_textからvolume_numberを自動計算
     let volume_number = calculate_volume_number(input.volume_text.as_deref());
 
+    // UUID: 手動指定があればそれを使用、なければv4を自動生成
+    let uuid = input.uuid.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
     conn.execute(
         "INSERT INTO media (
-            title, title_id, path, media_type, thumbnail_path,
+            uuid, title, title_id, path, media_type, thumbnail_path,
             artist, artist_id, description, file_size, duration_sec,
             page_count, series, volume_number, volume_text, volume_title,
             magazine, magazine_id, language, source, external_id,
@@ -82,9 +86,10 @@ pub fn create_media(conn: &Connection, input: &MediaInput) -> Result<Media> {
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
         )",
         params![
+            uuid,
             input.title,
             input.title_id,
             input.path,
@@ -143,6 +148,13 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Res
     let mut update_fields: Vec<String> = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let mut param_idx = 1;
+
+    // UUID更新
+    if let Some(ref opt_val) = input.uuid {
+        update_fields.push(format!("uuid = ?{}", param_idx));
+        params.push(Box::new(opt_val.clone()));
+        param_idx += 1;
+    }
 
     // NOT NULLフィールド: titleとmedia_type
     if let Some(ref val) = input.title {
@@ -644,6 +656,90 @@ mod tests {
             title: "メディア2".to_string(),
             media_type: MediaType::Comic,
             path: Some(path.to_string()),
+            ..Default::default()
+        };
+        let result = create_media(&conn, &input2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_media_with_manual_uuid() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let manual_uuid = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        let input = MediaInput {
+            title: "UUIDテスト".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(manual_uuid.clone()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.uuid, manual_uuid);
+    }
+
+    #[test]
+    fn test_create_media_auto_uuid() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "自動UUID".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        // 自動生成されたUUIDがUUID v4形式であることを確認
+        assert_eq!(media.uuid.len(), 36);
+        assert_eq!(media.uuid.chars().filter(|&c| c == '-').count(), 4);
+    }
+
+    #[test]
+    fn test_update_media_uuid() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "UUID更新テスト".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        };
+        let media = create_media(&conn, &input).unwrap();
+        let original_uuid = media.uuid.clone();
+
+        let new_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string();
+        let update_input = crate::types::MediaUpdateInput {
+            uuid: Some(Some(new_uuid.clone())),
+            ..Default::default()
+        };
+        update_media(&conn, media.id, &update_input).unwrap();
+
+        let updated = get_media(&conn, media.id).unwrap();
+        assert_eq!(updated.uuid, new_uuid);
+        assert_ne!(updated.uuid, original_uuid);
+    }
+
+    #[test]
+    fn test_duplicate_uuid_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let uuid = "550e8400-e29b-41d4-a716-446655440000".to_string();
+
+        let input1 = MediaInput {
+            title: "メディア1".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(uuid.clone()),
+            ..Default::default()
+        };
+        create_media(&conn, &input1).unwrap();
+
+        let input2 = MediaInput {
+            title: "メディア2".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(uuid.clone()),
             ..Default::default()
         };
         let result = create_media(&conn, &input2);

@@ -1,6 +1,7 @@
 /**
  * マイグレーション機能
  */
+import { randomUUID } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -22,7 +23,7 @@ function getSchemaPath(): string {
  */
 export function migrate(db: Database.Database): void {
   const currentVersion = getSchemaVersion(db);
-  const targetVersion = 3;
+  const targetVersion = 4;
 
   if (currentVersion === 0) {
     // 初回マイグレーション: schema.sqlを実行
@@ -73,6 +74,23 @@ function applyMigration(db: Database.Database, version: number): void {
         INSERT OR IGNORE INTO schema_version (version) VALUES (3);
       `);
       break;
+    case 4: {
+      // uuid列を追加
+      db.exec('ALTER TABLE media ADD COLUMN uuid TEXT;');
+
+      // 既存データにUUID v4を生成して設定
+      const ids = (db.prepare('SELECT id FROM media').all() as { id: number }[]).map(r => r.id);
+      const updateStmt = db.prepare('UPDATE media SET uuid = ? WHERE id = ?');
+      for (const id of ids) {
+        updateStmt.run(randomUUID(), id);
+      }
+
+      // ユニークインデックスを作成
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_media_uuid ON media(uuid);');
+
+      db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (4);');
+      break;
+    }
     default:
       throw new Error(`Unknown migration version: ${version}`);
   }

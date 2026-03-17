@@ -1,5 +1,5 @@
 use crate::error::Result;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +20,7 @@ fn get_schema_sql() -> &'static str {
 /// マイグレーションを実行
 pub fn migrate(conn: &Connection) -> Result<()> {
     let current_version = get_current_version(conn)?;
-    let target_version = 3;
+    let target_version = 4;
 
     if current_version == 0 {
         // 初回マイグレーション: schema.sqlを実行
@@ -71,6 +71,30 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
                    AND CAST(volume_text AS INTEGER) IS NOT NULL
                    AND TRIM(volume_text) = CAST(CAST(volume_text AS INTEGER) AS TEXT)",
                 [],
+            )?;
+
+            conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+            Ok(())
+        }
+        4 => {
+            // uuid列を追加
+            conn.execute_batch("ALTER TABLE media ADD COLUMN uuid TEXT;")?;
+
+            // 既存データにUUID v4を生成して設定
+            let ids: Vec<i64> = {
+                let mut stmt = conn.prepare("SELECT id FROM media")?;
+                let result = stmt.query_map([], |row| row.get(0))?
+                    .collect::<std::result::Result<Vec<i64>, _>>()?;
+                result
+            };
+            for id in ids {
+                let uuid = uuid::Uuid::new_v4().to_string();
+                conn.execute("UPDATE media SET uuid = ?1 WHERE id = ?2", params![uuid, id])?;
+            }
+
+            // ユニークインデックスを作成
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_media_uuid ON media(uuid);",
             )?;
 
             conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
@@ -154,7 +178,7 @@ mod tests {
         migrate(&conn).unwrap();
 
         let version = get_schema_version(&conn).unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[test]
