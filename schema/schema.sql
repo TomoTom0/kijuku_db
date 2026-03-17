@@ -71,9 +71,6 @@ CREATE TABLE IF NOT EXISTS media_attributes (
   FOREIGN KEY (media_id) REFERENCES media(id)
 );
 
--- インデックス: UUID検索用
-CREATE UNIQUE INDEX IF NOT EXISTS idx_media_uuid ON media(uuid);
-
 -- インデックス: ID検索用（完全一致）
 CREATE INDEX IF NOT EXISTS idx_media_title_id ON media(title_id);
 CREATE INDEX IF NOT EXISTS idx_media_artist_id ON media(artist_id);

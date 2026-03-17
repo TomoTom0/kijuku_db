@@ -75,18 +75,88 @@ function applyMigration(db: Database.Database, version: number): void {
       `);
       break;
     case 4: {
-      // uuid列を追加
+      // uuid列をNOT NULL制約付きで追加するため、テーブルを再作成する
+
+      // 1. 一時的にuuid列をNULLableで追加
       db.exec('ALTER TABLE media ADD COLUMN uuid TEXT;');
 
-      // 既存データにUUID v4を生成して設定
-      const ids = (db.prepare('SELECT id FROM media').all() as { id: number }[]).map(r => r.id);
+      // 2. 既存データにUUID v4を生成して設定（トランザクションでパフォーマンス改善）
+      const ids = (db.prepare('SELECT id FROM media').all() as { id: number }[]);
       const updateStmt = db.prepare('UPDATE media SET uuid = ? WHERE id = ?');
-      for (const id of ids) {
-        updateStmt.run(randomUUID(), id);
-      }
+      const updateMany = db.transaction((items: { id: number }[]) => {
+        for (const item of items) {
+          updateStmt.run(randomUUID(), item.id);
+        }
+      });
+      updateMany(ids);
 
-      // ユニークインデックスを作成
-      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_media_uuid ON media(uuid);');
+      // 3. テーブルを再作成してNOT NULL制約を付与（SQLiteではALTER TABLEでNOT NULL追加不可）
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE media_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          uuid TEXT NOT NULL UNIQUE,
+          title TEXT NOT NULL,
+          title_id TEXT,
+          path TEXT UNIQUE,
+          media_type TEXT NOT NULL CHECK(media_type IN ('comic', 'video', 'music')),
+          thumbnail_path TEXT,
+          artist TEXT,
+          artist_id TEXT,
+          description TEXT,
+          file_size INTEGER,
+          duration_sec INTEGER,
+          page_count INTEGER,
+          series TEXT,
+          volume_number INTEGER,
+          volume_text TEXT,
+          volume_title TEXT,
+          magazine TEXT,
+          magazine_id TEXT,
+          language TEXT,
+          source TEXT,
+          external_id TEXT,
+          artist_en TEXT,
+          title_en TEXT,
+          chapters TEXT,
+          extension TEXT,
+          flag_exist INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          title_pron TEXT,
+          artist_pron TEXT,
+          series_pron TEXT
+        );
+
+        INSERT INTO media_new SELECT
+          id, uuid, title, title_id, path, media_type, thumbnail_path,
+          artist, artist_id, description, file_size, duration_sec,
+          page_count, series, volume_number, volume_text, volume_title,
+          magazine, magazine_id, language, source, external_id,
+          artist_en, title_en, chapters, extension, flag_exist,
+          created_at, updated_at, title_pron, artist_pron, series_pron
+        FROM media;
+
+        DROP TABLE media;
+        ALTER TABLE media_new RENAME TO media;
+
+        CREATE INDEX IF NOT EXISTS idx_media_title_id ON media(title_id);
+        CREATE INDEX IF NOT EXISTS idx_media_artist_id ON media(artist_id);
+        CREATE INDEX IF NOT EXISTS idx_media_media_type ON media(media_type);
+        CREATE INDEX IF NOT EXISTS idx_media_series ON media(series);
+        CREATE INDEX IF NOT EXISTS idx_media_source ON media(source);
+        CREATE INDEX IF NOT EXISTS idx_media_type_created ON media(media_type, created_at DESC);
+
+        CREATE TRIGGER IF NOT EXISTS update_media_timestamp
+        AFTER UPDATE ON media
+        FOR EACH ROW
+        BEGIN
+          UPDATE media SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+        END;
+
+        PRAGMA foreign_keys = ON;
+      `);
 
       db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (4);');
       break;

@@ -158,7 +158,7 @@ export function updateMedia(
     const fields: string[] = [];
     const values: Record<string, any> = { id };
 
-  if (data.uuid !== undefined) {
+  if (data.uuid != null) {
     fields.push('uuid = @uuid');
     values.uuid = data.uuid;
   }

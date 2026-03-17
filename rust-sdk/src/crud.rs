@@ -23,7 +23,7 @@ pub(crate) fn row_to_media(row: &Row) -> rusqlite::Result<Media> {
             let type_str: String = row.get("media_type")?;
             MediaType::from_str(&type_str).ok_or_else(|| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    0,
+                    0, // 列名アクセスのため動的インデックス取得は不要; プレースホルダーとして0を使用
                     rusqlite::types::Type::Text,
                     Box::new(KijukuError::Parse(format!("Invalid media_type: {}", type_str))),
                 )
@@ -149,11 +149,20 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Res
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     let mut param_idx = 1;
 
-    // UUID更新
+    // UUID更新（NOT NULL制約あり: Some(None)はエラー）
     if let Some(ref opt_val) = input.uuid {
-        update_fields.push(format!("uuid = ?{}", param_idx));
-        params.push(Box::new(opt_val.clone()));
-        param_idx += 1;
+        match opt_val {
+            Some(val) => {
+                update_fields.push(format!("uuid = ?{}", param_idx));
+                params.push(Box::new(val.clone()));
+                param_idx += 1;
+            }
+            None => {
+                return Err(KijukuError::Validation(
+                    "UUID cannot be set to null.".to_string(),
+                ));
+            }
+        }
     }
 
     // NOT NULLフィールド: titleとmedia_type
