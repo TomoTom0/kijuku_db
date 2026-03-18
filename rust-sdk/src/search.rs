@@ -147,9 +147,11 @@ pub fn find_media(
 
     // ORDER BY句の構築
     let order_by_clause = if let Some(opts) = options {
-        if let Some(ref order_by) = opts.order_by {
-            let order = opts.order.as_ref().map(|o| o.as_str()).unwrap_or("ASC");
-            format!("ORDER BY m.{} {}", order_by, order)
+        if !opts.sort_keys.is_empty() {
+            let parts: Vec<String> = opts.sort_keys.iter()
+                .map(|sk| format!("m.{} {}", sk.field, sk.order.as_str()))
+                .collect();
+            format!("ORDER BY {}", parts.join(", "))
         } else {
             String::new()
         }
@@ -217,7 +219,7 @@ mod tests {
     use super::*;
     use crate::crud::create_media;
     use crate::migration;
-    use crate::types::{MediaInput, MediaType, SortOrder};
+    use crate::types::{MediaInput, MediaType, SortKey, SortOrder};
 
     #[test]
     fn test_find_all() {
@@ -396,8 +398,7 @@ mod tests {
 
         let filter = MediaFilter::default();
         let options = QueryOptions {
-            order_by: Some("title".to_string()),
-            order: Some(SortOrder::Asc),
+            sort_keys: vec![SortKey { field: "title".to_string(), order: SortOrder::Asc }],
             ..Default::default()
         };
 

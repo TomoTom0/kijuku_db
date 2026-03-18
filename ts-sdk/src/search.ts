@@ -241,9 +241,9 @@ export function findMedia(
 
   // ORDER BY句の構築
   let orderByClause = '';
-  if (options?.orderBy) {
-    const order = options.order ?? 'ASC';
-    orderByClause = `ORDER BY m.${options.orderBy} ${order}`;
+  if (options?.sortKeys && options.sortKeys.length > 0) {
+    const parts = options.sortKeys.map(sk => `m.${sk.field} ${sk.order ?? 'ASC'}`);
+    orderByClause = `ORDER BY ${parts.join(', ')}`;
   }
 
   // LIMIT/OFFSET句の構築

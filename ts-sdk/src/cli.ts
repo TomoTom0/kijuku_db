@@ -274,8 +274,9 @@ async function runSearch(options: Record<string, string>): Promise<void> {
     const queryOptions: any = {};
     if (options.limit) queryOptions.limit = parseInt(options.limit, 10);
     if (options.offset) queryOptions.offset = parseInt(options.offset, 10);
-    if (options.orderBy) queryOptions.orderBy = options.orderBy;
-    if (options.order) queryOptions.order = options.order;
+    if (options.orderBy) {
+      queryOptions.sortKeys = [{ field: options.orderBy, order: options.order === 'DESC' ? 'DESC' : 'ASC' }];
+    }
 
     // リモート/ローカルで処理を分岐
     const results = parsed.isRemote

@@ -164,7 +164,7 @@ describe('Bulk Operations', () => {
         media_type: 'comic',
       });
 
-      const allMedia = db.findMedia({}, { orderBy: 'id', order: 'ASC' });
+      const allMedia = db.findMedia({}, { sortKeys: [{ field: 'id', order: 'ASC' }] });
 
       expect(allMedia).toHaveLength(4);
       expect(allMedia[0].title).toBe('コミック1');

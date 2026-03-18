@@ -111,7 +111,7 @@ const byArtistId = db.findMedia({ artist_id: 'oda-eiichiro' });
 // 新しい順
 const newest = db.findMedia(
   { media_type: 'comic' },
-  { orderBy: 'created_at', order: 'DESC' }
+  { sortKeys: [{ field: 'created_at', order: 'DESC' }] }
 );
 
 console.log('最新のコミック:');
@@ -122,7 +122,7 @@ newest.slice(0, 5).forEach(m => {
 // 古い順
 const oldest = db.findMedia(
   { media_type: 'comic' },
-  { orderBy: 'created_at', order: 'ASC' }
+  { sortKeys: [{ field: 'created_at', order: 'ASC' }] }
 );
 ```
 
@@ -132,7 +132,7 @@ const oldest = db.findMedia(
 // タイトル昇順（あいうえお順）
 const sortedByTitle = db.findMedia(
   { media_type: 'comic' },
-  { orderBy: 'title', order: 'ASC' }
+  { sortKeys: [{ field: 'title', order: 'ASC' }] }
 );
 
 sortedByTitle.forEach(m => {
@@ -145,7 +145,7 @@ sortedByTitle.forEach(m => {
 ```typescript
 const sortedByArtist = db.findMedia(
   {},
-  { orderBy: 'artist', order: 'ASC' }
+  { sortKeys: [{ field: 'artist', order: 'ASC' }] }
 );
 
 sortedByArtist.forEach(m => {
@@ -159,7 +159,7 @@ sortedByArtist.forEach(m => {
 // volume_numberでソート（数値として正しくソートされる）
 const volumes = db.findMedia(
   { series: 'ワンピース' },
-  { orderBy: 'volume_number', order: 'ASC' }
+  { sortKeys: [{ field: 'volume_number', order: 'ASC' }] }
 );
 
 volumes.forEach(m => {
@@ -169,6 +169,34 @@ volumes.forEach(m => {
 // => 2巻 - ワンピース 2巻
 // => ...
 // => 10巻 - ワンピース 10巻  （文字列ソートだと"2巻"の後に来てしまう）
+```
+
+### 多段ソート
+
+複数のフィールドを組み合わせてソートできます：
+
+```typescript
+// 作者昇順 → タイトル昇順（同じ作者内でタイトル順）
+const multiSorted = db.findMedia(
+  { media_type: 'comic' },
+  {
+    sortKeys: [
+      { field: 'artist', order: 'ASC' },
+      { field: 'title', order: 'ASC' },
+    ],
+  }
+);
+
+// シリーズ昇順 → 巻数昇順
+const seriesVolumes = db.findMedia(
+  { media_type: 'comic' },
+  {
+    sortKeys: [
+      { field: 'series', order: 'ASC' },
+      { field: 'volume_number', order: 'ASC' },
+    ],
+  }
+);
 ```
 
 ## ページネーション
@@ -206,8 +234,7 @@ function getPage(pageNumber: number, pageSize: number) {
     {
       limit: pageSize,
       offset: offset,
-      orderBy: 'created_at',
-      order: 'DESC',
+      sortKeys: [{ field: 'created_at', order: 'DESC' }],
     }
   );
 }
@@ -287,8 +314,7 @@ if (favoriteTag) {
       tag_ids: [favoriteTag.id],
     },
     {
-      orderBy: 'created_at',
-      order: 'DESC',
+      sortKeys: [{ field: 'created_at', order: 'DESC' }],
       limit: 10,
     }
   );
