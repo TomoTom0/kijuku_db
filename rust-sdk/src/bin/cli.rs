@@ -6,7 +6,8 @@
 use clap::Parser;
 use include_dir::{include_dir, Dir};
 use kijuku_db::{
-    AttributeValueType, BulkUpdateItem, KijukuDB, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions,
+    AttributeValueType, BulkUpdateItem, KijukuDB, MediaFilter, MediaInput, MediaUpdateInput,
+    QueryOptions, UpdateExistOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -169,6 +170,16 @@ struct DeleteAllMediaAttributesParams {
     media_id: i64,
 }
 
+/// update-existのパラメータ
+#[derive(Debug, Deserialize)]
+struct UpdateExistParams {
+    #[serde(default)]
+    filter: MediaFilter,
+    options: Option<QueryOptions>,
+    #[serde(default)]
+    update_options: UpdateExistOptions,
+}
+
 use clap::Subcommand;
 
 /// SDK利用ガイドを表示
@@ -242,6 +253,15 @@ enum Commands {
         /// ドキュメントタイプ (overview|ts|rust|api)
         #[arg(value_name = "TYPE", default_value = "overview")]
         doc_type: String,
+    },
+    /// フィルタで絞り込んだメディアのflag_existをファイル存在状態に基づいて更新する
+    UpdateExist {
+        /// DBを更新せず結果を出力のみ
+        #[arg(long)]
+        dry_run: bool,
+        /// MediaFilterのJSON文字列
+        #[arg(long, default_value = "{}")]
+        filter: String,
     },
 }
 
@@ -319,6 +339,9 @@ async fn main() {
         Some(Commands::Server { port, password }) => {
             handle_server(db_path, *port, password.clone()).await;
         }
+        Some(Commands::UpdateExist { dry_run, filter }) => {
+            handle_update_exist_subcommand(db_path, *dry_run, filter);
+        }
         None => {
             handle_stdin(db_path);
         }
@@ -352,6 +375,7 @@ fn execute_command(db: &KijukuDB, request: &CommandRequest) -> CommandResponse {
         "getMediaAttributes" => handle_get_media_attributes(db, &request.params),
         "deleteMediaAttribute" => handle_delete_media_attribute(db, &request.params),
         "deleteAllMediaAttributes" => handle_delete_all_media_attributes(db, &request.params),
+        "updateExist" => handle_update_exist(db, &request.params),
         _ => CommandResponse::error(format!("不明な操作: {}", request.operation)),
     }
 }
@@ -683,6 +707,59 @@ fn handle_delete_all_media_attributes(
     match db.delete_all_media_attributes(params.media_id) {
         Ok(_) => CommandResponse::success(serde_json::json!({"deleted": true})),
         Err(e) => CommandResponse::error(format!("全属性削除エラー: {}", e)),
+    }
+}
+
+fn handle_update_exist(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: UpdateExistParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+
+    match db.update_exist(&params.filter, params.options.as_ref(), &params.update_options) {
+        Ok(result) => match serde_json::to_value(result) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
+        Err(e) => CommandResponse::error(format!("update-existエラー: {}", e)),
+    }
+}
+
+fn handle_update_exist_subcommand(db_path: &str, dry_run: bool, filter_json: &str) {
+    let filter: MediaFilter = match serde_json::from_str(filter_json) {
+        Ok(f) => f,
+        Err(e) => {
+            let response = CommandResponse::error(format!("filterのJSONパースエラー: {}", e));
+            output_response(&response);
+            return;
+        }
+    };
+
+    let db = match KijukuDB::open(db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            let response = CommandResponse::error(format!("データベースのオープンに失敗: {}", e));
+            output_response(&response);
+            return;
+        }
+    };
+
+    if let Err(e) = db.migrate() {
+        let response = CommandResponse::error(format!("マイグレーションに失敗: {}", e));
+        output_response(&response);
+        return;
+    }
+
+    let update_options = UpdateExistOptions { dry_run };
+    match db.update_exist(&filter, None, &update_options) {
+        Ok(result) => match serde_json::to_value(result) {
+            Ok(data) => output_response(&CommandResponse::success(data)),
+            Err(e) => output_response(&CommandResponse::error(format!(
+                "レスポンスのシリアライズに失敗: {}",
+                e
+            ))),
+        },
+        Err(e) => output_response(&CommandResponse::error(format!("update-existエラー: {}", e))),
     }
 }
 
