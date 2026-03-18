@@ -149,6 +149,18 @@ function buildFilterConditions(filter: MediaFilter, counter: ParamCounter): Filt
     params[paramName] = `%${filter.artist_en}%`;
   }
 
+  // id_inフィルタの処理
+  if (filter.id_in && filter.id_in.length > 0) {
+    const idParamNames: string[] = [];
+    filter.id_in.forEach((id) => {
+      const paramName = getUniqueParamName('id_in', counter);
+      idParamNames.push(paramName);
+      params[paramName] = id;
+    });
+    const idPlaceholders = idParamNames.map((name) => `@${name}`).join(', ');
+    whereClauses.push(`m.id IN (${idPlaceholders})`);
+  }
+
   // タグフィルタの処理
   if (filter.tag_ids && filter.tag_ids.length > 0) {
     needsTagJoin = true;
