@@ -80,13 +80,7 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
             // uuid列をNOT NULL制約付きで追加するため、テーブルを再作成する
 
             // 1. uuid列が存在しない場合のみ追加（冪等性のため）
-            let uuid_exists: bool = {
-                let mut stmt = conn.prepare("PRAGMA table_info(media)")?;
-                let exists = stmt
-                    .query_map([], |row| row.get::<_, String>(1))?
-                    .any(|name| name.map(|n| n == "uuid").unwrap_or(false));
-                exists
-            };
+            let uuid_exists = get_table_info(conn, "media")?.iter().any(|c| c.name == "uuid");
             if !uuid_exists {
                 conn.execute_batch("ALTER TABLE media ADD COLUMN uuid TEXT;")?;
             }
