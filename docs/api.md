@@ -332,10 +332,16 @@ console.log(media === null); // true
 
 | プロパティ | 型 | デフォルト | 説明 |
 |-----------|-----|-----------|------|
-| `orderBy` | `string` | `'created_at'` | ソート対象カラム |
-| `order` | `'ASC' \| 'DESC'` | `'DESC'` | ソート順 |
+| `sortKeys` | `SortKey[]` | `[]` | ソートキーの配列（複数指定で多段ソート） |
 | `limit` | `number` | なし | 最大取得件数 |
 | `offset` | `number` | `0` | スキップする件数 |
+
+**SortKey:**
+
+| プロパティ | 型 | デフォルト | 説明 |
+|-----------|-----|-----------|------|
+| `field` | `string` | | ソート対象カラム名 |
+| `order` | `'ASC' \| 'DESC'` | `'ASC'` | ソート順 |
 
 **戻り値:** `Media[]` - 検索結果の配列（0件の場合は空配列）
 
@@ -358,10 +364,16 @@ const results = db.findMedia({
   series: 'ワンピース',
 });
 
-// ソート指定
+// ソート指定（単一フィールド）
 const sortedMedia = db.findMedia(
   { media_type: 'comic' },
-  { orderBy: 'title', order: 'ASC' }
+  { sortKeys: [{ field: 'title', order: 'ASC' }] }
+);
+
+// 多段ソート（作者昇順 → タイトル昇順）
+const multiSorted = db.findMedia(
+  { media_type: 'comic' },
+  { sortKeys: [{ field: 'artist', order: 'ASC' }, { field: 'title', order: 'ASC' }] }
 );
 
 // ページネーション
@@ -1073,18 +1085,30 @@ interface MediaFilter {
 
 ---
 
+### SortKey
+
+```typescript
+interface SortKey {
+  field: string;
+  order?: 'ASC' | 'DESC';
+}
+```
+
+ソートキー（フィールドと方向）。
+
+---
+
 ### QueryOptions
 
 ```typescript
 interface QueryOptions {
-  orderBy?: string;
-  order?: 'ASC' | 'DESC';
+  sortKeys?: SortKey[];
   limit?: number;
   offset?: number;
 }
 ```
 
-ソート・ページネーション設定。
+ソート・ページネーション設定。`sortKeys` に複数のキーを指定することで多段ソートが可能。
 
 ---
 

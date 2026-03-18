@@ -332,9 +332,13 @@ interface MediaFilter {
   or_filters?: MediaFilter[];  // OR条件（ネスト可能）
 }
 
-interface QueryOptions {
-  orderBy?: string;  // 'created_at', 'title', etc.
+interface SortKey {
+  field: string;  // 'created_at', 'title', etc.
   order?: 'ASC' | 'DESC';
+}
+
+interface QueryOptions {
+  sortKeys?: SortKey[];  // 複数指定で多段ソート
   limit?: number;
   offset?: number;
 }

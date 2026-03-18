@@ -266,11 +266,18 @@ pub struct BulkUpdateItem {
     pub data: MediaUpdateInput,
 }
 
+/// ソートキー（フィールドと方向）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SortKey {
+    pub field: String,
+    pub order: SortOrder,
+}
+
 /// クエリオプション（ソート、ページネーション）
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct QueryOptions {
-    pub order_by: Option<String>,
-    pub order: Option<SortOrder>,
+    #[serde(default)]
+    pub sort_keys: Vec<SortKey>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -401,8 +408,7 @@ mod tests {
     fn test_query_options_default() {
         // QueryOptionsのデフォルト値を確認
         let options = QueryOptions::default();
-        assert!(options.order_by.is_none());
-        assert!(options.order.is_none());
+        assert!(options.sort_keys.is_empty());
         assert!(options.limit.is_none());
         assert!(options.offset.is_none());
     }

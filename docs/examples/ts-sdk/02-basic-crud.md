@@ -75,7 +75,7 @@ if (retrieved) {
 // ソートやフィルタで使える
 const sorted = db.findMedia(
   { series: 'ワンピース' },
-  { orderBy: 'volume_number', order: 'ASC' }
+  { sortKeys: [{ field: 'volume_number', order: 'ASC' }] }
 );
 ```
 
