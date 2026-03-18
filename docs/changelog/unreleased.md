@@ -66,6 +66,14 @@
 - `tower`, `tower-http`: ミドルウェアと静的ファイルサービング
 - `rand`, `sha2`, `uuid`: 認証・セキュリティ
 
+## Fixed
+
+### マイグレーション version 4 の冪等化
+
+- `uuid`列がすでに存在するDBに対してマイグレーションを再実行した場合に`ALTER TABLE`が失敗するバグを修正
+- `PRAGMA table_info(media)`で列の存在を事前チェックし、存在しない場合のみ`ADD COLUMN`を実行するよう変更
+- `uuid`が既に設定されているレコードを再処理しないよう`WHERE uuid IS NULL`を追加
+
 ## Changed
 
 - CLIコマンド名を`serve`から`server`に変更（TypeScript SDK）

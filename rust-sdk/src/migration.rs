@@ -79,12 +79,21 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
         4 => {
             // uuid列をNOT NULL制約付きで追加するため、テーブルを再作成する
 
-            // 1. 一時的にuuid列をNULLableで追加
-            conn.execute_batch("ALTER TABLE media ADD COLUMN uuid TEXT;")?;
+            // 1. uuid列が存在しない場合のみ追加（冪等性のため）
+            let uuid_exists: bool = {
+                let mut stmt = conn.prepare("PRAGMA table_info(media)")?;
+                let exists = stmt
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .any(|name| name.map(|n| n == "uuid").unwrap_or(false));
+                exists
+            };
+            if !uuid_exists {
+                conn.execute_batch("ALTER TABLE media ADD COLUMN uuid TEXT;")?;
+            }
 
-            // 2. 既存データにUUID v4を生成して設定
+            // 2. 既存データのうちuuidがNULLのレコードにUUID v4を生成して設定
             let ids: Vec<i64> = {
-                let mut stmt = conn.prepare("SELECT id FROM media")?;
+                let mut stmt = conn.prepare("SELECT id FROM media WHERE uuid IS NULL")?;
                 let result = stmt.query_map([], |row| row.get(0))?
                     .collect::<std::result::Result<Vec<i64>, _>>()?;
                 result
