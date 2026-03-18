@@ -77,10 +77,14 @@ fn build_filter_conditions(filter: &MediaFilter) -> FilterConditions {
     add_like_filter(&mut where_clauses, &mut params, "artist_en", &filter.artist_en);
 
     // id_inフィルタの処理
+    // SQLiteのパラメータ数上限（デフォルト999）を考慮してチャンク分割
     if let Some(ref ids) = filter.id_in {
         if !ids.is_empty() {
-            let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
-            where_clauses.push(format!("m.id IN ({})", placeholders.join(", ")));
+            const CHUNK_SIZE: usize = 999;
+            let in_clauses: Vec<String> = ids.chunks(CHUNK_SIZE).map(|chunk| {
+                format!("m.id IN ({})", vec!["?"; chunk.len()].join(", "))
+            }).collect();
+            where_clauses.push(format!("({})", in_clauses.join(" OR ")));
             for id in ids {
                 params.push(Box::new(*id));
             }

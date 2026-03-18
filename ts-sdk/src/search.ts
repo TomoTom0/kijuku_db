@@ -150,15 +150,20 @@ function buildFilterConditions(filter: MediaFilter, counter: ParamCounter): Filt
   }
 
   // id_inフィルタの処理
+  // SQLiteのパラメータ数上限（デフォルト999）を考慮してチャンク分割
   if (filter.id_in && filter.id_in.length > 0) {
-    const idParamNames: string[] = [];
-    filter.id_in.forEach((id) => {
-      const paramName = getUniqueParamName('id_in', counter);
-      idParamNames.push(paramName);
-      params[paramName] = id;
-    });
-    const idPlaceholders = idParamNames.map((name) => `@${name}`).join(', ');
-    whereClauses.push(`m.id IN (${idPlaceholders})`);
+    const CHUNK_SIZE = 999;
+    const orClauses: string[] = [];
+    for (let i = 0; i < filter.id_in.length; i += CHUNK_SIZE) {
+      const chunk = filter.id_in.slice(i, i + CHUNK_SIZE);
+      const idParamNames = chunk.map((id) => {
+        const paramName = getUniqueParamName('id_in', counter);
+        params[paramName] = id;
+        return `@${paramName}`;
+      });
+      orClauses.push(`m.id IN (${idParamNames.join(', ')})`);
+    }
+    whereClauses.push(`(${orClauses.join(' OR ')})`);
   }
 
   // タグフィルタの処理
