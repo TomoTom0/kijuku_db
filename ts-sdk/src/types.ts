@@ -112,11 +112,18 @@ export interface MediaFilter {
 }
 
 /**
+ * ソートキー（フィールドと方向）
+ */
+export interface SortKey {
+  field: string;
+  order?: 'ASC' | 'DESC';
+}
+
+/**
  * クエリオプション（ソート、ページネーション）
  */
 export interface QueryOptions {
-  orderBy?: string;
-  order?: 'ASC' | 'DESC';
+  sortKeys?: SortKey[];
   limit?: number;
   offset?: number;
 }

@@ -1,4 +1,4 @@
-use kijuku_db::{KijukuDB, MediaInput, MediaUpdateInput, MediaType, MediaFilter, QueryOptions, SortOrder};
+use kijuku_db::{KijukuDB, MediaInput, MediaUpdateInput, MediaType, MediaFilter, QueryOptions, SortKey, SortOrder};
 use tempfile::NamedTempFile;
 
 #[test]
@@ -91,8 +91,7 @@ fn test_full_workflow() {
 
     // 検索: ソートとページネーション
     let options = QueryOptions {
-        order_by: Some("title".to_string()),
-        order: Some(SortOrder::Asc),
+        sort_keys: vec![SortKey { field: "title".to_string(), order: SortOrder::Asc }],
         limit: Some(1),
         offset: Some(0),
         ..Default::default()

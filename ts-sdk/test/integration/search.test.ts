@@ -111,7 +111,7 @@ describe('Search and Filter', () => {
     test('created_atで昇順ソートできる', () => {
       const results = db.findMedia(
         {},
-        { orderBy: 'created_at', order: 'ASC' }
+        { sortKeys: [{ field: 'created_at', order: 'ASC' }] }
       );
       expect(results).toHaveLength(4);
       expect(results[0].title).toBe('コミック1');
@@ -119,14 +119,14 @@ describe('Search and Filter', () => {
     });
 
     test('titleで降順ソートできる', () => {
-      const results = db.findMedia({}, { orderBy: 'title', order: 'DESC' });
+      const results = db.findMedia({}, { sortKeys: [{ field: 'title', order: 'DESC' }] });
       expect(results).toHaveLength(4);
       expect(results[0].title).toBe('ミュージック1');
       expect(results[3].title).toBe('コミック1');
     });
 
     test('artistでソートできる', () => {
-      const results = db.findMedia({}, { orderBy: 'artist', order: 'ASC' });
+      const results = db.findMedia({}, { sortKeys: [{ field: 'artist', order: 'ASC' }] });
       expect(results).toHaveLength(4);
       expect(results[0].artist).toBe('作者A');
       expect(results[2].artist).toBe('作者B');
@@ -143,7 +143,7 @@ describe('Search and Filter', () => {
     test('offsetで取得開始位置を指定できる', () => {
       const results = db.findMedia(
         {},
-        { offset: 2, orderBy: 'created_at', order: 'ASC' }
+        { offset: 2, sortKeys: [{ field: 'created_at', order: 'ASC' }] }
       );
       expect(results).toHaveLength(2);
       expect(results[0].title).toBe('ビデオ1');
@@ -152,11 +152,11 @@ describe('Search and Filter', () => {
     test('limitとoffsetを組み合わせてページネーションできる', () => {
       const page1 = db.findMedia(
         {},
-        { limit: 2, offset: 0, orderBy: 'created_at', order: 'ASC' }
+        { limit: 2, offset: 0, sortKeys: [{ field: 'created_at', order: 'ASC' }] }
       );
       const page2 = db.findMedia(
         {},
-        { limit: 2, offset: 2, orderBy: 'created_at', order: 'ASC' }
+        { limit: 2, offset: 2, sortKeys: [{ field: 'created_at', order: 'ASC' }] }
       );
 
       expect(page1).toHaveLength(2);
@@ -264,7 +264,7 @@ describe('Search and Filter', () => {
     test('フィルタ、ソート、ページネーションを組み合わせられる', () => {
       const results = db.findMedia(
         { media_type: 'comic' },
-        { orderBy: 'title', order: 'DESC', limit: 1, offset: 0 }
+        { sortKeys: [{ field: 'title', order: 'DESC' }], limit: 1, offset: 0 }
       );
 
       expect(results).toHaveLength(1);
@@ -286,7 +286,7 @@ describe('Search and Filter', () => {
           series: 'シリーズX',
           tag_ids: [tag.id],
         },
-        { orderBy: 'title', order: 'ASC' }
+        { sortKeys: [{ field: 'title', order: 'ASC' }] }
       );
 
       expect(results).toHaveLength(2);

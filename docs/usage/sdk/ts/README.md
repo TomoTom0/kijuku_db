@@ -86,7 +86,7 @@ console.log(`メディアID: ${media.id}`);
 // シリーズで検索
 const results = db.findMedia(
   { series: 'ワンピース' },
-  { orderBy: 'volume_number', order: 'ASC' }
+  { sortKeys: [{ field: 'volume_number', order: 'ASC' }] }
 );
 
 console.log(`見つかったメディア: ${results.length}件`);
@@ -288,8 +288,7 @@ const filter: MediaFilter = {
 };
 
 const options: QueryOptions = {
-  orderBy: 'created_at',
-  order: 'DESC',
+  sortKeys: [{ field: 'created_at', order: 'DESC' }],
   limit: 10,
 };
 ```

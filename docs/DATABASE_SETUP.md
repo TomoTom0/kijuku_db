@@ -201,7 +201,7 @@ db.createMedia({
 // volume_numberでソート可能
 const results = db.findMedia(
   { media_type: 'comic' },
-  { orderBy: 'volume_number', order: 'ASC' }
+  { sortKeys: [{ field: 'volume_number', order: 'ASC' }] }
 );
 ```
 

@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 3. メディアの検索
 
 ```rust
-use kijuku_db::{KijukuDB, MediaFilter, QueryOptions, SortOrder};
+use kijuku_db::{KijukuDB, MediaFilter, QueryOptions, SortKey, SortOrder};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
@@ -138,8 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let options = QueryOptions {
-        order_by: Some("volume_number".to_string()),
-        order: Some(SortOrder::Asc),
+        sort_keys: vec![SortKey { field: "volume_number".to_string(), order: SortOrder::Asc }],
         ..Default::default()
     };
 
@@ -506,10 +505,15 @@ pub struct MediaFilter {
     pub or_filters: Option<Vec<MediaFilter>>,  // OR条件（ネスト可能）
 }
 
+// ソートキー
+pub struct SortKey {
+    pub field: String,
+    pub order: SortOrder,
+}
+
 // クエリオプション
 pub struct QueryOptions {
-    pub order_by: Option<String>,
-    pub order: Option<SortOrder>,
+    pub sort_keys: Vec<SortKey>,  // 複数指定で多段ソート
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }

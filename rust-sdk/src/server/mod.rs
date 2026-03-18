@@ -1,6 +1,6 @@
 pub mod auth;
 
-use crate::{KijukuDB, MediaFilter, MediaType, QueryOptions, SortOrder};
+use crate::{KijukuDB, MediaFilter, MediaType, QueryOptions, SortKey, SortOrder};
 pub use auth::{generate_password, AuthManager};
 use axum::{
     extract::{FromRequestParts, Path, Query, State},
@@ -232,13 +232,17 @@ async fn get_media_list(
         ..Default::default()
     };
 
+    let sort_keys = if let Some(ref order_by) = params.order_by {
+        let order = match params.order.as_deref() {
+            Some("DESC") => SortOrder::Desc,
+            _ => SortOrder::Asc,
+        };
+        vec![SortKey { field: order_by.clone(), order }]
+    } else {
+        vec![]
+    };
     let options = QueryOptions {
-        order_by: params.order_by.clone(),
-        order: params.order.as_ref().and_then(|s| match s.as_str() {
-            "ASC" => Some(SortOrder::Asc),
-            "DESC" => Some(SortOrder::Desc),
-            _ => None,
-        }),
+        sort_keys,
         limit: params.limit.map(|v| v as i64),
         offset: params.offset.map(|v| v as i64),
     };
