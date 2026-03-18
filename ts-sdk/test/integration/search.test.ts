@@ -105,6 +105,32 @@ describe('Search and Filter', () => {
       const results = db.findMedia({ title: '存在しないタイトル' });
       expect(results).toHaveLength(0);
     });
+
+    test('id_inで複数IDを一括取得できる', () => {
+      const all = db.findMedia({});
+      const targetIds = [all[0].id, all[2].id];
+      const results = db.findMedia({ id_in: targetIds });
+      expect(results).toHaveLength(2);
+      const resultIds = results.map((m) => m.id);
+      expect(resultIds).toContain(targetIds[0]);
+      expect(resultIds).toContain(targetIds[1]);
+    });
+
+    test('id_inが空配列の場合、全件取得になる', () => {
+      const results = db.findMedia({ id_in: [] });
+      expect(results).toHaveLength(4);
+    });
+
+    test('id_inと他のフィルタを組み合わせられる', () => {
+      const all = db.findMedia({});
+      const allIds = all.map((m) => m.id);
+      // 全IDを渡しつつmedia_type=comicでフィルタ
+      const results = db.findMedia({ id_in: allIds, media_type: 'comic' });
+      expect(results).toHaveLength(2);
+      results.forEach((m) => {
+        expect(m.media_type).toBe('comic');
+      });
+    });
   });
 
   describe('findMedia - ソート', () => {
