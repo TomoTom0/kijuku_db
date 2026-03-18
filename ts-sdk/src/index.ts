@@ -20,8 +20,10 @@ import * as search from './search.js';
 import * as bulk from './bulk.js';
 import * as attribute from './attribute.js';
 import { BackupManager, BackupSelector } from './backup.js';
+import * as updateExistModule from './update_exist.js';
 
 export * from './types.js';
+export type { UpdateExistOptions, UpdateExistItemResult, UpdateExistResult } from './update_exist.js';
 export * from './errors.js';
 export * from './remote.js';
 export { BackupManager, BackupSelector } from './backup.js';
@@ -302,6 +304,17 @@ export class KijukuDB {
    */
   getBackupManager(): BackupManager | undefined {
     return this.backupManager;
+  }
+
+  /**
+   * フィルタで絞り込んだメディアのflag_existをファイル存在状態に基づいて更新する
+   */
+  updateExist(
+    filter: MediaFilter,
+    options?: QueryOptions,
+    updateOptions: updateExistModule.UpdateExistOptions = { dry_run: false }
+  ): updateExistModule.UpdateExistResult {
+    return updateExistModule.updateExist(this.db, filter, options, updateOptions);
   }
 
   /**
