@@ -44,6 +44,7 @@ pub mod search;
 pub mod server;
 pub mod tag;
 pub mod types;
+pub mod update_exist;
 
 pub use backup::{BackupInfo, BackupManager, BackupOptions, BackupSelector};
 pub use error::{KijukuError, Result};
@@ -52,6 +53,7 @@ pub use remote::{RemoteConfig, RemoteKijukuDB};
 pub use server::auth::{AuthManager, generate_password};
 pub use server::{ServerOptions, start_server};
 pub use types::*;
+pub use update_exist::{UpdateExistItemResult, UpdateExistOptions, UpdateExistResult};
 
 use rusqlite::Connection;
 use std::path::Path;
@@ -183,6 +185,16 @@ impl KijukuDB {
         options: Option<&QueryOptions>,
     ) -> Result<Vec<Media>> {
         search::find_media(&self.conn, filter, options)
+    }
+
+    /// フィルタで絞り込んだメディアのflag_existをファイル存在状態に基づいて更新する
+    pub fn update_exist(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+        update_options: &UpdateExistOptions,
+    ) -> Result<UpdateExistResult> {
+        update_exist::update_exist(&self.conn, filter, options, update_options)
     }
 
     /// 複数のメディアを一括作成
