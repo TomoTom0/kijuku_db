@@ -196,18 +196,9 @@ fn process_media(
 
         // 代替拡張子が見つかった場合はextensionも更新
         if let Some(ref new_ext) = found_extension {
-            if flag_exist_after || found_extension.is_some() {
-                update.extension = Some(Some(new_ext.clone()));
-                // comicの場合、代替拡張子でflag_existをtrueにする
-                if media.media_type == MediaType::Comic {
-                    update.flag_exist = Some(true);
-                    flag_exist_after = true;
-                } else {
-                    // video/music: ファイル自体は存在するのでtrue
-                    update.flag_exist = Some(true);
-                    flag_exist_after = true;
-                }
-            }
+            update.extension = Some(Some(new_ext.clone()));
+            update.flag_exist = Some(true);
+            flag_exist_after = true; // 結果オブジェクトのために更新
         }
 
         // page_countの設定

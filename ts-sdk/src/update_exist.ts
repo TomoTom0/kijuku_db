@@ -116,7 +116,7 @@ function processMedia(
   let foundExtension: string | null = null;
   let pageCountWarning: string | null = null;
   let pageCountSet: number | null = null;
-  const extensionUsed: string | null = ext;
+  let extensionUsed: string | null = ext;
 
   if (media.path == null) {
     flagExistAfter = false;
@@ -138,6 +138,7 @@ function processMedia(
         const altExt = findDominantExtensionInDir(mediaPath);
         if (altExt != null) {
           foundExtension = altExt;
+          extensionUsed = altExt;
         }
         flagExistAfter = false;
       }
@@ -148,6 +149,7 @@ function processMedia(
         const altExt = findAlternativeExtensionForFile(mediaPath, media.uuid);
         if (altExt != null) {
           foundExtension = altExt;
+          extensionUsed = altExt;
         }
         flagExistAfter = false;
       }
@@ -159,7 +161,7 @@ function processMedia(
     if (foundExtension != null) {
       updateData['extension'] = foundExtension;
       updateData['flag_exist'] = true;
-      flagExistAfter = true;
+      flagExistAfter = true; // 結果オブジェクトのために更新
     }
     if (pageCountSet != null) {
       updateData['page_count'] = pageCountSet;
