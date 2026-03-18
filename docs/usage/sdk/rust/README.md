@@ -502,6 +502,7 @@ pub struct MediaFilter {
     pub volume_title: Option<String>,
     pub title_en: Option<String>,
     pub artist_en: Option<String>,
+    pub id_in: Option<Vec<i64>>,  // IDのIN句フィルタ
     pub or_filters: Option<Vec<MediaFilter>>,  // OR条件（ネスト可能）
 }
 

@@ -149,6 +149,23 @@ function buildFilterConditions(filter: MediaFilter, counter: ParamCounter): Filt
     params[paramName] = `%${filter.artist_en}%`;
   }
 
+  // id_inフィルタの処理
+  // SQLiteのパラメータ数上限（デフォルト999）を考慮してチャンク分割
+  if (filter.id_in && filter.id_in.length > 0) {
+    const CHUNK_SIZE = 999;
+    const orClauses: string[] = [];
+    for (let i = 0; i < filter.id_in.length; i += CHUNK_SIZE) {
+      const chunk = filter.id_in.slice(i, i + CHUNK_SIZE);
+      const idParamNames = chunk.map((id) => {
+        const paramName = getUniqueParamName('id_in', counter);
+        params[paramName] = id;
+        return `@${paramName}`;
+      });
+      orClauses.push(`m.id IN (${idParamNames.join(', ')})`);
+    }
+    whereClauses.push(`(${orClauses.join(' OR ')})`);
+  }
+
   // タグフィルタの処理
   if (filter.tag_ids && filter.tag_ids.length > 0) {
     needsTagJoin = true;

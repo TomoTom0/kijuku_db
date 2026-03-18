@@ -130,6 +130,8 @@ pub struct MediaFilter {
     pub volume_title: Option<String>,
     pub title_en: Option<String>,
     pub artist_en: Option<String>,
+    /// IDのIN句フィルタ（複数IDを一括フェッチする場合に使用）
+    pub id_in: Option<Vec<i64>>,
     /// OR条件で結合する追加フィルタ
     /// 各フィルタ内の条件はAND結合、or_filters間はOR結合される
     #[serde(default)]

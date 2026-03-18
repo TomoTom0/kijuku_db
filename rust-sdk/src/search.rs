@@ -76,6 +76,21 @@ fn build_filter_conditions(filter: &MediaFilter) -> FilterConditions {
     add_like_filter(&mut where_clauses, &mut params, "title_en", &filter.title_en);
     add_like_filter(&mut where_clauses, &mut params, "artist_en", &filter.artist_en);
 
+    // id_inフィルタの処理
+    // SQLiteのパラメータ数上限（デフォルト999）を考慮してチャンク分割
+    if let Some(ref ids) = filter.id_in {
+        if !ids.is_empty() {
+            const CHUNK_SIZE: usize = 999;
+            let in_clauses: Vec<String> = ids.chunks(CHUNK_SIZE).map(|chunk| {
+                format!("m.id IN ({})", vec!["?"; chunk.len()].join(", "))
+            }).collect();
+            where_clauses.push(format!("({})", in_clauses.join(" OR ")));
+            for id in ids {
+                params.push(Box::new(*id));
+            }
+        }
+    }
+
     // タグフィルタの処理
     if let Some(ref tag_ids) = filter.tag_ids {
         if !tag_ids.is_empty() {
@@ -406,6 +421,87 @@ mod tests {
         assert_eq!(results[0].title, "A");
         assert_eq!(results[1].title, "B");
         assert_eq!(results[2].title, "C");
+    }
+
+    #[test]
+    fn test_find_by_id_in() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        for i in 1..=5 {
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            }).unwrap();
+        }
+
+        // id=1,3,5のみ取得
+        let filter = MediaFilter {
+            id_in: Some(vec![1, 3, 5]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 3);
+
+        let ids: Vec<i64> = results.iter().map(|m| m.id).collect();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&3));
+        assert!(ids.contains(&5));
+        assert!(!ids.contains(&2));
+        assert!(!ids.contains(&4));
+    }
+
+    #[test]
+    fn test_find_by_id_in_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "作品1".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }).unwrap();
+
+        // 空のid_inは条件なしと同様（全件取得）
+        let filter = MediaFilter {
+            id_in: Some(vec![]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_find_by_id_in_with_other_filter() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "コミック".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "動画".to_string(),
+            media_type: MediaType::Video,
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "コミック2".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }).unwrap();
+
+        // id_in=[1,2,3] AND media_type=Comic → id=1,3のみ
+        let filter = MediaFilter {
+            id_in: Some(vec![1, 2, 3]),
+            media_type: Some(MediaType::Comic),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|m| m.media_type == MediaType::Comic));
     }
 
     #[test]
