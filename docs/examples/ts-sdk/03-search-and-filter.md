@@ -103,6 +103,7 @@ const byTitleId = db.findMedia({ title_id: 'one-piece-vol1' });
 const byArtistId = db.findMedia({ artist_id: 'oda-eiichiro' });
 
 // 複数IDを一括取得（N+1クエリ回避に有効）
+// 999件超のIDも自動的にチャンク分割して処理される
 const ids = [1, 2, 3, 10, 20];
 const byIds = db.findMedia({ id_in: ids });
 console.log(`${ids.length}件のIDで${byIds.length}件取得`);
