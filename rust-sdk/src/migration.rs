@@ -19,8 +19,11 @@ fn get_schema_sql() -> &'static str {
 
 /// マイグレーションを実行
 pub fn migrate(conn: &Connection) -> Result<()> {
+    // 外部キー制約を有効化（接続ごとに設定が必要）
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+
     let current_version = get_current_version(conn)?;
-    let target_version = 4;
+    let target_version = 5;
 
     if current_version == 0 {
         // 初回マイグレーション: schema.sqlを実行
@@ -168,6 +171,45 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
             conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
             Ok(())
         }
+        5 => {
+            // media_tags と media_attributes の外部キーに ON DELETE CASCADE を追加するためテーブルを再作成
+
+            conn.execute_batch("
+                PRAGMA foreign_keys = OFF;
+
+                -- media_tags を再作成（ON DELETE CASCADE 追加）
+                CREATE TABLE media_tags_new (
+                    media_id INTEGER NOT NULL,
+                    tag_id INTEGER NOT NULL,
+                    PRIMARY KEY (media_id, tag_id),
+                    FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE,
+                    FOREIGN KEY (tag_id) REFERENCES tags(id)
+                );
+                INSERT INTO media_tags_new SELECT media_id, tag_id FROM media_tags;
+                DROP TABLE media_tags;
+                ALTER TABLE media_tags_new RENAME TO media_tags;
+                CREATE INDEX IF NOT EXISTS idx_media_tags_tag_id ON media_tags(tag_id);
+                CREATE INDEX IF NOT EXISTS idx_media_tags_media_id ON media_tags(media_id);
+
+                -- media_attributes を再作成（ON DELETE CASCADE 追加）
+                CREATE TABLE media_attributes_new (
+                    media_id INTEGER NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT,
+                    value_type TEXT,
+                    PRIMARY KEY (media_id, key),
+                    FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE
+                );
+                INSERT INTO media_attributes_new SELECT media_id, key, value, value_type FROM media_attributes;
+                DROP TABLE media_attributes;
+                ALTER TABLE media_attributes_new RENAME TO media_attributes;
+
+                PRAGMA foreign_keys = ON;
+            ")?;
+
+            conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+            Ok(())
+        }
         _ => Err(crate::error::KijukuError::Other(format!(
             "Unknown migration version: {}",
             version
@@ -246,7 +288,7 @@ mod tests {
         migrate(&conn).unwrap();
 
         let version = get_schema_version(&conn).unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -255,5 +297,75 @@ mod tests {
         conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
 
         assert!(is_foreign_keys_enabled(&conn).unwrap());
+    }
+
+    #[test]
+    fn test_foreign_keys_enabled_after_migrate() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        assert!(is_foreign_keys_enabled(&conn).unwrap());
+    }
+
+    #[test]
+    fn test_cascade_delete_attributes() {
+        use crate::attribute::{get_media_attributes, set_media_attribute};
+        use crate::crud::{create_media, delete_media};
+        use crate::types::{MediaInput, MediaType};
+
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let media = create_media(
+            &conn,
+            &MediaInput {
+                title: "テスト".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        set_media_attribute(&conn, media.id, "key1", Some("val1"), None).unwrap();
+        set_media_attribute(&conn, media.id, "key2", Some("val2"), None).unwrap();
+
+        let attrs = get_media_attributes(&conn, media.id).unwrap();
+        assert_eq!(attrs.len(), 2);
+
+        delete_media(&conn, media.id).unwrap();
+
+        let attrs_after = get_media_attributes(&conn, media.id).unwrap();
+        assert_eq!(attrs_after.len(), 0, "media削除時にattributesもカスケード削除されること");
+    }
+
+    #[test]
+    fn test_cascade_delete_tags() {
+        use crate::crud::{create_media, delete_media};
+        use crate::tag::{add_tag_to_media, create_tag, get_media_tags};
+        use crate::types::{MediaInput, MediaType};
+
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let media = create_media(
+            &conn,
+            &MediaInput {
+                title: "テスト".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let tag = create_tag(&conn, "test-tag").unwrap();
+        add_tag_to_media(&conn, media.id, tag.id).unwrap();
+
+        let tags = get_media_tags(&conn, media.id).unwrap();
+        assert_eq!(tags.len(), 1);
+
+        delete_media(&conn, media.id).unwrap();
+
+        let tags_after = get_media_tags(&conn, media.id).unwrap();
+        assert_eq!(tags_after.len(), 0, "media削除時にmedia_tagsもカスケード削除されること");
     }
 }

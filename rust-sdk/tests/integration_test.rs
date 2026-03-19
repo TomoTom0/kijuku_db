@@ -14,7 +14,7 @@ fn test_full_workflow() {
 
     // スキーマバージョンを確認
     let version = db.get_schema_version().unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 
     // テーブル確認
     let tables = db.get_tables().unwrap();
