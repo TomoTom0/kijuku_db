@@ -68,6 +68,19 @@
 
 ## Fixed
 
+### media削除時のカスケード削除漏れを修正 (TASK-138)
+
+- `media_tags` と `media_attributes` の外部キー制約に `ON DELETE CASCADE` が欠けていたバグを修正
+- migration v5 でテーブルを再作成し `ON DELETE CASCADE` を付与（既存データは保持）
+- Rust SDK の `KijukuDB::open()` / `open_with_options()` / `open_in_memory()` で `PRAGMA foreign_keys = ON` を設定（接続ごとに有効化が必要なため）
+- TypeScript SDK は既にコンストラクタで設定済みだったが、`ON DELETE CASCADE` 欠如によりmedia削除がFKエラーで失敗するケースがあった
+
+**ファイル:**
+- `rust-sdk/schema.sql`, `schema/schema.sql`: `ON DELETE CASCADE` 追加、Version 5 に更新
+- `rust-sdk/src/migration.rs`: migration v5 追加、接続時FK有効化
+- `rust-sdk/src/lib.rs`: 全 open 系メソッドで `PRAGMA foreign_keys = ON` を設定
+- `ts-sdk/src/migration.ts`: migration v5 追加
+
 ### id_inフィルタのSQLiteパラメータ数上限対応 (TASK-135, TASK-136)
 
 - `id_in`に大量のIDを渡した場合にSQLiteのパラメータ数上限（デフォルト999）を超えてエラーが発生するバグを修正

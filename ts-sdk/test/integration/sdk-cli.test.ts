@@ -31,7 +31,7 @@ describe('CLI Integration', () => {
 
     // スキーマバージョンを確認
     const version = db.getSchemaVersion();
-    expect(version).toBe(4);
+    expect(version).toBe(5);
 
     // テーブルが作成されていることを確認
     const tables = db.getTables();
@@ -97,7 +97,7 @@ describe('CLI Integration', () => {
     // 1. migrate
     const db = new KijukuDB(testDbPath);
     db.migrate();
-    expect(db.getSchemaVersion()).toBe(4);
+    expect(db.getSchemaVersion()).toBe(5);
 
     // 2. import
     const importData = [
