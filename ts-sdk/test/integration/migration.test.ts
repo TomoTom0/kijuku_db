@@ -34,7 +34,7 @@ describe('Migration', () => {
 
     // スキーマバージョンが3であることを確認
     const version = db.getSchemaVersion();
-    expect(version).toBe(4);
+    expect(version).toBe(5);
 
     db.close();
   });
@@ -69,7 +69,7 @@ describe('Migration', () => {
 
     // バージョンが変わらないことを確認
     expect(version1).toBe(version2);
-    expect(version2).toBe(4);
+    expect(version2).toBe(5);
 
     db.close();
   });
@@ -80,7 +80,7 @@ describe('Migration', () => {
     db.migrate();
 
     const version = db.getSchemaVersion();
-    expect(version).toBe(4);
+    expect(version).toBe(5);
 
     db.close();
   });

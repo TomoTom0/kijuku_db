@@ -23,7 +23,7 @@ function getSchemaPath(): string {
  */
 export function migrate(db: Database.Database): void {
   const currentVersion = getSchemaVersion(db);
-  const targetVersion = 4;
+  const targetVersion = 5;
 
   if (currentVersion === 0) {
     // 初回マイグレーション: schema.sqlを実行
@@ -159,6 +159,43 @@ function applyMigration(db: Database.Database, version: number): void {
       `);
 
       db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (4);');
+      break;
+    }
+    case 5: {
+      // media_tags と media_attributes の外部キーに ON DELETE CASCADE を追加するためテーブルを再作成
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+
+        -- media_tags を再作成（ON DELETE CASCADE 追加）
+        CREATE TABLE media_tags_new (
+          media_id INTEGER NOT NULL,
+          tag_id INTEGER NOT NULL,
+          PRIMARY KEY (media_id, tag_id),
+          FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE,
+          FOREIGN KEY (tag_id) REFERENCES tags(id)
+        );
+        INSERT INTO media_tags_new SELECT media_id, tag_id FROM media_tags;
+        DROP TABLE media_tags;
+        ALTER TABLE media_tags_new RENAME TO media_tags;
+        CREATE INDEX IF NOT EXISTS idx_media_tags_tag_id ON media_tags(tag_id);
+        CREATE INDEX IF NOT EXISTS idx_media_tags_media_id ON media_tags(media_id);
+
+        -- media_attributes を再作成（ON DELETE CASCADE 追加）
+        CREATE TABLE media_attributes_new (
+          media_id INTEGER NOT NULL,
+          key TEXT NOT NULL,
+          value TEXT,
+          value_type TEXT,
+          PRIMARY KEY (media_id, key),
+          FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE
+        );
+        INSERT INTO media_attributes_new SELECT media_id, key, value, value_type FROM media_attributes;
+        DROP TABLE media_attributes;
+        ALTER TABLE media_attributes_new RENAME TO media_attributes;
+
+        PRAGMA foreign_keys = ON;
+      `);
+      db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (5);');
       break;
     }
     default:
