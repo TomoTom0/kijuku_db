@@ -284,7 +284,8 @@ function processMedia(media: Media): void {
 const filter: MediaFilter = {
   media_type: 'comic',
   series: 'ワンピース',
-  tag_ids: [1, 2],  // タグIDで絞り込む場合
+  tag_ids: [1, 2],       // タグIDで絞り込む場合
+  id_in: [1, 2, 3],      // 複数IDを一括取得（999件超は自動チャンク分割）
 };
 
 const options: QueryOptions = {

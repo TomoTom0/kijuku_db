@@ -326,7 +326,7 @@ console.log(media === null); // true
 | `volume_title` | `string` | 巻タイトル部分一致検索 |
 | `title_en` | `string` | タイトル（英語）部分一致検索 |
 | `artist_en` | `string` | 作者名（英語）部分一致検索 |
-| `id_in` | `number[]` | IDのIN句フィルタ（複数IDを一括フェッチする場合に使用） |
+| `id_in` | `number[]` | IDのIN句フィルタ（複数IDを一括フェッチする場合に使用）。999件超の場合は自動的にチャンク分割して処理 |
 | `or_filters` | `MediaFilter[]` | OR条件で結合する追加フィルタ（ネスト可能） |
 
 **QueryOptions:**
