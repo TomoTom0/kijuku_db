@@ -161,9 +161,13 @@ const tag = db.createTag('お気に入り');
 
 // タグ名でタグを取得
 const existing = db.getTagByName('お気に入り');
+if (existing) {
+  console.log(`既存タグID: ${existing.id}`);
+}
 
 // 全タグを取得
 const allTags = db.getAllTags();
+console.log(`全タグ数: ${allTags.length}`);
 
 // メディアにタグを追加
 db.addTagToMedia(media.id, tag.id);
@@ -181,6 +185,7 @@ stats.forEach(s => console.log(`${s.name}: ${s.count}件`));
 
 // 未使用タグを取得
 const unused = db.findUnusedTags();
+console.log(`未使用タグ数: ${unused.length}`);
 ```
 
 ### 5. トランザクション
@@ -215,25 +220,27 @@ SDK利用者が主に使用する機能です。
 メディアに任意のキー・バリューペアで拡張属性を付与できます：
 
 ```typescript
+const mediaId = 1;
+
 // 属性を設定（上書き）
-db.setMediaAttribute(media.id, 'rating', '5');
-db.setMediaAttribute(media.id, 'note', 'お気に入り', 'text');
+db.setMediaAttribute(mediaId, 'rating', '5');
+db.setMediaAttribute(mediaId, 'note', 'お気に入り', 'text');
 
 // 属性を1件取得
-const attr = db.getMediaAttribute(media.id, 'rating');
+const attr = db.getMediaAttribute(mediaId, 'rating');
 if (attr) {
   console.log(`rating: ${attr.value}`);
 }
 
 // 全属性を取得
-const attrs = db.getMediaAttributes(media.id);
+const attrs = db.getMediaAttributes(mediaId);
 attrs.forEach(a => console.log(`${a.key}: ${a.value}`));
 
 // 属性を削除
-db.deleteMediaAttribute(media.id, 'rating');
+db.deleteMediaAttribute(mediaId, 'rating');
 
 // 全属性を削除
-db.deleteAllMediaAttributes(media.id);
+db.deleteAllMediaAttributes(mediaId);
 ```
 
 ### ファイル存在チェック（updateExist）
@@ -247,6 +254,7 @@ console.log(`対象: ${result.total}件, 更新: ${result.updated}件`);
 
 // 特定フィルタで絞り込み
 const result2 = db.updateExist({ media_type: 'comic', series: 'ワンピース' });
+console.log(`絞り込み結果: 対象: ${result2.total}件, 更新: ${result2.updated}件`);
 
 // dry_run: DBを更新せず結果のみ確認
 const dryResult = db.updateExist({}, undefined, { dry_run: true });
@@ -308,10 +316,17 @@ import { BackupSelector } from 'kijuku-db';
 
 // 最新バックアップからメディアを取得
 const media = db.getMediaFromBackup(1);
+if (media) {
+  console.log(`バックアップから取得したメディア: ${media.title}`);
+}
 const results = db.findMediaFromBackup({ series: 'ワンピース' });
+console.log(`バックアップからの検索結果: ${results.length}件`);
 
 // タグをバックアップから取得
 const tag = db.getTagByNameFromBackup('お気に入り');
+if (tag) {
+  console.log(`バックアップから取得したタグ: ${tag.name}`);
+}
 const allTags = db.getAllTagsFromBackup();
 const mediaTags = db.getMediaTagsFromBackup(1);
 

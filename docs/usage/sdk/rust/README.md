@@ -254,6 +254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 全タグを取得
     let all_tags = db.get_all_tags()?;
+    println!("全タグ数: {}", all_tags.len());
 
     // メディアにタグを追加
     let media_id = 1;
@@ -275,6 +276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 未使用タグを取得
     let unused = db.find_unused_tags()?;
+    println!("未使用タグ数: {}", unused.len());
 
     Ok(())
 }
@@ -312,7 +314,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 メディアに任意のキー・バリューペアで拡張属性を付与できます：
 
 ```rust
-use kijuku_db::KijukuDB;
+use kijuku_db::{KijukuDB, AttributeValueType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
@@ -348,7 +350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 メディアの `path` に実ファイルが存在するかチェックし、`flag_exist` を更新します：
 
 ```rust
-use kijuku_db::{KijukuDB, MediaFilter, UpdateExistOptions};
+use kijuku_db::{KijukuDB, MediaFilter, UpdateExistOptions, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open("./data/kijuku.db")?;
@@ -424,7 +426,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### バックアップ
 
 ```rust
-use kijuku_db::{KijukuDB, BackupOptions, BackupSelector};
+use kijuku_db::{KijukuDB, BackupOptions, BackupSelector, DBOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open_with_options("./data/kijuku.db", DBOptions {
