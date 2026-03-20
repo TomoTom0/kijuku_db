@@ -17,6 +17,7 @@ import type {
   TableColumnInfo,
   BulkUpdateItem,
 } from './types.js';
+import type { UpdateExistOptions, UpdateExistResult } from './update_exist.js';
 
 /**
  * リモート接続設定
@@ -560,5 +561,24 @@ export class RemoteKijukuDB {
       params: { media_id: mediaId },
     });
     this.checkResponse(response);
+  }
+
+  /**
+   * フィルタで絞り込んだメディアのflag_existをファイル存在状態に基づいて更新する
+   */
+  async updateExist(
+    filter: MediaFilter,
+    options?: QueryOptions,
+    updateOptions: UpdateExistOptions = { dry_run: false }
+  ): Promise<UpdateExistResult> {
+    const response = await this.executeRemoteCommand({
+      operation: 'updateExist',
+      params: {
+        filter,
+        options: options ?? null,
+        update_options: updateOptions,
+      },
+    });
+    return this.checkResponse(response);
   }
 }

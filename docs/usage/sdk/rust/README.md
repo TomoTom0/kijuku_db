@@ -123,6 +123,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### 2b. メディアの取得・更新・削除
+
+```rust
+use kijuku_db::{KijukuDB, MediaUpdateInput};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = KijukuDB::open("./data/kijuku.db")?;
+
+    // IDで1件取得
+    if let Some(media) = db.get_media(1) {
+        println!("{}", media.title);
+    }
+
+    // 部分更新（指定フィールドのみ更新）
+    db.update_media(1, &MediaUpdateInput {
+        artist: Some(Some("新しい作者名".to_string())),
+        flag_exist: Some(false),
+        ..Default::default()
+    })?;
+
+    // 削除
+    db.delete_media(1)?;
+
+    Ok(())
+}
+```
+
 ### 3. メディアの検索
 
 ```rust
@@ -220,14 +247,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // タグを作成
     let tag = db.create_tag("お気に入り")?;
 
+    // タグ名でタグを取得
+    if let Some(existing) = db.get_tag_by_name("お気に入り") {
+        println!("タグID: {}", existing.id);
+    }
+
+    // 全タグを取得
+    let all_tags = db.get_all_tags()?;
+
     // メディアにタグを追加
     let media_id = 1;
     db.add_tag_to_media(media_id, tag.id)?;
+
+    // メディアからタグを削除
+    db.remove_tag_from_media(media_id, tag.id)?;
 
     // メディアのタグを取得
     let tags = db.get_media_tags(media_id)?;
     let tag_names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
     println!("タグ: {}", tag_names.join(", "));
+
+    // タグの使用数統計を取得
+    let stats = db.get_tag_usage_stats()?;
+    for s in stats {
+        println!("{}: {}件", s.name, s.count);
+    }
+
+    // 未使用タグを取得
+    let unused = db.find_unused_tags()?;
 
     Ok(())
 }
@@ -260,6 +307,89 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 高度な機能
 
+### 属性管理
+
+メディアに任意のキー・バリューペアで拡張属性を付与できます：
+
+```rust
+use kijuku_db::KijukuDB;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = KijukuDB::open("./data/kijuku.db")?;
+    let media_id = 1;
+
+    // 属性を設定（上書き）
+    db.set_media_attribute(media_id, "rating", Some("5"), None)?;
+    db.set_media_attribute(media_id, "note", Some("お気に入り"), Some(AttributeValueType::Text))?;
+
+    // 属性を1件取得
+    if let Some(attr) = db.get_media_attribute(media_id, "rating")? {
+        println!("rating: {:?}", attr.value);
+    }
+
+    // 全属性を取得
+    let attrs = db.get_media_attributes(media_id)?;
+    for a in attrs {
+        println!("{}: {:?}", a.key, a.value);
+    }
+
+    // 属性を削除
+    db.delete_media_attribute(media_id, "rating")?;
+
+    // 全属性を削除
+    db.delete_all_media_attributes(media_id)?;
+
+    Ok(())
+}
+```
+
+### ファイル存在チェック（update_exist）
+
+メディアの `path` に実ファイルが存在するかチェックし、`flag_exist` を更新します：
+
+```rust
+use kijuku_db::{KijukuDB, MediaFilter, UpdateExistOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = KijukuDB::open("./data/kijuku.db")?;
+
+    // 全メディアを対象に実行
+    let result = db.update_exist(
+        &MediaFilter::default(),
+        None,
+        &UpdateExistOptions { dry_run: false },
+    )?;
+    println!("対象: {}件, 更新: {}件", result.total, result.updated);
+
+    // dry_run: DBを更新せず結果のみ確認
+    let dry_result = db.update_exist(
+        &MediaFilter { media_type: Some(MediaType::Comic), ..Default::default() },
+        None,
+        &UpdateExistOptions { dry_run: true },
+    )?;
+    for item in dry_result.items {
+        if item.flag_exist_before != item.flag_exist_after {
+            println!("[{}] {}: {} -> {}", item.id, item.title, item.flag_exist_before, item.flag_exist_after);
+        }
+        if let Some(ext) = item.found_extension {
+            println!("  代替拡張子: {}", ext);
+        }
+        if let Some(warn) = item.page_count_warning {
+            eprintln!("  警告: {}", warn);
+        }
+    }
+
+    Ok(())
+}
+```
+
+**ファイル存在チェックのロジック:**
+- `path` が NULL → `flag_exist = false`
+- `media_type = comic`: `{path}/001.{ext}` が存在すれば `flag_exist = true`。存在しない場合はフォルダ内で代替拡張子を検索
+- `media_type = video / music`: `path` のファイルが存在すれば `flag_exist = true`。存在しない場合は同ディレクトリ内で `{uuid}.{任意拡張子}` を検索
+- 代替拡張子が見つかった場合は `extension` も自動更新（`dry_run = false` のとき）
+- `comic` で `page_count = null` の場合、実ページ数を自動設定
+
 ### バルク挿入
 
 大量のメディアを効率的に登録：
@@ -286,6 +416,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let created = db.bulk_create_media(&media_list)?;
     println!("{}件のメディアを作成しました", created.len());
+
+    Ok(())
+}
+```
+
+### バックアップ
+
+```rust
+use kijuku_db::{KijukuDB, BackupOptions, BackupSelector};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = KijukuDB::open_with_options("./data/kijuku.db", DBOptions {
+        backup: Some(BackupOptions {
+            enabled: true,
+            interval_ms: 3_600_000, // 1時間ごと
+            backup_dir: "./backups".to_string(),
+        }),
+        ..Default::default()
+    })?;
+    db.migrate()?;
+
+    // 手動バックアップ
+    if let Some(path) = db.backup()? {
+        println!("バックアップ作成: {}", path);
+    }
+
+    // バックアップ一覧を取得
+    let backups = db.list_backups()?;
+    for b in backups {
+        println!("{} ({:?})", b.name, b.created_at);
+    }
+
+    // 最新バックアップからメディアを取得（読み取り専用）
+    let selector = BackupSelector::latest();
+    let media = db.get_media_from_backup(1, &selector)?;
+    let results = db.find_media_from_backup(&MediaFilter::default(), None, &selector)?;
+
+    // タグをバックアップから取得
+    let tag = db.get_tag_by_name_from_backup("お気に入り", &selector)?;
+    let all_tags = db.get_all_tags_from_backup(&selector)?;
+    let media_tags = db.get_media_tags_from_backup(1, &selector)?;
+
+    // 属性をバックアップから取得
+    let attr = db.get_media_attribute_from_backup(1, "rating", &selector)?;
+    let attrs = db.get_media_attributes_from_backup(1, &selector)?;
 
     Ok(())
 }
