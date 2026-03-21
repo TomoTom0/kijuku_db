@@ -27,7 +27,9 @@ pub fn update_exist(
 | :--- | :--- | :--- |
 | `total` | `usize` | 対象メディア総数 |
 | `updated` | `usize` | 更新されたメディア数 |
-| `items` | `Vec<UpdateExistItemResult>` | 各メディアの結果 |
+| `updated_ids` | `Option<Vec<i64>>` | 変更があったメディアのID一覧（1000件以下の場合のみインライン、超過時はNone） |
+| `updated_ids_file` | `Option<String>` | updated_idsが1000件超の場合のJSONファイルパス |
+| `detail_file` | `String` | 全件の詳細結果（`UpdateExistItemResult`の配列）を含むJSONファイルのパス |
 
 ### UpdateExistItemResult
 

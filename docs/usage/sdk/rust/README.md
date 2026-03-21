@@ -369,7 +369,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None,
         &UpdateExistOptions { dry_run: true },
     )?;
-    for item in dry_result.items {
+    // 変更があったIDはインライン（1000件以下）またはファイルで取得
+    if let Some(ids) = &dry_result.updated_ids {
+        println!("変更対象ID: {:?}", ids);
+    } else if let Some(ids_file) = &dry_result.updated_ids_file {
+        println!("変更対象IDファイル: {}", ids_file);
+    }
+    // 詳細はdetail_fileから取得
+    let detail_json = std::fs::read_to_string(&dry_result.detail_file)?;
+    let items: Vec<kijuku_db::UpdateExistItemResult> = serde_json::from_str(&detail_json)?;
+    for item in items {
         if item.flag_exist_before != item.flag_exist_after {
             println!("[{}] {}: {} -> {}", item.id, item.title, item.flag_exist_before, item.flag_exist_after);
         }

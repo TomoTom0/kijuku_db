@@ -5,6 +5,19 @@ use crate::types::{Media, MediaFilter, MediaType, MediaUpdateInput, QueryOptions
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::process;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const UPDATED_IDS_INLINE_LIMIT: usize = 1000;
+
+fn temp_file_path(suffix: &str) -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = process::id();
+    format!("/tmp/kijuku-update-exist-{}-{}{}", pid, ts, suffix)
+}
 
 /// update_existの動作オプション
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -38,7 +51,12 @@ pub struct UpdateExistItemResult {
 pub struct UpdateExistResult {
     pub total: usize,
     pub updated: usize,
-    pub items: Vec<UpdateExistItemResult>,
+    /// 変更があったメディアのID一覧（1000件以下の場合のみインライン）
+    pub updated_ids: Option<Vec<i64>>,
+    /// updated_idsが1000件超の場合のファイルパス
+    pub updated_ids_file: Option<String>,
+    /// 全件の詳細結果を含むJSONファイルのパス
+    pub detail_file: String,
 }
 
 /// media_typeごとのデフォルト拡張子
@@ -232,13 +250,17 @@ pub fn update_exist(
     let media_list = find_media(conn, filter, query_options)?;
     let total = media_list.len();
     let mut updated = 0usize;
-    let mut items = Vec::new();
+    let mut items: Vec<UpdateExistItemResult> = Vec::new();
+    let mut updated_ids: Vec<i64> = Vec::new();
 
     for media in &media_list {
         let item = process_media(conn, media, options)?;
-        // flag_existが変化した、またはextensionが更新された場合をカウント
-        if item.flag_exist_before != item.flag_exist_after || item.found_extension.is_some() || item.page_count_set.is_some() {
+        if item.flag_exist_before != item.flag_exist_after
+            || item.found_extension.is_some()
+            || item.page_count_set.is_some()
+        {
             updated += 1;
+            updated_ids.push(item.id);
         }
         items.push(item);
     }
@@ -263,7 +285,30 @@ pub fn update_exist(
         }
     }
 
-    Ok(UpdateExistResult { total, updated, items })
+    // 詳細結果を一時ファイルに書き出す
+    let detail_file = temp_file_path("-detail.json");
+    let detail_json = serde_json::to_string(&items)
+        .map_err(|e| crate::error::KijukuError::Parse(e.to_string()))?;
+    std::fs::write(&detail_file, &detail_json)?;
+
+    // updated_idsが1000件超の場合はファイルに書き出す
+    let (updated_ids_inline, updated_ids_file) = if updated_ids.len() > UPDATED_IDS_INLINE_LIMIT {
+        let ids_file = temp_file_path("-ids.json");
+        let ids_json = serde_json::to_string(&updated_ids)
+            .map_err(|e| crate::error::KijukuError::Parse(e.to_string()))?;
+        std::fs::write(&ids_file, &ids_json)?;
+        (None, Some(ids_file))
+    } else {
+        (Some(updated_ids), None)
+    };
+
+    Ok(UpdateExistResult {
+        total,
+        updated,
+        updated_ids: updated_ids_inline,
+        updated_ids_file,
+        detail_file,
+    })
 }
 
 #[cfg(test)]
@@ -281,6 +326,16 @@ mod tests {
         conn
     }
 
+    fn read_detail_file(result: &UpdateExistResult) -> Vec<UpdateExistItemResult> {
+        let json = fs::read_to_string(&result.detail_file).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
+
+    fn read_ids_file(path: &str) -> Vec<i64> {
+        let json = fs::read_to_string(path).unwrap();
+        serde_json::from_str(&json).unwrap()
+    }
+
     #[test]
     fn test_path_none_returns_false() {
         let conn = setup_db();
@@ -293,7 +348,8 @@ mod tests {
 
         let filter = MediaFilter { ..Default::default() };
         let result = update_exist(&conn, &filter, None, &UpdateExistOptions::default()).unwrap();
-        assert_eq!(result.items[0].flag_exist_after, false);
+        let items = read_detail_file(&result);
+        assert_eq!(items[0].flag_exist_after, false);
         let updated = get_media(&conn, media.id).unwrap();
         assert!(!updated.flag_exist);
     }
@@ -316,7 +372,8 @@ mod tests {
         }).unwrap();
 
         let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
-        assert_eq!(result.items[0].flag_exist_after, true);
+        let items = read_detail_file(&result);
+        assert_eq!(items[0].flag_exist_after, true);
     }
 
     #[test]
@@ -337,7 +394,8 @@ mod tests {
         }).unwrap();
 
         let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
-        assert_eq!(result.items[0].flag_exist_after, false);
+        let items = read_detail_file(&result);
+        assert_eq!(items[0].flag_exist_after, false);
     }
 
     #[test]
@@ -360,9 +418,9 @@ mod tests {
         }).unwrap();
 
         let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
-        let item = &result.items[0];
-        assert_eq!(item.found_extension, Some("mp3".to_string()));
-        assert_eq!(item.flag_exist_after, true);
+        let items = read_detail_file(&result);
+        assert_eq!(items[0].found_extension, Some("mp3".to_string()));
+        assert_eq!(items[0].flag_exist_after, true);
     }
 
     #[test]
@@ -384,9 +442,9 @@ mod tests {
         }).unwrap();
 
         let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
-        let item = &result.items[0];
-        assert_eq!(item.flag_exist_after, true);
-        assert_eq!(item.page_count_set, Some(3));
+        let items = read_detail_file(&result);
+        assert_eq!(items[0].flag_exist_after, true);
+        assert_eq!(items[0].page_count_set, Some(3));
     }
 
     #[test]
@@ -408,10 +466,10 @@ mod tests {
         }).unwrap();
 
         let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
-        let item = &result.items[0];
-        assert!(item.page_count_warning.is_some());
-        assert!(item.page_count_warning.as_ref().unwrap().contains("5"));
-        assert!(item.page_count_warning.as_ref().unwrap().contains("2"));
+        let items = read_detail_file(&result);
+        assert!(items[0].page_count_warning.is_some());
+        assert!(items[0].page_count_warning.as_ref().unwrap().contains("5"));
+        assert!(items[0].page_count_warning.as_ref().unwrap().contains("2"));
     }
 
     #[test]
@@ -433,9 +491,9 @@ mod tests {
         }).unwrap();
 
         let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
-        let item = &result.items[0];
-        assert_eq!(item.found_extension, Some("png".to_string()));
-        assert_eq!(item.flag_exist_after, true);
+        let items = read_detail_file(&result);
+        assert_eq!(items[0].found_extension, Some("png".to_string()));
+        assert_eq!(items[0].flag_exist_after, true);
     }
 
     #[test]
@@ -454,7 +512,8 @@ mod tests {
             None,
             &UpdateExistOptions { dry_run: true },
         ).unwrap();
-        assert_eq!(result.items[0].flag_exist_after, false);
+        let items = read_detail_file(&result);
+        assert_eq!(items[0].flag_exist_after, false);
 
         // DBは更新されていない
         let db_media = get_media(&conn, media.id).unwrap();
@@ -480,7 +539,76 @@ mod tests {
         }).unwrap();
 
         let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
-        assert_eq!(result.items[0].flag_exist_after, true);
-        assert_eq!(result.items[0].extension_used, Some("m4a".to_string()));
+        let items = read_detail_file(&result);
+        assert_eq!(items[0].flag_exist_after, true);
+        assert_eq!(items[0].extension_used, Some("m4a".to_string()));
+    }
+
+    #[test]
+    fn test_updated_ids_inline_when_few() {
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+        let uuid = "test-uuid-ids-inline";
+        let file_path = tmp.path().join(format!("{}.m4a", uuid));
+        fs::write(&file_path, b"dummy").unwrap();
+
+        let media = create_media(&conn, &MediaInput {
+            title: "music inline ids".to_string(),
+            media_type: MediaType::Music,
+            uuid: Some(uuid.to_string()),
+            path: Some(file_path.to_str().unwrap().to_string()),
+            extension: Some("m4a".to_string()),
+            flag_exist: Some(false),
+            ..Default::default()
+        }).unwrap();
+
+        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        assert!(result.updated_ids.is_some());
+        assert!(result.updated_ids_file.is_none());
+        assert!(result.updated_ids.as_ref().unwrap().contains(&media.id));
+        assert!(std::path::Path::new(&result.detail_file).exists());
+    }
+
+    #[test]
+    fn test_detail_file_always_written() {
+        let conn = setup_db();
+        create_media(&conn, &MediaInput {
+            title: "detail file test".to_string(),
+            media_type: MediaType::Music,
+            ..Default::default()
+        }).unwrap();
+
+        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        assert!(std::path::Path::new(&result.detail_file).exists());
+        let items = read_detail_file(&result);
+        assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn test_updated_ids_file_when_over_limit() {
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+
+        // UPDATED_IDS_INLINE_LIMIT + 1 件のメディアを作成（全てflag_exist変化あり）
+        for i in 0..=UPDATED_IDS_INLINE_LIMIT {
+            let uuid = format!("test-uuid-many-{}", i);
+            let file_path = tmp.path().join(format!("{}.m4a", uuid));
+            fs::write(&file_path, b"dummy").unwrap();
+            create_media(&conn, &MediaInput {
+                title: format!("music {}", i),
+                media_type: MediaType::Music,
+                uuid: Some(uuid),
+                path: Some(file_path.to_str().unwrap().to_string()),
+                extension: Some("m4a".to_string()),
+                flag_exist: Some(false),
+                ..Default::default()
+            }).unwrap();
+        }
+
+        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        assert!(result.updated_ids.is_none());
+        assert!(result.updated_ids_file.is_some());
+        let ids = read_ids_file(result.updated_ids_file.as_ref().unwrap());
+        assert_eq!(ids.len(), UPDATED_IDS_INLINE_LIMIT + 1);
     }
 }

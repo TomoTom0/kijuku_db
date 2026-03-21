@@ -1,5 +1,19 @@
 # Unreleased
 
+## Breaking
+
+### update-exist レスポンス構造変更
+
+- `UpdateExistResult.items` を廃止。大量レスポンスによるSSLストリームハングを防ぐため
+- 代わりに以下のフィールドを追加:
+  - `detail_file`: 全件詳細（`UpdateExistItemResult[]`）を含むJSONファイルパス（常に書き出し）
+  - `updated_ids`: 変更があったメディアのID一覧（1000件以下の場合のみインライン）
+  - `updated_ids_file`: `updated_ids` が1000件超の場合のJSONファイルパス
+
+**ファイル:**
+- `rust-sdk/src/update_exist.rs`
+- `ts-sdk/src/update_exist.ts`
+
 ## Added
 
 ### 自動バックアップ機能 (TASK-44)

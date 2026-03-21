@@ -258,7 +258,15 @@ console.log(`絞り込み結果: 対象: ${result2.total}件, 更新: ${result2.
 
 // dry_run: DBを更新せず結果のみ確認
 const dryResult = db.updateExist({}, undefined, { dry_run: true });
-dryResult.items.forEach(item => {
+// 変更があったIDはインライン（1000件以下）またはファイルで取得
+if (dryResult.updated_ids) {
+  console.log(`変更対象ID: ${dryResult.updated_ids.join(', ')}`);
+} else if (dryResult.updated_ids_file) {
+  console.log(`変更対象IDファイル: ${dryResult.updated_ids_file}`);
+}
+// 詳細はdetail_fileから取得
+const items = JSON.parse(fs.readFileSync(dryResult.detail_file, 'utf-8'));
+items.forEach((item: UpdateExistItemResult) => {
   if (item.flag_exist_before !== item.flag_exist_after) {
     console.log(`[${item.id}] ${item.title}: ${item.flag_exist_before} -> ${item.flag_exist_after}`);
   }

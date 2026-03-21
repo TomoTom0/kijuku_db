@@ -2,11 +2,21 @@
  * flag_existチェック・更新機能
  */
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Media, MediaFilter, QueryOptions } from './types.js';
 import { findMedia } from './search.js';
 import { updateMedia } from './crud.js';
+
+const UPDATED_IDS_INLINE_LIMIT = 1000;
+
+function tempFilePath(suffix: string): string {
+  const ts = Date.now();
+  const pid = process.pid;
+  const rand = Math.floor(Math.random() * 1e9);
+  return path.join(os.tmpdir(), `kijuku-update-exist-${pid}-${ts}-${rand}${suffix}`);
+}
 
 export interface UpdateExistOptions {
   dry_run: boolean;
@@ -27,7 +37,12 @@ export interface UpdateExistItemResult {
 export interface UpdateExistResult {
   total: number;
   updated: number;
-  items: UpdateExistItemResult[];
+  /** 変更があったメディアのID一覧（1000件以下の場合のみインライン） */
+  updated_ids: number[] | null;
+  /** updated_idsが1000件超の場合のファイルパス */
+  updated_ids_file: string | null;
+  /** 全件の詳細結果を含むJSONファイルのパス */
+  detail_file: string;
 }
 
 function defaultExtension(mediaType: string): string {
@@ -192,6 +207,7 @@ export function updateExist(
   const total = mediaList.length;
   let updated = 0;
   const items: UpdateExistItemResult[] = [];
+  const updatedIds: number[] = [];
 
   for (const media of mediaList) {
     const item = processMedia(db, media, options);
@@ -201,6 +217,7 @@ export function updateExist(
       item.page_count_set != null
     ) {
       updated++;
+      updatedIds.push(item.id);
     }
     items.push(item);
   }
@@ -218,5 +235,28 @@ export function updateExist(
     }
   }
 
-  return { total, updated, items };
+  // 詳細結果を一時ファイルに書き出す
+  const detailFile = tempFilePath('-detail.json');
+  fs.writeFileSync(detailFile, JSON.stringify(items));
+
+  // updated_idsが1000件超の場合はファイルに書き出す
+  let updatedIdsInline: number[] | null;
+  let updatedIdsFile: string | null;
+  if (updatedIds.length > UPDATED_IDS_INLINE_LIMIT) {
+    const idsFile = tempFilePath('-ids.json');
+    fs.writeFileSync(idsFile, JSON.stringify(updatedIds));
+    updatedIdsInline = null;
+    updatedIdsFile = idsFile;
+  } else {
+    updatedIdsInline = updatedIds;
+    updatedIdsFile = null;
+  }
+
+  return {
+    total,
+    updated,
+    updated_ids: updatedIdsInline,
+    updated_ids_file: updatedIdsFile,
+    detail_file: detailFile,
+  };
 }
