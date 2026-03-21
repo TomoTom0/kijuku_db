@@ -80,6 +80,22 @@ const media = db.createMedia({
 console.log(`メディアID: ${media.id}`);
 ```
 
+### 2b. メディアの取得・更新・削除
+
+```typescript
+// IDで1件取得
+const media = db.getMedia(1);
+if (media) {
+  console.log(media.title);
+}
+
+// 部分更新（指定フィールドのみ更新）
+db.updateMedia(1, { artist: '新しい作者名', flag_exist: false });
+
+// 削除
+db.deleteMedia(1);
+```
+
 ### 3. メディアの検索
 
 ```typescript
@@ -143,12 +159,33 @@ const nested = db.findMedia({
 // タグを作成
 const tag = db.createTag('お気に入り');
 
+// タグ名でタグを取得
+const existing = db.getTagByName('お気に入り');
+if (existing) {
+  console.log(`既存タグID: ${existing.id}`);
+}
+
+// 全タグを取得
+const allTags = db.getAllTags();
+console.log(`全タグ数: ${allTags.length}`);
+
 // メディアにタグを追加
 db.addTagToMedia(media.id, tag.id);
+
+// メディアからタグを削除
+db.removeTagFromMedia(media.id, tag.id);
 
 // メディアのタグを取得
 const tags = db.getMediaTags(media.id);
 console.log('タグ:', tags.map(t => t.name).join(', '));
+
+// タグの使用数統計を取得
+const stats = db.getTagUsageStats();
+stats.forEach(s => console.log(`${s.name}: ${s.count}件`));
+
+// 未使用タグを取得
+const unused = db.findUnusedTags();
+console.log(`未使用タグ数: ${unused.length}`);
 ```
 
 ### 5. トランザクション
@@ -178,6 +215,69 @@ db.close();
 
 SDK利用者が主に使用する機能です。
 
+### 属性管理
+
+メディアに任意のキー・バリューペアで拡張属性を付与できます：
+
+```typescript
+const mediaId = 1;
+
+// 属性を設定（上書き）
+db.setMediaAttribute(mediaId, 'rating', '5');
+db.setMediaAttribute(mediaId, 'note', 'お気に入り', 'text');
+
+// 属性を1件取得
+const attr = db.getMediaAttribute(mediaId, 'rating');
+if (attr) {
+  console.log(`rating: ${attr.value}`);
+}
+
+// 全属性を取得
+const attrs = db.getMediaAttributes(mediaId);
+attrs.forEach(a => console.log(`${a.key}: ${a.value}`));
+
+// 属性を削除
+db.deleteMediaAttribute(mediaId, 'rating');
+
+// 全属性を削除
+db.deleteAllMediaAttributes(mediaId);
+```
+
+### ファイル存在チェック（updateExist）
+
+メディアの `path` に実ファイルが存在するかチェックし、`flag_exist` を更新します：
+
+```typescript
+// 全メディアを対象に実行
+const result = db.updateExist({});
+console.log(`対象: ${result.total}件, 更新: ${result.updated}件`);
+
+// 特定フィルタで絞り込み
+const result2 = db.updateExist({ media_type: 'comic', series: 'ワンピース' });
+console.log(`絞り込み結果: 対象: ${result2.total}件, 更新: ${result2.updated}件`);
+
+// dry_run: DBを更新せず結果のみ確認
+const dryResult = db.updateExist({}, undefined, { dry_run: true });
+dryResult.items.forEach(item => {
+  if (item.flag_exist_before !== item.flag_exist_after) {
+    console.log(`[${item.id}] ${item.title}: ${item.flag_exist_before} -> ${item.flag_exist_after}`);
+  }
+  if (item.found_extension) {
+    console.log(`  代替拡張子: ${item.found_extension}`);
+  }
+  if (item.page_count_warning) {
+    console.warn(`  警告: ${item.page_count_warning}`);
+  }
+});
+```
+
+**ファイル存在チェックのロジック:**
+- `path` が NULL → `flag_exist = false`
+- `media_type = comic`: `{path}/001.{ext}` が存在すれば `flag_exist = true`。存在しない場合はフォルダ内で代替拡張子を検索
+- `media_type = video / music`: `path` のファイルが存在すれば `flag_exist = true`。存在しない場合は同ディレクトリ内で `{uuid}.{任意拡張子}` を検索
+- 代替拡張子が見つかった場合は `extension` も自動更新（`dry_run = false` のとき）
+- `comic` で `page_count = null` の場合、実ページ数を自動設定
+
 ### 自動バックアップ
 
 データベースの自動バックアップを設定できます：
@@ -200,6 +300,39 @@ db.migrate();
 ```typescript
 await db.backup();
 console.log(`バックアップを作成しました`);
+```
+
+バックアップ一覧を取得：
+
+```typescript
+const backups = db.listBackups();
+backups.forEach(b => console.log(`${b.name} (${b.createdAt.toISOString()})`));
+```
+
+バックアップからデータを読み取る（読み取り専用）：
+
+```typescript
+import { BackupSelector } from 'kijuku-db';
+
+// 最新バックアップからメディアを取得
+const media = db.getMediaFromBackup(1);
+if (media) {
+  console.log(`バックアップから取得したメディア: ${media.title}`);
+}
+const results = db.findMediaFromBackup({ series: 'ワンピース' });
+console.log(`バックアップからの検索結果: ${results.length}件`);
+
+// タグをバックアップから取得
+const tag = db.getTagByNameFromBackup('お気に入り');
+if (tag) {
+  console.log(`バックアップから取得したタグ: ${tag.name}`);
+}
+const allTags = db.getAllTagsFromBackup();
+const mediaTags = db.getMediaTagsFromBackup(1);
+
+// 属性をバックアップから取得
+const attr = db.getMediaAttributeFromBackup(1, 'rating');
+const attrs = db.getMediaAttributesFromBackup(1);
 ```
 
 ### リモートDB操作（SSH経由）
@@ -273,6 +406,9 @@ import type {
   QueryOptions,
   Tag,
   MediaAttribute,
+  UpdateExistOptions,
+  UpdateExistResult,
+  UpdateExistItemResult,
 } from 'kijuku-db';
 
 // 型安全な関数
