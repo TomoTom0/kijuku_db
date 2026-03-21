@@ -16,7 +16,10 @@ fn temp_file_path(suffix: &str) -> String {
         .unwrap_or_default()
         .as_nanos();
     let pid = process::id();
-    format!("/tmp/kijuku-update-exist-{}-{}{}", pid, ts, suffix)
+    std::env::temp_dir()
+        .join(format!("kijuku-update-exist-{}-{}{}", pid, ts, suffix))
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// update_existの動作オプション
@@ -241,6 +244,12 @@ fn process_media(
 }
 
 /// フィルタで絞り込んだメディアのflag_existをファイル存在状態に基づいて更新する
+///
+/// # 一時ファイル
+///
+/// この関数は結果を格納するために一時ファイルを作成します。
+/// 返される [`UpdateExistResult`] の `detail_file` および `updated_ids_file` に含まれる
+/// ファイルパスは、呼び出し側が不要になった時点で削除する責任があります。
 pub fn update_exist(
     conn: &Connection,
     filter: &MediaFilter,

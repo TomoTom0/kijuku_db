@@ -197,6 +197,14 @@ function processMedia(
   };
 }
 
+/**
+ * フィルタで絞り込んだメディアのflag_existをファイル存在状態に基づいて更新する
+ *
+ * @remarks
+ * この関数は結果を格納するために一時ファイルを作成します。
+ * 返される `UpdateExistResult` の `detail_file` および `updated_ids_file` に含まれる
+ * ファイルパスは、呼び出し側が不要になった時点で削除する責任があります。
+ */
 export function updateExist(
   db: Database.Database,
   filter: MediaFilter,
