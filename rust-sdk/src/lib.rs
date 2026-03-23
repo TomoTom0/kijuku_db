@@ -36,6 +36,7 @@
 pub mod attribute;
 pub mod backup;
 pub mod bulk;
+pub mod config;
 pub mod crud;
 pub mod error;
 pub mod migration;
@@ -46,7 +47,11 @@ pub mod tag;
 pub mod types;
 pub mod update_exist;
 
-pub use backup::{BackupInfo, BackupManager, BackupOptions, BackupSelector};
+pub use backup::{
+    AutoRecord, AutoRecordStatus, BackupInfo, BackupKind, BackupManager, BackupOptions,
+    BackupScope, BackupSelector, RetentionPolicy, RetentionTier,
+};
+pub use config::{load_config, BackupConfig, KijukuConfig};
 pub use error::{KijukuError, Result};
 pub use migration::TableColumnInfo;
 pub use remote::{RemoteConfig, RemoteKijukuDB};
@@ -371,11 +376,53 @@ impl KijukuDB {
     /// # Ok(())
     /// # }
     /// ```
+    /// 手動バックアップを実行（ラベルなし）
     pub fn backup(&self) -> Result<Option<String>> {
         match &self.backup_manager {
-            Some(manager) => manager.backup().map(Some),
+            Some(manager) => manager.backup(None).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// ラベル付き手動バックアップを実行
+    ///
+    /// # 引数
+    /// * `label` - バックアップのラベル（例: "before_import"）
+    pub fn backup_with_label(&self, label: &str) -> Result<Option<String>> {
+        match &self.backup_manager {
+            Some(manager) => manager.backup(Some(label)).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// バックアップを現在のDBに復元する
+    ///
+    /// 指定したバックアップの内容を現在のDB接続に上書きします。
+    ///
+    /// # 引数
+    /// * `selector` - 復元するバックアップの選択条件
+    ///
+    /// # 戻り値
+    /// 復元に使用したバックアップファイルのパス
+    pub fn restore(&mut self, selector: &BackupSelector) -> Result<std::path::PathBuf> {
+        let manager = self
+            .backup_manager
+            .as_ref()
+            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?;
+        // BackupManager::restore() が pre_restore 退避と差分適用を処理する
+        // ここでは manager の不変参照を使えないため get_backup_path で簡易対応
+        let backup_path = manager
+            .get_backup_path(selector)?
+            .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
+
+        let src_conn = rusqlite::Connection::open_with_flags(
+            &backup_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        let bk = rusqlite::backup::Backup::new(&src_conn, &mut self.conn)?;
+        bk.run_to_completion(5, std::time::Duration::from_millis(250), None)?;
+
+        Ok(backup_path)
     }
 
     /// バックアップ一覧を取得
