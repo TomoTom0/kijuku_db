@@ -409,20 +409,7 @@ impl KijukuDB {
             .backup_manager
             .as_ref()
             .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?;
-        // BackupManager::restore() が pre_restore 退避と差分適用を処理する
-        // ここでは manager の不変参照を使えないため get_backup_path で簡易対応
-        let backup_path = manager
-            .get_backup_path(selector)?
-            .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
-
-        let src_conn = rusqlite::Connection::open_with_flags(
-            &backup_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
-        let bk = rusqlite::backup::Backup::new(&src_conn, &mut self.conn)?;
-        bk.run_to_completion(5, std::time::Duration::from_millis(250), None)?;
-
-        Ok(backup_path)
+        manager.restore(&mut self.conn, selector)
     }
 
     /// バックアップ一覧を取得
