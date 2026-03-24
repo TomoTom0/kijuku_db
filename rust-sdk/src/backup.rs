@@ -21,7 +21,7 @@ use crate::{KijukuError, Result};
 use chrono::{Datelike, NaiveDate, Utc};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -435,15 +435,12 @@ impl BackupManager {
                     .find_backup_by_id_in_scope(base_id, BackupScope::Auto)?
                     .ok_or_else(|| KijukuError::Other(format!("Base backup {} not found", base_id)))?;
 
-                // 差分を適用して完全なDBデータを構築
-                let reconstructed = apply_diff_to_bytes(&base.path, &backup_info.path)?;
-
-                // 一時ファイルに書き出してから復元
+                // 差分を適用して一時ファイルに復元
                 let temp_path = self.backup_dir.join("tmp").join(
                     format!("{}.restore_temp_{}.db", self.db_stem, base_id),
                 );
                 fs::create_dir_all(temp_path.parent().unwrap())?;
-                fs::write(&temp_path, &reconstructed)?;
+                apply_diff_to_file(&base.path, &backup_info.path, &temp_path)?;
 
                 let src = rusqlite::Connection::open_with_flags(&temp_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
                 let bk = rusqlite::backup::Backup::new(&src, conn)?;
@@ -940,49 +937,45 @@ fn create_diff_file(
         .map_err(|e| KijukuError::Other(format!("Failed to read page size: {}", e)))?
         as usize;
 
-    let base_data = fs::read(base_path)?;
-    let current_data = fs::read(current_path)?;
+    let current_page_count = (fs::metadata(current_path)?.len() as usize / page_size) as u32;
+    let base_page_count = (fs::metadata(base_path)?.len() as usize / page_size) as u32;
 
-    let current_page_count = (current_data.len() / page_size) as u32;
-    let base_page_count = (base_data.len() / page_size) as u32;
+    let mut out = File::create(diff_path)?;
+    // ヘッダのプレースホルダ（30バイト）を書き出し、後で上書き
+    out.write_all(&[0u8; 30])?;
 
-    let mut changed_pages: Vec<(u32, &[u8])> = Vec::new();
+    let mut base_file = File::open(base_path)?;
+    let mut current_file = File::open(current_path)?;
+    let mut base_buf = vec![0u8; page_size];
+    let mut current_buf = vec![0u8; page_size];
+    let mut changed_count: u32 = 0;
 
     for page_num in 1..=current_page_count {
-        let offset = (page_num as usize - 1) * page_size;
-        let current_page = &current_data[offset..offset + page_size];
-
-        let base_page = if page_num <= base_page_count {
-            let base_off = (page_num as usize - 1) * page_size;
-            &base_data[base_off..base_off + page_size]
+        current_file.read_exact(&mut current_buf)?;
+        if page_num <= base_page_count {
+            base_file.read_exact(&mut base_buf)?;
+            if current_buf != base_buf {
+                out.write_all(&page_num.to_be_bytes())?;
+                out.write_all(&current_buf)?;
+                changed_count += 1;
+            }
         } else {
-            &[] // 基底に存在しないページ
-        };
-
-        if current_page != base_page {
-            changed_pages.push((page_num, current_page));
+            // 基底に存在しないページは常に差分として記録
+            out.write_all(&page_num.to_be_bytes())?;
+            out.write_all(&current_buf)?;
+            changed_count += 1;
         }
     }
 
-    let mut file = File::create(diff_path)?;
-
-    // Header: base_id (18 bytes)
+    // 先頭に戻って実際のヘッダを書き込む
+    out.seek(std::io::SeekFrom::Start(0))?;
     let mut base_id_bytes = [0u8; 18];
     let copy_len = base_id.len().min(18);
     base_id_bytes[..copy_len].copy_from_slice(&base_id.as_bytes()[..copy_len]);
-    file.write_all(&base_id_bytes)?;
-
-    // page_size (4 bytes)
-    file.write_all(&(page_size as u32).to_be_bytes())?;
-    // total_pages (4 bytes)
-    file.write_all(&current_page_count.to_be_bytes())?;
-    // changed_pages count (4 bytes)
-    file.write_all(&(changed_pages.len() as u32).to_be_bytes())?;
-
-    for (page_num, page_data) in &changed_pages {
-        file.write_all(&page_num.to_be_bytes())?;
-        file.write_all(page_data)?;
-    }
+    out.write_all(&base_id_bytes)?;
+    out.write_all(&(page_size as u32).to_be_bytes())?;
+    out.write_all(&current_page_count.to_be_bytes())?;
+    out.write_all(&changed_count.to_be_bytes())?;
 
     Ok(())
 }
@@ -999,10 +992,11 @@ fn read_diff_base_id(diff_path: &Path) -> Result<String> {
     Ok(s)
 }
 
-/// 差分を基底フルに適用して完全なDBバイト列を返す
-fn apply_diff_to_bytes(base_path: &Path, diff_path: &Path) -> Result<Vec<u8>> {
-    let mut base_data = fs::read(base_path)?;
-
+/// 差分を基底フルに適用して output_path に書き出す
+///
+/// 基底DBと差分ファイルをページ単位でストリーミングしながらマージするため、
+/// ファイルサイズに依存しない一定量のメモリのみを使用する。
+fn apply_diff_to_file(base_path: &Path, diff_path: &Path, output_path: &Path) -> Result<()> {
     let mut diff_file = File::open(diff_path)?;
     let mut header = [0u8; 30]; // 18 + 4 + 4 + 4
     diff_file
@@ -1014,32 +1008,57 @@ fn apply_diff_to_bytes(base_path: &Path, diff_path: &Path) -> Result<Vec<u8>> {
     let changed_count =
         u32::from_be_bytes([header[26], header[27], header[28], header[29]]) as usize;
 
-    // 必要に応じて拡張
-    let target_size = total_pages * page_size;
-    if base_data.len() < target_size {
-        base_data.resize(target_size, 0);
-    }
+    let base_page_count = fs::metadata(base_path)?.len() as usize / page_size;
 
-    for _ in 0..changed_count {
+    let mut base_file = File::open(base_path)?;
+    let mut out = File::create(output_path)?;
+    let mut base_buf = vec![0u8; page_size];
+    let mut patch_buf = vec![0u8; page_size];
+    let zero_buf = vec![0u8; page_size];
+
+    // 差分エントリはpage_num昇順で記録されているため、ストリーミングマージが可能
+    let mut patches_remaining = changed_count;
+    let mut next_patch_num: Option<usize> = None;
+    if patches_remaining > 0 {
         let mut num_bytes = [0u8; 4];
         diff_file
             .read_exact(&mut num_bytes)
             .map_err(|e| KijukuError::Other(format!("Diff read error: {}", e)))?;
-        let page_num = u32::from_be_bytes(num_bytes) as usize;
-
-        let mut page_data = vec![0u8; page_size];
         diff_file
-            .read_exact(&mut page_data)
+            .read_exact(&mut patch_buf)
             .map_err(|e| KijukuError::Other(format!("Diff page read error: {}", e)))?;
+        patches_remaining -= 1;
+        next_patch_num = Some(u32::from_be_bytes(num_bytes) as usize);
+    }
 
-        let offset = (page_num - 1) * page_size;
-        if offset + page_size <= base_data.len() {
-            base_data[offset..offset + page_size].copy_from_slice(&page_data);
+    for page_num in 1..=total_pages {
+        if next_patch_num == Some(page_num) {
+            out.write_all(&patch_buf)?;
+            if page_num <= base_page_count {
+                base_file.read_exact(&mut base_buf)?; // 基底ページを読み捨て
+            }
+            next_patch_num = if patches_remaining > 0 {
+                let mut num_bytes = [0u8; 4];
+                diff_file
+                    .read_exact(&mut num_bytes)
+                    .map_err(|e| KijukuError::Other(format!("Diff read error: {}", e)))?;
+                diff_file
+                    .read_exact(&mut patch_buf)
+                    .map_err(|e| KijukuError::Other(format!("Diff page read error: {}", e)))?;
+                patches_remaining -= 1;
+                Some(u32::from_be_bytes(num_bytes) as usize)
+            } else {
+                None
+            };
+        } else if page_num <= base_page_count {
+            base_file.read_exact(&mut base_buf)?;
+            out.write_all(&base_buf)?;
+        } else {
+            out.write_all(&zero_buf)?;
         }
     }
 
-    base_data.truncate(target_size);
-    Ok(base_data)
+    Ok(())
 }
 
 // ============================================================
@@ -1591,9 +1610,8 @@ mod tests {
         assert_eq!(read_id, "base_id_test");
 
         // 差分を適用して復元
-        let reconstructed = apply_diff_to_bytes(&base_db, &diff_path).unwrap();
         let restored_db = temp_dir.path().join("restored.db");
-        fs::write(&restored_db, &reconstructed).unwrap();
+        apply_diff_to_file(&base_db, &diff_path, &restored_db).unwrap();
 
         let conn = rusqlite::Connection::open(&restored_db).unwrap();
         let count: i64 = conn

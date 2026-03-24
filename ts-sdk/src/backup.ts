@@ -332,14 +332,13 @@ export class BackupManager {
       if (!base) {
         throw new Error(`Base backup ${backupInfo.kind.baseId} not found`);
       }
-      const reconstructed = applyDiffToBytes(base.path, backupInfo.path);
       const tempPath = path.join(
         this.backupDir,
         'tmp',
         `${this.dbStem}.restore_temp_${backupInfo.kind.baseId}.db`,
       );
       fs.mkdirSync(path.dirname(tempPath), { recursive: true });
-      fs.writeFileSync(tempPath, reconstructed);
+      applyDiffToFile(base.path, backupInfo.path, tempPath);
       sourcePath = tempPath;
     } else {
       sourcePath = backupInfo.path;
@@ -746,56 +745,56 @@ function createDiffFile(
   diffPath: string,
 ): void {
   const pageSize = getSqlitePageSize(basePath);
-  const baseData = fs.readFileSync(basePath);
-  const currentData = fs.readFileSync(currentPath);
+  const currentPageCount = Math.floor(fs.statSync(currentPath).size / pageSize);
+  const basePageCount = Math.floor(fs.statSync(basePath).size / pageSize);
 
-  const currentPageCount = Math.floor(currentData.length / pageSize);
-  const basePageCount = Math.floor(baseData.length / pageSize);
+  const outFd = fs.openSync(diffPath, 'w');
+  try {
+    // ヘッダのプレースホルダ（30バイト）を書き出し、後で上書き
+    fs.writeSync(outFd, Buffer.alloc(30), 0, 30, 0);
 
-  const changedPages: Array<{ num: number; data: Buffer }> = [];
+    const baseFd = fs.openSync(basePath, 'r');
+    const currentFd = fs.openSync(currentPath, 'r');
+    try {
+      const baseBuf = Buffer.alloc(pageSize);
+      const currentBuf = Buffer.alloc(pageSize);
+      const numBuf = Buffer.alloc(4);
+      let changedCount = 0;
+      let outOffset = 30;
 
-  for (let pageNum = 1; pageNum <= currentPageCount; pageNum++) {
-    const offset = (pageNum - 1) * pageSize;
-    const currentPage = currentData.subarray(offset, offset + pageSize);
+      for (let pageNum = 1; pageNum <= currentPageCount; pageNum++) {
+        fs.readSync(currentFd, currentBuf, 0, pageSize, (pageNum - 1) * pageSize);
+        if (pageNum <= basePageCount) {
+          fs.readSync(baseFd, baseBuf, 0, pageSize, (pageNum - 1) * pageSize);
+          if (!currentBuf.equals(baseBuf)) {
+            numBuf.writeUInt32BE(pageNum, 0);
+            fs.writeSync(outFd, numBuf, 0, 4, outOffset); outOffset += 4;
+            fs.writeSync(outFd, currentBuf, 0, pageSize, outOffset); outOffset += pageSize;
+            changedCount++;
+          }
+        } else {
+          // 基底に存在しないページは常に差分として記録
+          numBuf.writeUInt32BE(pageNum, 0);
+          fs.writeSync(outFd, numBuf, 0, 4, outOffset); outOffset += 4;
+          fs.writeSync(outFd, currentBuf, 0, pageSize, outOffset); outOffset += pageSize;
+          changedCount++;
+        }
+      }
 
-    let basePage: Buffer;
-    if (pageNum <= basePageCount) {
-      const baseOffset = (pageNum - 1) * pageSize;
-      basePage = baseData.subarray(baseOffset, baseOffset + pageSize);
-    } else {
-      basePage = Buffer.alloc(0);
+      // 先頭に戻って実際のヘッダを書き込む
+      const header = Buffer.alloc(30);
+      Buffer.from(baseId.slice(0, 18).padEnd(18, '\0')).copy(header, 0);
+      header.writeUInt32BE(pageSize, 18);
+      header.writeUInt32BE(currentPageCount, 22);
+      header.writeUInt32BE(changedCount, 26);
+      fs.writeSync(outFd, header, 0, 30, 0);
+    } finally {
+      fs.closeSync(baseFd);
+      fs.closeSync(currentFd);
     }
-
-    if (!currentPage.equals(basePage)) {
-      changedPages.push({ num: pageNum, data: Buffer.from(currentPage) });
-    }
+  } finally {
+    fs.closeSync(outFd);
   }
-
-  // ヘッダを書き込む
-  const headerSize = 18 + 4 + 4 + 4;
-  const pageDataSize = changedPages.length * (4 + pageSize);
-  const totalSize = headerSize + pageDataSize;
-  const buf = Buffer.alloc(totalSize);
-  let offset = 0;
-
-  // base_id (18 bytes)
-  const baseIdBytes = Buffer.from(baseId.slice(0, 18).padEnd(18, '\0'));
-  baseIdBytes.copy(buf, offset);
-  offset += 18;
-
-  // page_size (4 bytes)
-  buf.writeUInt32BE(pageSize, offset); offset += 4;
-  // total_pages (4 bytes)
-  buf.writeUInt32BE(currentPageCount, offset); offset += 4;
-  // changed_pages count (4 bytes)
-  buf.writeUInt32BE(changedPages.length, offset); offset += 4;
-
-  for (const { num, data } of changedPages) {
-    buf.writeUInt32BE(num, offset); offset += 4;
-    data.copy(buf, offset); offset += pageSize;
-  }
-
-  fs.writeFileSync(diffPath, buf);
 }
 
 /** 差分ファイルのヘッダから base_id を読む */
@@ -811,36 +810,66 @@ function readDiffBaseId(diffPath: string): string {
   }
 }
 
-/** 差分を基底フルに適用して完全なDBバッファを返す */
-function applyDiffToBytes(basePath: string, diffPath: string): Buffer {
-  const baseData = fs.readFileSync(basePath);
-  const diffData = fs.readFileSync(diffPath);
-
-  if (diffData.length < 30) {
-    throw new Error('Invalid diff file: too small');
-  }
-
-  let offset = 18; // base_id をスキップ
-  const pageSize = diffData.readUInt32BE(offset); offset += 4;
-  const totalPages = diffData.readUInt32BE(offset); offset += 4;
-  const changedCount = diffData.readUInt32BE(offset); offset += 4;
-
-  const targetSize = totalPages * pageSize;
-  const result = Buffer.alloc(targetSize);
-  baseData.copy(result, 0, 0, Math.min(baseData.length, targetSize));
-
-  for (let i = 0; i < changedCount; i++) {
-    const pageNum = diffData.readUInt32BE(offset); offset += 4;
-    const pageData = diffData.subarray(offset, offset + pageSize);
-    offset += pageSize;
-
-    const pageOffset = (pageNum - 1) * pageSize;
-    if (pageOffset + pageSize <= targetSize) {
-      pageData.copy(result, pageOffset);
+/** 差分を基底フルに適用して outputPath に書き出す */
+function applyDiffToFile(basePath: string, diffPath: string, outputPath: string): void {
+  const diffFd = fs.openSync(diffPath, 'r');
+  try {
+    const header = Buffer.alloc(30);
+    if (fs.readSync(diffFd, header, 0, 30, 0) < 30) {
+      throw new Error('Invalid diff file: too small');
     }
-  }
 
-  return result;
+    const pageSize = header.readUInt32BE(18);
+    const totalPages = header.readUInt32BE(22);
+    const changedCount = header.readUInt32BE(26);
+
+    const basePageCount = Math.floor(fs.statSync(basePath).size / pageSize);
+
+    const baseFd = fs.openSync(basePath, 'r');
+    const outFd = fs.openSync(outputPath, 'w');
+    try {
+      const baseBuf = Buffer.alloc(pageSize);
+      const patchBuf = Buffer.alloc(pageSize);
+      const zeroBuf = Buffer.alloc(pageSize);
+      const numBuf = Buffer.alloc(4);
+
+      // 差分エントリはpage_num昇順で記録されているため、ストリーミングマージが可能
+      let patchesRemaining = changedCount;
+      let nextPatchNum: number | null = null;
+      let diffReadOffset = 30;
+
+      if (patchesRemaining > 0) {
+        fs.readSync(diffFd, numBuf, 0, 4, diffReadOffset); diffReadOffset += 4;
+        fs.readSync(diffFd, patchBuf, 0, pageSize, diffReadOffset); diffReadOffset += pageSize;
+        patchesRemaining--;
+        nextPatchNum = numBuf.readUInt32BE(0);
+      }
+
+      for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+        if (nextPatchNum === pageNum) {
+          fs.writeSync(outFd, patchBuf, 0, pageSize, (pageNum - 1) * pageSize);
+          if (patchesRemaining > 0) {
+            fs.readSync(diffFd, numBuf, 0, 4, diffReadOffset); diffReadOffset += 4;
+            fs.readSync(diffFd, patchBuf, 0, pageSize, diffReadOffset); diffReadOffset += pageSize;
+            patchesRemaining--;
+            nextPatchNum = numBuf.readUInt32BE(0);
+          } else {
+            nextPatchNum = null;
+          }
+        } else if (pageNum <= basePageCount) {
+          fs.readSync(baseFd, baseBuf, 0, pageSize, (pageNum - 1) * pageSize);
+          fs.writeSync(outFd, baseBuf, 0, pageSize, (pageNum - 1) * pageSize);
+        } else {
+          fs.writeSync(outFd, zeroBuf, 0, pageSize, (pageNum - 1) * pageSize);
+        }
+      }
+    } finally {
+      fs.closeSync(baseFd);
+      fs.closeSync(outFd);
+    }
+  } finally {
+    fs.closeSync(diffFd);
+  }
 }
 
 // ============================================================
