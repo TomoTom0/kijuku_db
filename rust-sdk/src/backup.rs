@@ -1621,6 +1621,105 @@ mod tests {
     }
 
     #[test]
+    fn test_restore_from_diff_backup() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = create_test_db(temp_dir.path());
+        let backup_dir = temp_dir.path().join("backups");
+
+        let options = BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            ..Default::default()
+        };
+
+        let manager = BackupManager::new(&db_path, options).unwrap();
+
+        // 1. フルバックアップを作成（1行のDB）
+        manager.backup_auto().unwrap();
+
+        // 2. DBにデータを追加（2行に）
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute("INSERT INTO test (data) VALUES (?1)", ["added_row"])
+                .unwrap();
+        }
+
+        // 3. 差分バックアップを作成（同日なのでdiff）
+        manager.backup_auto().unwrap();
+
+        // 差分バックアップが存在することを確認
+        let backups = manager.list_backups().unwrap();
+        let has_diff = backups
+            .iter()
+            .any(|b| matches!(&b.kind, BackupKind::Diff { .. }));
+        assert!(has_diff, "差分バックアップが作成されているべき");
+
+        // 4. DBを削除して空にする
+        let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("DELETE FROM test", []).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM test", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+
+        // 5. 差分バックアップ（最新のauto）から復元
+        let selector = BackupSelector::latest().scope(BackupScope::Auto);
+        manager.restore(&mut conn, &selector).unwrap();
+
+        // 6. 差分適用後の状態（2行）に復元されていることを確認
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM test", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "フル+差分適用後の2レコードが復元されているべき");
+    }
+
+    #[test]
+    fn test_diff_with_pages_beyond_base() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // ベースDB（最小サイズ）
+        let base_db = temp_dir.path().join("base_new_pages.db");
+        {
+            let conn = rusqlite::Connection::open(&base_db).unwrap();
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", [])
+                .unwrap();
+        }
+
+        // 現在DB（大量データ挿入でページ数がベースを超える）
+        let current_db = temp_dir.path().join("current_new_pages.db");
+        fs::copy(&base_db, &current_db).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&current_db).unwrap();
+            for i in 0..200i32 {
+                conn.execute(
+                    "INSERT INTO t VALUES (?1, ?2)",
+                    rusqlite::params![i, "x".repeat(100)],
+                )
+                .unwrap();
+            }
+        }
+
+        // current がベースより大きいことを確認
+        assert!(
+            fs::metadata(&current_db).unwrap().len() > fs::metadata(&base_db).unwrap().len(),
+            "currentはbaseより大きいべき"
+        );
+
+        // 差分ファイルを作成・適用
+        let diff_path = temp_dir.path().join("new_pages.diff");
+        create_diff_file("new_pages_test", &base_db, &current_db, &diff_path).unwrap();
+
+        let restored_db = temp_dir.path().join("restored_new_pages.db");
+        apply_diff_to_file(&base_db, &diff_path, &restored_db).unwrap();
+
+        let conn = rusqlite::Connection::open(&restored_db).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 200);
+    }
+
+    #[test]
     fn test_backup_selector_scope() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = create_test_db(temp_dir.path());

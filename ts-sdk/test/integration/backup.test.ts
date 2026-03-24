@@ -242,6 +242,63 @@ describe('BackupManager', () => {
     });
   });
 
+  describe('差分バックアップ', () => {
+    it('自動バックアップで差分ファイルが作成される', async () => {
+      const manager = db.getBackupManager()!;
+
+      // フルバックアップ
+      await manager.backupAuto();
+
+      // データを追加
+      db.createMedia({ title: 'Media for diff', media_type: 'video' });
+
+      // 差分バックアップ（同日なのでdiff）
+      await manager.backupAuto();
+
+      const backups = db.listBackups();
+      const hasDiff = backups.some((b) => b.kind.type === 'diff');
+      expect(hasDiff).toBe(true);
+    });
+
+    it('差分バックアップから復元できる', async () => {
+      const manager = db.getBackupManager()!;
+      const { BackupSelector } = await import('../../src/backup.js');
+
+      // フルバックアップ（空のDB）
+      await manager.backupAuto();
+
+      // データを追加
+      db.createMedia({ title: 'Media A', media_type: 'video' });
+      db.createMedia({ title: 'Media B', media_type: 'comic' });
+
+      // 差分バックアップ（2件のデータ状態）
+      await manager.backupAuto();
+
+      const backupsAfterDiff = db.listBackups();
+      const hasDiff = backupsAfterDiff.some((b) => b.kind.type === 'diff');
+      expect(hasDiff).toBe(true);
+
+      // データをさらに追加
+      db.createMedia({ title: 'Media C', media_type: 'music' });
+
+      // 差分バックアップ（最新）から復元
+      const selector = BackupSelector.latest().scope('auto');
+      manager.restore(selector);
+
+      // 復元後は新しい接続で検証
+      const Database = (await import('better-sqlite3')).default;
+      const verifyDb = new Database(testDbPath);
+      verifyDb.pragma('foreign_keys = ON');
+      const count = (
+        verifyDb.prepare('SELECT COUNT(*) as cnt FROM media').get() as { cnt: number }
+      ).cnt;
+      verifyDb.close();
+
+      // 差分バックアップ時点の2件が復元されているべき
+      expect(count).toBe(2);
+    });
+  });
+
   describe('auto-records.csv (TASK-148)', () => {
     it('自動バックアップ取得時に records.csv が更新される', async () => {
       const manager = db.getBackupManager()!;
