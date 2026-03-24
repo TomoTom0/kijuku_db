@@ -41,15 +41,10 @@ export function addTagToMedia(
 ): void {
   try {
     const stmt = db.prepare(
-      'INSERT INTO media_tags (media_id, tag_id) VALUES (?, ?)'
+      'INSERT OR IGNORE INTO media_tags (media_id, tag_id) VALUES (?, ?)'
     );
     stmt.run(mediaId, tagId);
   } catch (error: any) {
-    // UNIQUE制約違反の場合（すでに追加済み）
-    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      // すでに追加されている場合は何もしない
-      return;
-    }
     // 外部キー制約違反の場合
     if (error.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
       throw new Error(`Media ${mediaId} or Tag ${tagId} not found`);

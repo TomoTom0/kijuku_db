@@ -20,14 +20,25 @@ import * as search from './search.js';
 import * as bulk from './bulk.js';
 import * as attribute from './attribute.js';
 import { BackupManager, BackupSelector } from './backup.js';
+import type { BackupInfo } from './backup.js';
 import * as updateExistModule from './update_exist.js';
 
 export * from './types.js';
 export type { UpdateExistOptions, UpdateExistItemResult, UpdateExistResult } from './update_exist.js';
 export * from './errors.js';
 export * from './remote.js';
-export { BackupManager, BackupSelector } from './backup.js';
-export type { BackupInfo, BackupSelector as BackupSelectorType } from './backup.js';
+export { BackupManager, BackupSelector, defaultRetentionPolicy } from './backup.js';
+export type {
+  BackupInfo,
+  BackupKind,
+  BackupScope,
+  AutoRecord,
+  RetentionPolicy,
+  RetentionTier,
+  BackupOptions,
+} from './backup.js';
+export { loadConfig, globalConfigPath, defaultKijukuConfig, defaultBackupConfig } from './config.js';
+export type { KijukuConfig, BackupConfig, RetentionTierConfig } from './config.js';
 export { startServer } from './server/index.js';
 export { AuthManager, generatePassword } from './server/auth.js';
 
@@ -36,9 +47,11 @@ export { AuthManager, generatePassword } from './server/auth.js';
  */
 export class KijukuDB {
   private db: Database.Database;
+  private readonly dbPath: string;
   private backupManager?: BackupManager;
 
   constructor(dbPath: string, options?: DBOptions) {
+    this.dbPath = dbPath;
     this.db = new Database(dbPath, {
       timeout: options?.timeout ?? 5000,
       readonly: options?.readonly ?? false,
@@ -285,23 +298,40 @@ export class KijukuDB {
     return result;
   }
 
-  /**
-   * 手動でバックアップを実行
-   */
+  /** 手動バックアップを実行（ラベルなし） */
   async backup(): Promise<string | undefined> {
-    return this.backupManager?.backup();
+    return this.backupManager?.backup(undefined);
   }
 
   /**
-   * バックアップ一覧を取得
+   * ラベル付き手動バックアップを実行
+   * @param label バックアップのラベル（例: "before_import"）
    */
-  listBackups(): Array<{ name: string; path: string; createdAt: Date }> {
+  async backupWithLabel(label: string): Promise<string | undefined> {
+    return this.backupManager?.backup(label);
+  }
+
+  /**
+   * バックアップを現在のDBに復元する
+   *
+   * 指定したバックアップの内容を現在のDB接続に上書きします。
+   *
+   * @param selector 復元するバックアップの選択条件（省略時は最新）
+   * @returns 復元に使用したバックアップファイルのパス
+   */
+  restore(selector: BackupSelector = BackupSelector.latest()): string {
+    if (!this.backupManager) {
+      throw new Error('Backup manager not configured');
+    }
+    return this.backupManager.restore(selector);
+  }
+
+  /** バックアップ一覧を取得 */
+  listBackups(): BackupInfo[] {
     return this.backupManager?.listBackups() ?? [];
   }
 
-  /**
-   * バックアップマネージャーを取得
-   */
+  /** バックアップマネージャーを取得 */
   getBackupManager(): BackupManager | undefined {
     return this.backupManager;
   }

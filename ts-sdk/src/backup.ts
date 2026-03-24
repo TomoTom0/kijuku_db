@@ -1,222 +1,465 @@
 /**
- * データベースの自動バックアップ管理
+ * バックアップ機能
+ *
+ * ディレクトリ構成:
+ *   backup/
+ *     auto/   - 自動バックアップ（フル .db / 差分 .diff）
+ *     manual/ - 手動バックアップ（常にフル .db）
+ *     tmp/    - restore前自動退避 (.db)
+ *     meta/
+ *       auto-records.csv
+ *
+ * ファイル名規則:
+ *   {stem}.{timestamp}.db            フル
+ *   {stem}.{timestamp}.diff          差分
+ *   {stem}.{timestamp}-{label}.db    ラベル付き手動
+ *   {stem}.{timestamp}-pre_restore.db tmp退避
+ *
+ * timestamp = YYYYMMDDHHMMSS-mmm (18文字固定)
  */
 import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-/**
- * バックアップ選択条件
- */
-export type BackupSelector =
+// 時間定数（秒）
+const HOUR_SECS = 3600;
+const DAY_SECS = 86400;
+const WEEK_SECS = 604800;
+const MONTH_SECS = 2592000;
+const QUARTER_SECS = 7776000;
+const YEAR_SECS = 31536000;
+
+// ============================================================
+// 型定義
+// ============================================================
+
+/** バックアップのスコープ（保存先ディレクトリ） */
+export type BackupScope = 'auto' | 'manual' | 'tmp';
+
+/** バックアップの種別 */
+export type BackupKind =
+  | { type: 'full' }
+  | { type: 'diff'; baseId: string };
+
+/** バックアップ情報 */
+export interface BackupInfo {
+  /** バックアップID（タイムスタンプ文字列、18文字） */
+  id: string;
+  /** ファイル名 */
+  name: string;
+  /** ファイルパス */
+  path: string;
+  /** 作成日時 */
+  createdAt: Date;
+  /** スコープ（auto / manual / tmp） */
+  scope: BackupScope;
+  /** 種別（フル / 差分） */
+  kind: BackupKind;
+  /** ラベル（手動バックアップの任意ラベル） */
+  label?: string;
+}
+
+/** auto-records.csv の1レコード */
+export interface AutoRecord {
+  id: string;
+  createdAt: string;
+  tier: string;
+  kind: 'full' | 'diff';
+  baseId: string;
+  sizeBytes: number;
+  status: 'kept' | 'pruned';
+  prunedAt: string;
+}
+
+/** 保持ポリシーの1段階 */
+export interface RetentionTier {
+  maxAgeSecs: number;
+  keepIntervalSecs: number;
+}
+
+/** 自動バックアップの粗密保持ポリシー */
+export interface RetentionPolicy {
+  tiers: RetentionTier[];
+}
+
+/** デフォルトの保持ポリシーを生成 */
+export function defaultRetentionPolicy(): RetentionPolicy {
+  return {
+    tiers: [
+      { maxAgeSecs: HOUR_SECS,    keepIntervalSecs: 0 },
+      { maxAgeSecs: DAY_SECS,     keepIntervalSecs: HOUR_SECS },
+      { maxAgeSecs: WEEK_SECS,    keepIntervalSecs: DAY_SECS },
+      { maxAgeSecs: MONTH_SECS,   keepIntervalSecs: WEEK_SECS },
+      { maxAgeSecs: QUARTER_SECS, keepIntervalSecs: MONTH_SECS },
+      { maxAgeSecs: YEAR_SECS,    keepIntervalSecs: QUARTER_SECS },
+      { maxAgeSecs: Infinity,     keepIntervalSecs: YEAR_SECS },
+    ],
+  };
+}
+
+/** バックアップ選択条件 */
+export class BackupSelector {
+  private constructor(
+    private readonly _kind: BackupSelectorKind,
+    public readonly scopeFilter: BackupScope | undefined = undefined,
+  ) {}
+
+  static latest(): BackupSelector {
+    return new BackupSelector({ type: 'latest' });
+  }
+  static nth(n: number): BackupSelector {
+    return new BackupSelector({ type: 'nth', n });
+  }
+  static before(date: Date): BackupSelector {
+    return new BackupSelector({ type: 'before', date });
+  }
+  static after(date: Date): BackupSelector {
+    return new BackupSelector({ type: 'after', date });
+  }
+  static closestTo(date: Date): BackupSelector {
+    return new BackupSelector({ type: 'closestTo', date });
+  }
+
+  /** スコープを限定する (TASK-150) */
+  scope(scope: BackupScope): BackupSelector {
+    return new BackupSelector(this._kind, scope);
+  }
+
+  get kind(): BackupSelectorKind {
+    return this._kind;
+  }
+}
+
+type BackupSelectorKind =
   | { type: 'latest' }
   | { type: 'nth'; n: number }
   | { type: 'before'; date: Date }
   | { type: 'after'; date: Date }
   | { type: 'closestTo'; date: Date };
 
-/**
- * バックアップ選択条件のヘルパー関数
- */
-export const BackupSelector = {
-  latest: (): BackupSelector => ({ type: 'latest' }),
-  nth: (n: number): BackupSelector => ({ type: 'nth', n }),
-  before: (date: Date): BackupSelector => ({ type: 'before', date }),
-  after: (date: Date): BackupSelector => ({ type: 'after', date }),
-  closestTo: (date: Date): BackupSelector => ({ type: 'closestTo', date }),
-};
-
-/**
- * バックアップ情報
- */
-export interface BackupInfo {
-  name: string;
-  path: string;
-  createdAt: Date;
-}
-
-/**
- * バックアップ設定オプション
- */
+/** バックアップ設定オプション */
 export interface BackupOptions {
-  /**
-   * バックアップファイルの保存先ディレクトリ
-   * 省略時はdbPathの親ディレクトリに"backup"フォルダを作成
-   */
+  /** バックアップ保存先ディレクトリ */
   backupDir?: string;
-
-  /**
-   * バックアップをトリガーする時間間隔（ミリ秒）
-   * デフォルト: 3600000 (1時間)
-   */
+  /** 自動バックアップのトリガー間隔（ミリ秒） */
   intervalMs?: number;
-
-  /**
-   * バックアップ機能の有効/無効
-   * デフォルト: true
-   */
+  /** バックアップ機能全体の有効/無効 */
   enabled?: boolean;
-
-  /**
-   * バックアップ進捗のコールバック
-   */
+  /** 自動バックアップの有効/無効 */
+  autoEnabled?: boolean;
+  /** tmp/ の保持期間（秒） */
+  tmpRetentionSecs?: number;
+  /** 最大バックアップ数（retentionPolicy 未設定時のみ有効） */
+  maxBackups?: number;
+  /** 最大保持日数（retentionPolicy 未設定時のみ有効） */
+  maxAgeDays?: number;
+  /** 保持ポリシー */
+  retentionPolicy?: RetentionPolicy;
+  /** バックアップ進捗コールバック */
   onProgress?: (info: { totalPages: number; remainingPages: number }) => void;
 }
 
-/**
- * バックアップマネージャークラス
- */
+// ============================================================
+// BackupManager
+// ============================================================
+
 export class BackupManager {
+  private db: Database.Database;
   private lastBackupTime: number | null = null;
   private lastOperationTime: number | null = null;
   private readonly backupDir: string;
   private readonly dbStem: string;
   private readonly intervalMs: number;
   private readonly enabled: boolean;
+  private readonly autoEnabled: boolean;
+  private readonly tmpRetentionSecs: number;
+  private readonly maxBackups?: number;
+  private readonly maxAgeDays?: number;
+  private readonly retentionPolicy?: RetentionPolicy;
   private readonly onProgress?: (info: { totalPages: number; remainingPages: number }) => void;
 
-  constructor(private db: Database.Database, dbPath: string, options: BackupOptions) {
-    // DBファイル名のステム（拡張子を除いた部分）を取得
+  constructor(db: Database.Database, private readonly dbPath: string, options: BackupOptions) {
+    this.db = db;
     this.dbStem = path.basename(dbPath, path.extname(dbPath)) || 'database';
-
-    // バックアップディレクトリを決定
-    // 指定がない場合はdbPathの親ディレクトリに"backup"フォルダを作成
     this.backupDir = options.backupDir ?? path.join(path.dirname(dbPath), 'backup');
-
-    this.intervalMs = options.intervalMs ?? 3600000; // デフォルト1時間
+    this.intervalMs = options.intervalMs ?? 3_600_000;
     this.enabled = options.enabled ?? true;
+    this.autoEnabled = options.autoEnabled ?? true;
+    this.tmpRetentionSecs = options.tmpRetentionSecs ?? 604_800;
+    this.maxBackups = options.maxBackups;
+    this.maxAgeDays = options.maxAgeDays;
+    this.retentionPolicy = options.retentionPolicy;
     this.onProgress = options.onProgress;
 
-    // バックアップディレクトリが存在しない場合は作成
-    if (this.enabled && !fs.existsSync(this.backupDir)) {
-      fs.mkdirSync(this.backupDir, { recursive: true });
+    if (this.enabled) {
+      fs.mkdirSync(path.join(this.backupDir, 'auto'), { recursive: true });
+      fs.mkdirSync(path.join(this.backupDir, 'manual'), { recursive: true });
+      fs.mkdirSync(path.join(this.backupDir, 'meta'), { recursive: true });
     }
   }
 
-  /**
-   * 操作を記録し、必要に応じてバックアップを実行
-   */
+  /** 操作を記録し、必要に応じて自動バックアップを実行 */
   async recordOperation(): Promise<void> {
-    if (!this.enabled) {
-      return;
-    }
+    if (!this.enabled || !this.autoEnabled) return;
 
     const now = Date.now();
     this.lastOperationTime = now;
 
-    // 前回のバックアップからの経過時間をチェック
     if (this.lastBackupTime === null || now - this.lastBackupTime >= this.intervalMs) {
-      await this.backup();
+      await this.backupAuto();
     }
   }
 
-  /**
-   * 手動でバックアップを実行
-   */
-  async backup(): Promise<string> {
+  /** 自動バックアップを実行（内部用） */
+  async backupAuto(): Promise<string> {
+    const timestamp = currentTimestampStr();
+    const autoDir = path.join(this.backupDir, 'auto');
+    fs.mkdirSync(autoDir, { recursive: true });
+
+    // 今日のフルバックアップを探す（差分の基底）
+    const todayFull = this.findTodayFullBackup();
+
+    let backupPath: string;
+    let isDiff = false;
+    let baseId: string | undefined;
+
+    if (todayFull !== null) {
+      // 差分バックアップを試みる
+      try {
+        const diffPath = await this.createDiffBackupFile(timestamp, todayFull);
+        backupPath = diffPath;
+        isDiff = true;
+        baseId = todayFull.id;
+      } catch {
+        // 差分作成失敗時はフルにフォールバック
+        const filename = `${this.dbStem}.${timestamp}.db`;
+        backupPath = path.join(autoDir, filename);
+        await this.copyDbTo(backupPath);
+      }
+    } else {
+      // フルバックアップ（今日の最初 = daily）
+      const filename = `${this.dbStem}.${timestamp}.db`;
+      backupPath = path.join(autoDir, filename);
+      await this.copyDbTo(backupPath);
+    }
+
+    this.lastBackupTime = Date.now();
+
+    // auto-records.csv に追記
+    const sizeBytes = fs.existsSync(backupPath)
+      ? fs.statSync(backupPath).size
+      : 0;
+    const tier = isDiff
+      ? (() => {
+          const elapsedMs = todayFull
+            ? Date.now() - todayFull.createdAt.getTime()
+            : 0;
+          return elapsedMs < HOUR_SECS * 1000 ? 'recent' : 'hourly';
+        })()
+      : 'daily';
+
+    try {
+      this.appendAutoRecord({
+        id: timestamp,
+        createdAt: new Date().toISOString(),
+        tier,
+        kind: isDiff ? 'diff' : 'full',
+        baseId: baseId ?? '',
+        sizeBytes,
+        status: 'kept',
+        prunedAt: '',
+      });
+    } catch {
+      // 記録失敗はバックアップ失敗にしない
+    }
+
+    this.cleanupOldBackups();
+    return backupPath;
+  }
+
+  /** 手動バックアップを実行（常にフル） */
+  async backup(label?: string): Promise<string> {
     if (!this.enabled) {
       throw new Error('Backup is disabled');
     }
 
-    // タイムスタンプを生成 (yyyymmddhhmmss-mmm形式、ミリ秒を含む)
-    const now = new Date();
-    const pad = (n: number, len = 2) => n.toString().padStart(len, '0');
-    const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}-${pad(now.getMilliseconds(), 3)}`;
+    const timestamp = currentTimestampStr();
+    const manualDir = path.join(this.backupDir, 'manual');
+    fs.mkdirSync(manualDir, { recursive: true });
 
-    // ファイル名形式: {db_stem}.backup-{yyyymmddhhmmss-mmm}.db
-    const backupFileName = `${this.dbStem}.backup-${timestamp}.db`;
-    const backupPath = path.join(this.backupDir, backupFileName);
+    const filename = label
+      ? `${this.dbStem}.${timestamp}-${label.replace(/[^a-zA-Z0-9_-]/g, '_')}.db`
+      : `${this.dbStem}.${timestamp}.db`;
 
-    await this.db.backup(backupPath, {
-      progress: (info) => {
-        if (this.onProgress) {
-          this.onProgress(info);
-        }
-        return 200; // ページ数ごとに進捗を報告
-      },
-    });
+    const backupPath = path.join(manualDir, filename);
+    await this.copyDbTo(backupPath);
 
     this.lastBackupTime = Date.now();
-
+    this.cleanupOldBackups();
     return backupPath;
   }
 
   /**
-   * バックアップ一覧を取得
+   * バックアップを復元する
+   *
+   * 復元前に現在の状態を tmp/ へ自動退避する（TASK-149）
+   * WAL チェックポイント後にファイルコピーを行い、接続を再初期化します。
    */
-  listBackups(): Array<{ name: string; path: string; createdAt: Date }> {
-    if (!fs.existsSync(this.backupDir)) {
-      return [];
+  restore(selector: BackupSelector): string {
+    const backupInfo = this.selectBackup(selector);
+    if (!backupInfo) {
+      throw new Error('No backup found matching selector');
     }
 
-    // このDBのバックアップファイルのプレフィックス: {db_stem}.backup-
-    const prefix = `${this.dbStem}.backup-`;
+    // 1. 現在のDBを tmp/ へ退避
+    if (this.enabled) {
+      const timestamp = currentTimestampStr();
+      const tmpDir = path.join(this.backupDir, 'tmp');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const preRestorePath = path.join(
+        tmpDir,
+        `${this.dbStem}.${timestamp}-pre_restore.db`,
+      );
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+      fs.copyFileSync(this.dbPath, preRestorePath);
+    }
 
-    return fs
-      .readdirSync(this.backupDir)
-      .filter((file) => file.startsWith(prefix) && file.endsWith('.db'))
-      .map((file) => ({
-        name: file,
-        path: path.join(this.backupDir, file),
-        createdAt: fs.statSync(path.join(this.backupDir, file)).mtime,
-      }))
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    // 2. バックアップを復元
+    let sourcePath: string;
+    if (backupInfo.kind.type === 'diff') {
+      // 差分を適用して一時フルを作成
+      const base = this.findBackupByIdInScope(backupInfo.kind.baseId, 'auto');
+      if (!base) {
+        throw new Error(`Base backup ${backupInfo.kind.baseId} not found`);
+      }
+      const tempPath = path.join(
+        this.backupDir,
+        'tmp',
+        `${this.dbStem}.restore_temp_${backupInfo.kind.baseId}.db`,
+      );
+      fs.mkdirSync(path.dirname(tempPath), { recursive: true });
+      applyDiffToFile(base.path, backupInfo.path, tempPath);
+      sourcePath = tempPath;
+    } else {
+      sourcePath = backupInfo.path;
+    }
+
+    // WAL checkpoint & close
+    this.db.pragma('wal_checkpoint(TRUNCATE)');
+    this.db.close();
+
+    // ファイルコピー
+    fs.copyFileSync(sourcePath, this.dbPath);
+    const walPath = `${this.dbPath}-wal`;
+    const shmPath = `${this.dbPath}-shm`;
+    if (fs.existsSync(walPath)) fs.rmSync(walPath);
+    if (fs.existsSync(shmPath)) fs.rmSync(shmPath);
+
+    // 一時ファイル削除
+    if (backupInfo.kind.type === 'diff') {
+      try {
+        fs.rmSync(sourcePath);
+      } catch { /* ignore */ }
+    }
+
+    // 接続を再オープン
+    const newDb = new Database(this.dbPath);
+    newDb.pragma('foreign_keys = ON');
+    this.db = newDb;
+
+    return backupInfo.path;
   }
 
-  /**
-   * 最後のバックアップ時刻を取得
-   */
+  /** バックアップ一覧を取得（新しい順、全スコープ横断） */
+  listBackups(): BackupInfo[] {
+    return this.listBackupsFiltered(undefined);
+  }
+
+  /** スコープを指定してバックアップ一覧を取得（TASK-150） */
+  listBackupsInScope(scope: BackupScope): BackupInfo[] {
+    return this.listBackupsFiltered(scope);
+  }
+
+  private listBackupsFiltered(scopeFilter: BackupScope | undefined): BackupInfo[] {
+    const scopes: BackupScope[] = scopeFilter
+      ? [scopeFilter]
+      : ['auto', 'manual', 'tmp'];
+
+    const backups: BackupInfo[] = [];
+
+    for (const scope of scopes) {
+      const subdir = path.join(this.backupDir, scope);
+      if (!fs.existsSync(subdir)) continue;
+
+      for (const name of fs.readdirSync(subdir)) {
+        const parsed = parseBackupFilename(name, this.dbStem);
+        if (!parsed) continue;
+
+        // auto 以外は .db のみ
+        if (scope !== 'auto' && parsed.extension !== 'db') continue;
+
+        const filePath = path.join(subdir, name);
+        const stat = fs.statSync(filePath);
+
+        let kind: BackupKind;
+        if (parsed.extension === 'diff') {
+          const baseId = readDiffBaseId(filePath);
+          kind = { type: 'diff', baseId };
+        } else {
+          kind = { type: 'full' };
+        }
+
+        backups.push({
+          id: parsed.id,
+          name,
+          path: filePath,
+          createdAt: stat.mtime,
+          scope,
+          kind,
+          label: parsed.label,
+        });
+      }
+    }
+
+    return backups.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  /** 最後のバックアップ時刻を取得 */
   getLastBackupTime(): Date | null {
     return this.lastBackupTime !== null ? new Date(this.lastBackupTime) : null;
   }
 
-  /**
-   * 最後の操作時刻を取得
-   */
+  /** 最後の操作時刻を取得 */
   getLastOperationTime(): Date | null {
     return this.lastOperationTime !== null ? new Date(this.lastOperationTime) : null;
   }
 
-  /**
-   * 次回バックアップまでの残り時間（ミリ秒）を取得
-   */
-  getTimeUntilNextBackup(): number | null {
-    if (this.lastBackupTime === null) {
-      return 0; // 次の操作で即座にバックアップ
-    }
+  /** 次回バックアップまでの残り時間（ミリ秒）を取得 */
+  getTimeUntilNextBackup(): number {
+    if (this.lastBackupTime === null) return 0;
     const elapsed = Date.now() - this.lastBackupTime;
-    const remaining = this.intervalMs - elapsed;
-    return remaining > 0 ? remaining : 0;
+    return Math.max(0, this.intervalMs - elapsed);
   }
 
-  /**
-   * 条件に一致するバックアップを選択
-   */
+  /** 条件に一致するバックアップを選択 */
   selectBackup(selector: BackupSelector): BackupInfo | null {
-    const backups = this.listBackups();
+    const backups = selector.scopeFilter
+      ? this.listBackupsInScope(selector.scopeFilter)
+      : this.listBackups();
 
-    if (backups.length === 0) {
-      return null;
-    }
+    if (backups.length === 0) return null;
 
-    switch (selector.type) {
+    switch (selector.kind.type) {
       case 'latest':
         return backups[0] ?? null;
-
       case 'nth':
-        return backups[selector.n] ?? null;
-
+        return backups[selector.kind.n] ?? null;
       case 'before':
-        // 指定日時より前の最新バックアップ（降順なので最初に見つかったものが最新）
-        return backups.find((b) => b.createdAt < selector.date) ?? null;
-
+        return backups.find((b) => b.createdAt < selector.kind.date) ?? null;
       case 'after':
-        // 指定日時より後の最古バックアップ（降順なので最後に見つかったものが最古）
-        return backups.filter((b) => b.createdAt > selector.date).at(-1) ?? null;
-
+        return backups.filter((b) => b.createdAt > selector.kind.date).at(-1) ?? null;
       case 'closestTo': {
-        // 指定日時に最も近いバックアップ
-        const targetTime = selector.date.getTime();
+        const targetTime = selector.kind.date.getTime();
         return backups.reduce((closest, current) => {
           const closestDiff = Math.abs(closest.createdAt.getTime() - targetTime);
           const currentDiff = Math.abs(current.createdAt.getTime() - targetTime);
@@ -226,10 +469,541 @@ export class BackupManager {
     }
   }
 
-  /**
-   * 条件に一致するバックアップのパスを取得
-   */
+  /** 条件に一致するバックアップのパスを取得 */
   getBackupPath(selector: BackupSelector): string | null {
     return this.selectBackup(selector)?.path ?? null;
   }
+
+  /** 古いバックアップを削除（tmp の期限切れ削除を含む） */
+  cleanupOldBackups(): void {
+    if (!this.enabled) return;
+    this.cleanupAutoBackups();
+    this.cleanupTmpBackups();
+  }
+
+  // ---- private helpers ----
+
+  private async copyDbTo(dstPath: string): Promise<void> {
+    await this.db.backup(dstPath, {
+      progress: (info) => {
+        if (this.onProgress) this.onProgress(info);
+        return 200;
+      },
+    });
+  }
+
+  /** 今日のフルバックアップを探す（差分の基底候補） */
+  private findTodayFullBackup(): BackupInfo | null {
+    const autoDir = path.join(this.backupDir, 'auto');
+    if (!fs.existsSync(autoDir)) return null;
+
+    const today = todayDateStr();
+    const candidates: BackupInfo[] = [];
+
+    for (const name of fs.readdirSync(autoDir)) {
+      const parsed = parseBackupFilename(name, this.dbStem);
+      if (!parsed || parsed.extension !== 'db') continue;
+
+      // タイムスタンプの日付部分が today と一致するか
+      if (parsed.id.startsWith(today)) {
+        const filePath = path.join(autoDir, name);
+        const stat = fs.statSync(filePath);
+        candidates.push({
+          id: parsed.id,
+          name,
+          path: filePath,
+          createdAt: stat.mtime,
+          scope: 'auto',
+          kind: { type: 'full' },
+          label: undefined,
+        });
+      }
+    }
+
+    if (candidates.length === 0) return null;
+    return candidates.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+  }
+
+  /** IDでバックアップを検索（指定スコープ内） */
+  private findBackupByIdInScope(id: string, scope: BackupScope): BackupInfo | null {
+    const subdir = path.join(this.backupDir, scope);
+    if (!fs.existsSync(subdir)) return null;
+
+    for (const name of fs.readdirSync(subdir)) {
+      const parsed = parseBackupFilename(name, this.dbStem);
+      if (parsed?.id === id) {
+        const filePath = path.join(subdir, name);
+        const stat = fs.statSync(filePath);
+        return {
+          id: parsed.id,
+          name,
+          path: filePath,
+          createdAt: stat.mtime,
+          scope,
+          kind: { type: 'full' },
+          label: parsed.label,
+        };
+      }
+    }
+    return null;
+  }
+
+  /** 差分バックアップファイルを作成（TASK-147） */
+  private async createDiffBackupFile(timestamp: string, base: BackupInfo): Promise<string> {
+    const autoDir = path.join(this.backupDir, 'auto');
+
+    // 現在のDBの一時フルコピーを作成
+    const tempPath = path.join(autoDir, `${this.dbStem}.${timestamp}.tmp_full.db`);
+    await this.copyDbTo(tempPath);
+
+    const diffPath = path.join(autoDir, `${this.dbStem}.${timestamp}.diff`);
+    try {
+      createDiffFile(base.id, base.path, tempPath, diffPath);
+    } finally {
+      try { fs.rmSync(tempPath); } catch { /* ignore */ }
+    }
+
+    return diffPath;
+  }
+
+  /** 自動バックアップのクリーンアップ */
+  private cleanupAutoBackups(): void {
+    const now = Date.now();
+    const toDelete: string[] = [];
+
+    if (this.retentionPolicy) {
+      // retention_policy による間引き（auto のみ）
+      const autoBackups = this.listBackupsInScope('auto');
+      const candidates = pruneAutoBackupsByPolicy(autoBackups, this.retentionPolicy, now);
+
+      // 基底フル削除制約チェック
+      const records = this.readAutoRecords();
+
+      for (const filePath of candidates) {
+        const name = path.basename(filePath);
+        const parsed = parseBackupFilename(name, this.dbStem);
+        if (!parsed) {
+          toDelete.push(filePath);
+          continue;
+        }
+        if (parsed.extension !== 'db') {
+          // .diff は直接削除
+          toDelete.push(filePath);
+          continue;
+        }
+
+        const hasKeptDiff = records.some(
+          (r) => r.baseId === parsed.id && r.status === 'kept',
+        );
+        if (!hasKeptDiff) {
+          toDelete.push(filePath);
+        }
+      }
+    } else {
+      // max_age_days / max_backups による削除（auto + manual 対象）
+      const allBackups = this.listBackups().filter((b) => b.scope !== 'tmp');
+
+      if (this.maxAgeDays !== undefined) {
+        const maxAgeMs = this.maxAgeDays * DAY_SECS * 1000;
+        for (const b of allBackups) {
+          const age = now - b.createdAt.getTime();
+          if (age > maxAgeMs && !toDelete.includes(b.path)) {
+            toDelete.push(b.path);
+          }
+        }
+      }
+
+      if (this.maxBackups !== undefined && allBackups.length > this.maxBackups) {
+        for (const b of allBackups.slice(this.maxBackups)) {
+          if (!toDelete.includes(b.path)) {
+            toDelete.push(b.path);
+          }
+        }
+      }
+    }
+
+    for (const filePath of toDelete) {
+      try { fs.rmSync(filePath); } catch { /* ignore */ }
+      const name = path.basename(filePath);
+      const parsed = parseBackupFilename(name, this.dbStem);
+      if (parsed) {
+        try { this.updateAutoRecordPruned(parsed.id); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  /** tmp/ の期限切れファイルを削除（TASK-149） */
+  private cleanupTmpBackups(): void {
+    const tmpDir = path.join(this.backupDir, 'tmp');
+    if (!fs.existsSync(tmpDir)) return;
+
+    const now = Date.now();
+    const retentionMs = this.tmpRetentionSecs * 1000;
+
+    for (const name of fs.readdirSync(tmpDir)) {
+      const filePath = path.join(tmpDir, name);
+      try {
+        const stat = fs.statSync(filePath);
+        if (now - stat.mtimeMs > retentionMs) {
+          fs.rmSync(filePath);
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  // ---- auto-records.csv (TASK-148) ----
+
+  private get recordsPath(): string {
+    return path.join(this.backupDir, 'meta', 'auto-records.csv');
+  }
+
+  private readAutoRecords(): AutoRecord[] {
+    if (!fs.existsSync(this.recordsPath)) return [];
+    const content = fs.readFileSync(this.recordsPath, 'utf-8');
+    const lines = content.split('\n').filter(Boolean);
+    return lines
+      .slice(1) // skip header
+      .map(parseCsvRecord)
+      .filter((r): r is AutoRecord => r !== null);
+  }
+
+  private appendAutoRecord(record: AutoRecord): void {
+    const needsHeader =
+      !fs.existsSync(this.recordsPath) ||
+      fs.statSync(this.recordsPath).size === 0;
+
+    const row = [
+      record.id,
+      record.createdAt,
+      record.tier,
+      record.kind,
+      record.baseId,
+      record.sizeBytes,
+      record.status,
+      record.prunedAt,
+    ].join(',');
+
+    const content =
+      (needsHeader ? 'id,created_at,tier,type,base_id,size_bytes,status,pruned_at\n' : '') +
+      row +
+      '\n';
+
+    fs.appendFileSync(this.recordsPath, content);
+  }
+
+  private updateAutoRecordPruned(id: string): void {
+    if (!fs.existsSync(this.recordsPath)) return;
+    const content = fs.readFileSync(this.recordsPath, 'utf-8');
+    const prunedAt = new Date().toISOString();
+    const updated = content
+      .split('\n')
+      .map((line) => {
+        if (!line.startsWith(`${id},`)) return line;
+        const parts = line.split(',');
+        if (parts.length >= 8) {
+          parts[6] = 'pruned';
+          parts[7] = prunedAt;
+          return parts.join(',');
+        }
+        return line;
+      })
+      .join('\n');
+    fs.writeFileSync(this.recordsPath, updated);
+  }
+}
+
+// ============================================================
+// 差分バックアップ実装 (TASK-147)
+// ============================================================
+
+/** SQLite DB ファイルのページサイズを取得 */
+function getSqlitePageSize(dbPath: string): number {
+  const fd = fs.openSync(dbPath, 'r');
+  const buf = Buffer.alloc(18);
+  fs.readSync(fd, buf, 0, 18, 0);
+  fs.closeSync(fd);
+  const raw = buf.readUInt16BE(16);
+  return raw === 1 ? 65536 : raw;
+}
+
+/**
+ * 差分ファイルを作成する
+ *
+ * ファイル形式:
+ *   base_id       18 bytes
+ *   page_size      4 bytes big-endian
+ *   total_pages    4 bytes big-endian
+ *   changed_pages  4 bytes big-endian
+ *   For each changed page:
+ *     page_number  4 bytes big-endian (1-indexed)
+ *     page_data    (page_size bytes)
+ */
+function createDiffFile(
+  baseId: string,
+  basePath: string,
+  currentPath: string,
+  diffPath: string,
+): void {
+  const pageSize = getSqlitePageSize(basePath);
+  const currentPageCount = Math.floor(fs.statSync(currentPath).size / pageSize);
+  const basePageCount = Math.floor(fs.statSync(basePath).size / pageSize);
+
+  const outFd = fs.openSync(diffPath, 'w');
+  try {
+    // ヘッダのプレースホルダ（30バイト）を書き出し、後で上書き
+    fs.writeSync(outFd, Buffer.alloc(30), 0, 30, 0);
+
+    const baseFd = fs.openSync(basePath, 'r');
+    const currentFd = fs.openSync(currentPath, 'r');
+    try {
+      const baseBuf = Buffer.alloc(pageSize);
+      const currentBuf = Buffer.alloc(pageSize);
+      const numBuf = Buffer.alloc(4);
+      let changedCount = 0;
+      let outOffset = 30;
+
+      for (let pageNum = 1; pageNum <= currentPageCount; pageNum++) {
+        fs.readSync(currentFd, currentBuf, 0, pageSize, (pageNum - 1) * pageSize);
+        if (pageNum <= basePageCount) {
+          fs.readSync(baseFd, baseBuf, 0, pageSize, (pageNum - 1) * pageSize);
+          if (!currentBuf.equals(baseBuf)) {
+            numBuf.writeUInt32BE(pageNum, 0);
+            fs.writeSync(outFd, numBuf, 0, 4, outOffset); outOffset += 4;
+            fs.writeSync(outFd, currentBuf, 0, pageSize, outOffset); outOffset += pageSize;
+            changedCount++;
+          }
+        } else {
+          // 基底に存在しないページは常に差分として記録
+          numBuf.writeUInt32BE(pageNum, 0);
+          fs.writeSync(outFd, numBuf, 0, 4, outOffset); outOffset += 4;
+          fs.writeSync(outFd, currentBuf, 0, pageSize, outOffset); outOffset += pageSize;
+          changedCount++;
+        }
+      }
+
+      // 先頭に戻って実際のヘッダを書き込む
+      const header = Buffer.alloc(30);
+      Buffer.from(baseId.slice(0, 18).padEnd(18, '\0')).copy(header, 0);
+      header.writeUInt32BE(pageSize, 18);
+      header.writeUInt32BE(currentPageCount, 22);
+      header.writeUInt32BE(changedCount, 26);
+      fs.writeSync(outFd, header, 0, 30, 0);
+    } finally {
+      fs.closeSync(baseFd);
+      fs.closeSync(currentFd);
+    }
+  } finally {
+    fs.closeSync(outFd);
+  }
+}
+
+/** 差分ファイルのヘッダから base_id を読む */
+function readDiffBaseId(diffPath: string): string {
+  try {
+    const fd = fs.openSync(diffPath, 'r');
+    const buf = Buffer.alloc(18);
+    fs.readSync(fd, buf, 0, 18, 0);
+    fs.closeSync(fd);
+    return buf.toString('utf-8').replace(/\0/g, '');
+  } catch {
+    return '';
+  }
+}
+
+/** 差分を基底フルに適用して outputPath に書き出す */
+function applyDiffToFile(basePath: string, diffPath: string, outputPath: string): void {
+  const diffFd = fs.openSync(diffPath, 'r');
+  try {
+    const header = Buffer.alloc(30);
+    if (fs.readSync(diffFd, header, 0, 30, 0) < 30) {
+      throw new Error('Invalid diff file: too small');
+    }
+
+    const pageSize = header.readUInt32BE(18);
+    const totalPages = header.readUInt32BE(22);
+    const changedCount = header.readUInt32BE(26);
+
+    const basePageCount = Math.floor(fs.statSync(basePath).size / pageSize);
+
+    const baseFd = fs.openSync(basePath, 'r');
+    const outFd = fs.openSync(outputPath, 'w');
+    try {
+      const baseBuf = Buffer.alloc(pageSize);
+      const patchBuf = Buffer.alloc(pageSize);
+      const zeroBuf = Buffer.alloc(pageSize);
+      const numBuf = Buffer.alloc(4);
+
+      // 差分エントリはpage_num昇順で記録されているため、ストリーミングマージが可能
+      let patchesRemaining = changedCount;
+      let nextPatchNum: number | null = null;
+      let diffReadOffset = 30;
+
+      if (patchesRemaining > 0) {
+        fs.readSync(diffFd, numBuf, 0, 4, diffReadOffset); diffReadOffset += 4;
+        fs.readSync(diffFd, patchBuf, 0, pageSize, diffReadOffset); diffReadOffset += pageSize;
+        patchesRemaining--;
+        nextPatchNum = numBuf.readUInt32BE(0);
+      }
+
+      for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+        if (nextPatchNum === pageNum) {
+          fs.writeSync(outFd, patchBuf, 0, pageSize, (pageNum - 1) * pageSize);
+          if (patchesRemaining > 0) {
+            fs.readSync(diffFd, numBuf, 0, 4, diffReadOffset); diffReadOffset += 4;
+            fs.readSync(diffFd, patchBuf, 0, pageSize, diffReadOffset); diffReadOffset += pageSize;
+            patchesRemaining--;
+            nextPatchNum = numBuf.readUInt32BE(0);
+          } else {
+            nextPatchNum = null;
+          }
+        } else if (pageNum <= basePageCount) {
+          fs.readSync(baseFd, baseBuf, 0, pageSize, (pageNum - 1) * pageSize);
+          fs.writeSync(outFd, baseBuf, 0, pageSize, (pageNum - 1) * pageSize);
+        } else {
+          fs.writeSync(outFd, zeroBuf, 0, pageSize, (pageNum - 1) * pageSize);
+        }
+      }
+    } finally {
+      fs.closeSync(baseFd);
+      fs.closeSync(outFd);
+    }
+  } finally {
+    fs.closeSync(diffFd);
+  }
+}
+
+// ============================================================
+// 保持ポリシーによる間引き
+// ============================================================
+
+function pruneAutoBackupsByPolicy(
+  backups: BackupInfo[],
+  policy: RetentionPolicy,
+  nowMs: number,
+): string[] {
+  const toDelete: string[] = [];
+  const autoBackups = backups.filter((b) => b.scope === 'auto');
+
+  let minAgeSecs = 0;
+
+  for (const tier of policy.tiers) {
+    if (tier.keepIntervalSecs === 0) {
+      minAgeSecs = tier.maxAgeSecs;
+      continue;
+    }
+
+    const tierBackups = autoBackups.filter((b) => {
+      const ageSecs = (nowMs - b.createdAt.getTime()) / 1000;
+      return ageSecs >= minAgeSecs && ageSecs < tier.maxAgeSecs;
+    });
+
+    if (tierBackups.length === 0) {
+      minAgeSecs = tier.maxAgeSecs;
+      continue;
+    }
+
+    const buckets = new Map<number, BackupInfo[]>();
+    for (const backup of tierBackups) {
+      const ageSecs = (nowMs - backup.createdAt.getTime()) / 1000;
+      const bucket = Math.floor(ageSecs / tier.keepIntervalSecs);
+      const list = buckets.get(bucket) ?? [];
+      list.push(backup);
+      buckets.set(bucket, list);
+    }
+
+    for (const bucketBackups of buckets.values()) {
+      const sorted = [...bucketBackups].sort(
+        (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+      );
+      for (const backup of sorted.slice(1)) {
+        toDelete.push(backup.path);
+      }
+    }
+
+    minAgeSecs = tier.maxAgeSecs;
+  }
+
+  return toDelete;
+}
+
+// ============================================================
+// ファイル名パース
+// ============================================================
+
+interface ParsedFilename {
+  id: string;
+  extension: string;
+  label?: string;
+}
+
+/**
+ * ファイル名から ID・拡張子・ラベルを解析
+ *
+ * timestamp は YYYYMMDDHHMMSS-mmm の 18 文字固定。
+ */
+function parseBackupFilename(name: string, stem: string): ParsedFilename | null {
+  const prefix = `${stem}.`;
+  if (!name.startsWith(prefix)) return null;
+
+  const rest = name.slice(prefix.length);
+  if (rest.length < 21) return null; // 18 + ".db" = 21 最小
+
+  // タイムスタンプ検証
+  const ts = rest.slice(0, 18);
+  if (!/^\d{14}-\d{3}$/.test(ts)) return null;
+
+  const afterTs = rest.slice(18);
+
+  // 一時ファイルはスキップ
+  if (afterTs.includes('.tmp_full.')) return null;
+
+  if (afterTs === '.db') return { id: ts, extension: 'db' };
+  if (afterTs === '.diff') return { id: ts, extension: 'diff' };
+
+  const labelMatch = afterTs.match(/^-(.+)\.db$/);
+  if (labelMatch) {
+    return { id: ts, extension: 'db', label: labelMatch[1] };
+  }
+
+  return null;
+}
+
+// ============================================================
+// auto-records.csv パース
+// ============================================================
+
+function parseCsvRecord(line: string): AutoRecord | null {
+  const parts = line.split(',');
+  if (parts.length < 8) return null;
+  return {
+    id: parts[0],
+    createdAt: parts[1],
+    tier: parts[2],
+    kind: parts[3] as 'full' | 'diff',
+    baseId: parts[4],
+    sizeBytes: parseInt(parts[5], 10) || 0,
+    status: parts[6] === 'kept' ? 'kept' : 'pruned',
+    prunedAt: parts[7],
+  };
+}
+
+// ============================================================
+// ユーティリティ
+// ============================================================
+
+function currentTimestampStr(): string {
+  const now = new Date();
+  const pad = (n: number, len = 2): string => n.toString().padStart(len, '0');
+  return (
+    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+    `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}` +
+    `-${pad(now.getMilliseconds(), 3)}`
+  );
+}
+
+/** YYYYMMDD 形式の今日の日付文字列 */
+function todayDateStr(): string {
+  const now = new Date();
+  const pad = (n: number): string => n.toString().padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
 }

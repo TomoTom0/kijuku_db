@@ -36,6 +36,7 @@
 pub mod attribute;
 pub mod backup;
 pub mod bulk;
+pub mod config;
 pub mod crud;
 pub mod error;
 pub mod migration;
@@ -46,7 +47,11 @@ pub mod tag;
 pub mod types;
 pub mod update_exist;
 
-pub use backup::{BackupInfo, BackupManager, BackupOptions, BackupSelector};
+pub use backup::{
+    AutoRecord, AutoRecordStatus, BackupInfo, BackupKind, BackupManager, BackupOptions,
+    BackupScope, BackupSelector, RetentionPolicy, RetentionTier,
+};
+pub use config::{load_config, BackupConfig, KijukuConfig};
 pub use error::{KijukuError, Result};
 pub use migration::TableColumnInfo;
 pub use remote::{RemoteConfig, RemoteKijukuDB};
@@ -371,11 +376,40 @@ impl KijukuDB {
     /// # Ok(())
     /// # }
     /// ```
+    /// 手動バックアップを実行（ラベルなし）
     pub fn backup(&self) -> Result<Option<String>> {
         match &self.backup_manager {
-            Some(manager) => manager.backup().map(Some),
+            Some(manager) => manager.backup(None).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// ラベル付き手動バックアップを実行
+    ///
+    /// # 引数
+    /// * `label` - バックアップのラベル（例: "before_import"）
+    pub fn backup_with_label(&self, label: &str) -> Result<Option<String>> {
+        match &self.backup_manager {
+            Some(manager) => manager.backup(Some(label)).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// バックアップを現在のDBに復元する
+    ///
+    /// 指定したバックアップの内容を現在のDB接続に上書きします。
+    ///
+    /// # 引数
+    /// * `selector` - 復元するバックアップの選択条件
+    ///
+    /// # 戻り値
+    /// 復元に使用したバックアップファイルのパス
+    pub fn restore(&mut self, selector: &BackupSelector) -> Result<std::path::PathBuf> {
+        let manager = self
+            .backup_manager
+            .as_ref()
+            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?;
+        manager.restore(&mut self.conn, selector)
     }
 
     /// バックアップ一覧を取得

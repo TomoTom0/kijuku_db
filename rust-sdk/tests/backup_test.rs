@@ -1,4 +1,4 @@
-use kijuku_db::{BackupManager, BackupOptions, DBOptions, KijukuDB, MediaInput, MediaType};
+use kijuku_db::{BackupKind, BackupManager, BackupOptions, BackupScope, BackupSelector, DBOptions, KijukuDB, MediaInput, MediaType};
 use rusqlite;
 use std::thread;
 use std::time::Duration;
@@ -35,7 +35,7 @@ fn test_backup_integration_with_kijukudb() {
     let backup_manager = backup_manager.unwrap();
 
     // 手動バックアップを作成
-    let backup_path = backup_manager.backup().unwrap();
+    let backup_path = backup_manager.backup(None).unwrap();
     assert!(std::path::Path::new(&backup_path).exists());
 
     // バックアップ一覧を取得
@@ -110,7 +110,7 @@ fn test_manual_backup() {
 
     // 手動バックアップを3回作成
     for _ in 0..3 {
-        manager.backup().unwrap();
+        manager.backup(None).unwrap();
         thread::sleep(Duration::from_millis(10));
     }
 
@@ -150,15 +150,15 @@ fn test_backup_list() {
     assert_eq!(backups.len(), 0);
 
     // バックアップを作成
-    manager.backup().unwrap();
+    manager.backup(None).unwrap();
 
     let backups = manager.list_backups().unwrap();
     assert_eq!(backups.len(), 1);
 
     // バックアップ情報を確認
-    // 新しいファイル名形式: {db_stem}.backup-{yyyymmddhhmmss-mmm}.db
+    // ファイル名形式: {db_stem}.{timestamp}.db
     let backup = &backups[0];
-    assert!(backup.name.starts_with("test.backup-"));
+    assert!(backup.name.starts_with("test."));
     assert!(backup.name.ends_with(".db"));
     assert!(backup.path.exists());
 }
@@ -225,7 +225,7 @@ fn test_backup_disabled() {
     let manager = BackupManager::new(&db_path, options).unwrap();
 
     // バックアップが無効なのでエラーになる
-    let result = manager.backup();
+    let result = manager.backup(None);
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().to_string(), "Error: Backup is disabled");
 
@@ -278,7 +278,7 @@ fn test_backup_with_actual_database() {
 
     // バックアップを作成
     let backup_manager = db.get_backup_manager().unwrap();
-    let backup_path = backup_manager.backup().unwrap();
+    let backup_path = backup_manager.backup(None).unwrap();
 
     // バックアップファイルが存在することを確認
     assert!(std::path::Path::new(&backup_path).exists());
@@ -373,7 +373,7 @@ fn test_db_list_backups_method() {
     // バックアップ一覧を取得
     let backups = db.list_backups().unwrap();
     assert_eq!(backups.len(), 1);
-    assert!(backups[0].name.contains(".backup-"));
+    assert!(backups[0].name.starts_with("test."));
     assert!(backups[0].path.exists());
 
     // 2つ目のバックアップを作成
@@ -397,4 +397,245 @@ fn test_db_list_backups_method_without_backup_manager() {
     // list_backups()メソッドを呼び出すと空のリストが返る
     let backups = db.list_backups().unwrap();
     assert_eq!(backups.len(), 0);
+}
+
+// ============================================================
+// 新機能テスト（ディレクトリ構成・スコープ・種別・auto-records.csv）
+// ============================================================
+
+#[test]
+fn test_backup_subdirectory_structure() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let backup_dir = temp_dir.path().join("backups");
+
+    let options = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        enabled: Some(true),
+        ..Default::default()
+    };
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+    }
+
+    BackupManager::new(&db_path, options).unwrap();
+
+    // auto/ manual/ meta/ サブディレクトリが自動作成される
+    assert!(backup_dir.join("auto").exists(), "auto/ should be created");
+    assert!(backup_dir.join("manual").exists(), "manual/ should be created");
+    assert!(backup_dir.join("meta").exists(), "meta/ should be created");
+}
+
+#[test]
+fn test_backup_scope_and_kind_manual() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let backup_dir = temp_dir.path().join("backups");
+
+    let options = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        enabled: Some(true),
+        ..Default::default()
+    };
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+    }
+
+    let manager = BackupManager::new(&db_path, options).unwrap();
+    manager.backup(None).unwrap();
+
+    let backups = manager.list_backups().unwrap();
+    assert_eq!(backups.len(), 1);
+
+    let backup = &backups[0];
+    // 手動バックアップは Manual スコープ
+    assert_eq!(backup.scope, BackupScope::Manual);
+    // フルバックアップ
+    assert!(matches!(backup.kind, BackupKind::Full));
+    // manual/ ディレクトリ下にある
+    assert!(backup.path.to_string_lossy().contains("manual"));
+}
+
+#[test]
+fn test_backup_scope_auto() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let backup_dir = temp_dir.path().join("backups");
+
+    let options = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        interval_ms: Some(0), // 即時実行
+        enabled: Some(true),
+        auto_enabled: Some(true),
+        ..Default::default()
+    };
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+    }
+
+    let manager = BackupManager::new(&db_path, options).unwrap();
+    manager.record_operation().unwrap();
+
+    let backups = manager.list_backups().unwrap();
+    assert_eq!(backups.len(), 1);
+
+    let backup = &backups[0];
+    // 自動バックアップは Auto スコープ
+    assert_eq!(backup.scope, BackupScope::Auto);
+    // auto/ ディレクトリ下にある
+    assert!(backup.path.to_string_lossy().contains("auto"));
+}
+
+#[test]
+fn test_auto_records_csv() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let backup_dir = temp_dir.path().join("backups");
+
+    let options = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        interval_ms: Some(0), // 即時実行
+        enabled: Some(true),
+        auto_enabled: Some(true),
+        ..Default::default()
+    };
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+    }
+
+    let manager = BackupManager::new(&db_path, options).unwrap();
+    manager.record_operation().unwrap();
+
+    let csv_path = backup_dir.join("meta").join("auto-records.csv");
+    assert!(csv_path.exists(), "auto-records.csv should be created");
+
+    let content = std::fs::read_to_string(&csv_path).unwrap();
+    assert!(content.contains("id,created_at,tier,type,base_id,size_bytes,status,pruned_at"),
+        "CSV should have header");
+    assert!(content.contains("daily"), "First auto backup should be 'daily' tier");
+    assert!(content.contains("full"), "First auto backup should be 'full' type");
+}
+
+#[test]
+fn test_backup_selector_scope_filter() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let backup_dir = temp_dir.path().join("backups");
+
+    let options = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        interval_ms: Some(0), // 即時実行
+        enabled: Some(true),
+        auto_enabled: Some(true),
+        ..Default::default()
+    };
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+    }
+
+    let manager = BackupManager::new(&db_path, options).unwrap();
+
+    // 自動バックアップ（auto/）
+    manager.record_operation().unwrap();
+    thread::sleep(Duration::from_millis(10));
+    // 手動バックアップ（manual/）
+    manager.backup(None).unwrap();
+
+    // auto/ スコープのみ取得
+    let auto_selector = BackupSelector::latest().scope(BackupScope::Auto);
+    let auto_result = manager.select_backup(&auto_selector).unwrap();
+    assert!(auto_result.is_some());
+    assert_eq!(auto_result.unwrap().scope, BackupScope::Auto);
+
+    // manual/ スコープのみ取得
+    let manual_selector = BackupSelector::latest().scope(BackupScope::Manual);
+    let manual_result = manager.select_backup(&manual_selector).unwrap();
+    assert!(manual_result.is_some());
+    assert_eq!(manual_result.unwrap().scope, BackupScope::Manual);
+
+    // list_backups_in_scope
+    let auto_list = manager.list_backups_in_scope(BackupScope::Auto).unwrap();
+    assert_eq!(auto_list.len(), 1);
+    assert_eq!(auto_list[0].scope, BackupScope::Auto);
+
+    let manual_list = manager.list_backups_in_scope(BackupScope::Manual).unwrap();
+    assert_eq!(manual_list.len(), 1);
+    assert_eq!(manual_list[0].scope, BackupScope::Manual);
+}
+
+#[test]
+fn test_restore_creates_pre_restore_in_tmp() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let backup_dir = temp_dir.path().join("backups");
+
+    let options = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        enabled: Some(true),
+        ..Default::default()
+    };
+
+    // 実際のSQLiteデータベースを作成
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["before"]).unwrap();
+    }
+
+    let manager = BackupManager::new(&db_path, options).unwrap();
+
+    // バックアップを作成
+    manager.backup(None).unwrap();
+
+    // BackupManager::restore() を呼び出す（pre_restore 退避が実行される）
+    let selector = BackupSelector::latest();
+    let mut conn = rusqlite::Connection::open(&db_path).unwrap();
+    manager.restore(&mut conn, &selector).unwrap();
+
+    // tmp/ に pre_restore ファイルが作成される
+    let tmp_dir = backup_dir.join("tmp");
+    assert!(tmp_dir.exists(), "tmp/ should be created on restore");
+
+    let pre_restore_files: Vec<_> = std::fs::read_dir(&tmp_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains("pre_restore"))
+        .collect();
+    assert_eq!(pre_restore_files.len(), 1, "One pre_restore file should exist in tmp/");
+}
+
+#[test]
+fn test_manual_backup_with_label() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let backup_dir = temp_dir.path().join("backups");
+
+    let options = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        enabled: Some(true),
+        ..Default::default()
+    };
+
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+    }
+
+    let manager = BackupManager::new(&db_path, options).unwrap();
+    manager.backup(Some("before_import")).unwrap();
+
+    let backups = manager.list_backups().unwrap();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(backups[0].label.as_deref(), Some("before_import"));
+    assert!(backups[0].name.contains("-before_import.db"));
 }

@@ -36,17 +36,15 @@ describe('BackupManager', () => {
     }
 
     if (fs.existsSync(backupDir)) {
-      const files = fs.readdirSync(backupDir);
-      for (const file of files) {
-        fs.unlinkSync(path.join(backupDir, file));
-      }
-      fs.rmdirSync(backupDir);
+      fs.rmSync(backupDir, { recursive: true });
     }
   });
 
   describe('バックアップディレクトリの作成', () => {
-    it('バックアップディレクトリが自動的に作成される', () => {
-      expect(fs.existsSync(backupDir)).toBe(true);
+    it('バックアップサブディレクトリが自動的に作成される', () => {
+      expect(fs.existsSync(path.join(backupDir, 'auto'))).toBe(true);
+      expect(fs.existsSync(path.join(backupDir, 'manual'))).toBe(true);
+      expect(fs.existsSync(path.join(backupDir, 'meta'))).toBe(true);
     });
   });
 
@@ -56,7 +54,8 @@ describe('BackupManager', () => {
 
       expect(backupPath).toBeDefined();
       expect(fs.existsSync(backupPath!)).toBe(true);
-      expect(path.dirname(backupPath!)).toBe(backupDir);
+      // manual/ ディレクトリ下にある
+      expect(backupPath!).toContain(path.join(backupDir, 'manual'));
     });
 
     it('バックアップ一覧を取得できる', async () => {
@@ -65,9 +64,11 @@ describe('BackupManager', () => {
 
       const backups = db.listBackups();
       expect(backups.length).toBe(2);
-      // 新しいファイル名形式: {db_stem}.backup-{yyyymmddhhmmss-mmm}.db
-      expect(backups[0].name).toMatch(/^test-backup-\d+\.backup-\d{14}-\d{3}\.db$/);
+      // 新しいファイル名形式: {db_stem}.{timestamp}.db
+      expect(backups[0].name).toMatch(/^test-backup-\d+\.\d{14}-\d{3}\.db$/);
       expect(backups[0].createdAt).toBeInstanceOf(Date);
+      expect(backups[0].scope).toBe('manual');
+      expect(backups[0].kind.type).toBe('full');
     });
 
     it('バックアップファイルが新しい順にソートされる', async () => {
@@ -80,6 +81,15 @@ describe('BackupManager', () => {
       expect(backups[0].createdAt.getTime()).toBeGreaterThanOrEqual(
         backups[1].createdAt.getTime()
       );
+    });
+
+    it('ラベル付きバックアップを作成できる', async () => {
+      const backupPath = await db.backupWithLabel('before_import');
+      expect(backupPath).toBeDefined();
+      expect(backupPath!).toContain('-before_import.db');
+
+      const backups = db.listBackups();
+      expect(backups[0].label).toBe('before_import');
     });
   });
 
@@ -131,6 +141,32 @@ describe('BackupManager', () => {
 
       backups = db.listBackups();
       expect(backups.length).toBe(1);
+    });
+  });
+
+  describe('スコープフィルタ（TASK-150）', () => {
+    it('auto/ スコープを指定してバックアップを選択できる', async () => {
+      const manager = db.getBackupManager()!;
+      await manager.backupAuto();
+      await db.backup();
+
+      const { BackupSelector } = await import('../../src/backup.js');
+      const autoSelector = BackupSelector.latest().scope('auto');
+      const result = manager.selectBackup(autoSelector);
+      expect(result).not.toBeNull();
+      expect(result!.scope).toBe('auto');
+    });
+
+    it('manual/ スコープを指定してバックアップを選択できる', async () => {
+      const manager = db.getBackupManager()!;
+      await manager.backupAuto();
+      await db.backup();
+
+      const { BackupSelector } = await import('../../src/backup.js');
+      const manualSelector = BackupSelector.latest().scope('manual');
+      const result = manager.selectBackup(manualSelector);
+      expect(result).not.toBeNull();
+      expect(result!.scope).toBe('manual');
     });
   });
 
@@ -203,6 +239,79 @@ describe('BackupManager', () => {
       const remaining = backupManager!.getTimeUntilNextBackup();
       expect(remaining).toBeGreaterThan(0);
       expect(remaining).toBeLessThanOrEqual(1000);
+    });
+  });
+
+  describe('差分バックアップ', () => {
+    it('自動バックアップで差分ファイルが作成される', async () => {
+      const manager = db.getBackupManager()!;
+
+      // フルバックアップ
+      await manager.backupAuto();
+
+      // データを追加
+      db.createMedia({ title: 'Media for diff', media_type: 'video' });
+
+      // 差分バックアップ（同日なのでdiff）
+      await manager.backupAuto();
+
+      const backups = db.listBackups();
+      const hasDiff = backups.some((b) => b.kind.type === 'diff');
+      expect(hasDiff).toBe(true);
+    });
+
+    it('差分バックアップから復元できる', async () => {
+      const manager = db.getBackupManager()!;
+      const { BackupSelector } = await import('../../src/backup.js');
+
+      // フルバックアップ（空のDB）
+      await manager.backupAuto();
+
+      // データを追加
+      db.createMedia({ title: 'Media A', media_type: 'video' });
+      db.createMedia({ title: 'Media B', media_type: 'comic' });
+
+      // 差分バックアップ（2件のデータ状態）
+      await manager.backupAuto();
+
+      const backupsAfterDiff = db.listBackups();
+      const hasDiff = backupsAfterDiff.some((b) => b.kind.type === 'diff');
+      expect(hasDiff).toBe(true);
+
+      // データをさらに追加
+      db.createMedia({ title: 'Media C', media_type: 'music' });
+
+      // 差分バックアップ（最新）から復元
+      const selector = BackupSelector.latest().scope('auto');
+      manager.restore(selector);
+
+      // 復元後は新しい接続で検証
+      const Database = (await import('better-sqlite3')).default;
+      const verifyDb = new Database(testDbPath);
+      verifyDb.pragma('foreign_keys = ON');
+      const count = (
+        verifyDb.prepare('SELECT COUNT(*) as cnt FROM media').get() as { cnt: number }
+      ).cnt;
+      verifyDb.close();
+
+      // 差分バックアップ時点の2件が復元されているべき
+      expect(count).toBe(2);
+    });
+  });
+
+  describe('auto-records.csv (TASK-148)', () => {
+    it('自動バックアップ取得時に records.csv が更新される', async () => {
+      const manager = db.getBackupManager()!;
+      await manager.backupAuto();
+
+      const metaDir = path.join(backupDir, 'meta');
+      const csvPath = path.join(metaDir, 'auto-records.csv');
+      expect(fs.existsSync(csvPath)).toBe(true);
+
+      const content = fs.readFileSync(csvPath, 'utf-8');
+      expect(content).toContain('id,created_at,tier,type,base_id,size_bytes,status,pruned_at');
+      expect(content).toContain('daily');
+      expect(content).toContain('full');
     });
   });
 });

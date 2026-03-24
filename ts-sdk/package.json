@@ -44,6 +44,7 @@
     "csv-parse": "^6.1.0",
     "csv-stringify": "^6.6.0",
     "hono": "^4.11.1",
+    "smol-toml": "^1.6.0",
     "ssh-config": "^5.0.4",
     "ssh2": "^1.17.0"
   },
