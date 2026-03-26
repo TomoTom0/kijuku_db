@@ -6,8 +6,9 @@
 use clap::Parser;
 use include_dir::{include_dir, Dir};
 use kijuku_db::{
-    AttributeValueType, BulkUpdateItem, KijukuDB, MediaFilter, MediaInput, MediaUpdateInput,
-    QueryOptions, UpdateExistOptions,
+    AttributeValueType, BackupInfo, BackupKind, BackupOptions, BackupScope, BackupSelector,
+    BulkUpdateItem, DBOptions, KijukuDB, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions,
+    UpdateExistOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -180,6 +181,62 @@ struct UpdateExistParams {
     update_options: UpdateExistOptions,
 }
 
+/// バックアップのパラメータ
+#[derive(Debug, Deserialize)]
+struct BackupParams {
+    label: Option<String>,
+}
+
+/// バックアップセレクターのJSON表現
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum BackupSelectorJson {
+    Latest,
+    Nth { n: usize },
+}
+
+impl BackupSelectorJson {
+    fn to_selector(&self) -> BackupSelector {
+        match self {
+            BackupSelectorJson::Latest => BackupSelector::latest(),
+            BackupSelectorJson::Nth { n } => BackupSelector::nth(*n),
+        }
+    }
+}
+
+/// バックアップ復元のパラメータ
+#[derive(Debug, Deserialize)]
+struct RestoreParams {
+    selector: Option<BackupSelectorJson>,
+}
+
+/// BackupInfoをJSON Valueに変換
+fn backup_info_to_json(info: &BackupInfo) -> serde_json::Value {
+    let scope = match info.scope {
+        BackupScope::Auto => "auto",
+        BackupScope::Manual => "manual",
+        BackupScope::Tmp => "tmp",
+    };
+    let kind = match &info.kind {
+        BackupKind::Full => serde_json::json!({"type": "full"}),
+        BackupKind::Diff { base_id } => serde_json::json!({"type": "diff", "baseId": base_id}),
+    };
+    let created_at = info
+        .created_at
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    serde_json::json!({
+        "id": info.id,
+        "name": info.name,
+        "path": info.path.to_string_lossy(),
+        "createdAt": created_at,
+        "scope": scope,
+        "kind": kind,
+        "label": info.label,
+    })
+}
+
 use clap::Subcommand;
 
 /// SDK利用ガイドを表示
@@ -305,8 +362,14 @@ fn handle_stdin(db_path: &str) {
         }
     };
 
-    // データベースを開く
-    let db = match KijukuDB::open(db_path) {
+    // データベースを開く（バックアップ有効）
+    let mut db = match KijukuDB::open_with_options(
+        db_path,
+        DBOptions {
+            backup: Some(BackupOptions::default()),
+            ..Default::default()
+        },
+    ) {
         Ok(db) => db,
         Err(e) => {
             let response = CommandResponse::error(format!("データベースのオープンに失敗: {}", e));
@@ -323,7 +386,7 @@ fn handle_stdin(db_path: &str) {
     }
 
     // コマンドを実行
-    let response = execute_command(&db, &request);
+    let response = execute_command(&mut db, &request);
     output_response(&response);
 }
 
@@ -348,7 +411,51 @@ async fn main() {
     }
 }
 
-fn execute_command(db: &KijukuDB, request: &CommandRequest) -> CommandResponse {
+fn handle_backup(db: &mut KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: BackupParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    let result = if let Some(label) = &params.label {
+        db.backup_with_label(label)
+    } else {
+        db.backup()
+    };
+    match result {
+        Ok(Some(path)) => CommandResponse::success(serde_json::json!({"path": path})),
+        Ok(None) => CommandResponse::error("バックアップマネージャーが設定されていません".to_string()),
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
+fn handle_list_backups(db: &KijukuDB) -> CommandResponse {
+    match db.list_backups() {
+        Ok(backups) => {
+            let json_backups: Vec<serde_json::Value> =
+                backups.iter().map(backup_info_to_json).collect();
+            CommandResponse::success(serde_json::Value::Array(json_backups))
+        }
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
+fn handle_restore(db: &mut KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: RestoreParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    let selector = params
+        .selector
+        .as_ref()
+        .map(|s| s.to_selector())
+        .unwrap_or_else(BackupSelector::latest);
+    match db.restore(&selector) {
+        Ok(path) => CommandResponse::success(serde_json::json!({"path": path.to_string_lossy()})),
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
+fn execute_command(db: &mut KijukuDB, request: &CommandRequest) -> CommandResponse {
     match request.operation.as_str() {
         "migrate" => handle_migrate(db),
         "getSchemaVersion" => handle_get_schema_version(db),
@@ -376,6 +483,9 @@ fn execute_command(db: &KijukuDB, request: &CommandRequest) -> CommandResponse {
         "deleteMediaAttribute" => handle_delete_media_attribute(db, &request.params),
         "deleteAllMediaAttributes" => handle_delete_all_media_attributes(db, &request.params),
         "updateExist" => handle_update_exist(db, &request.params),
+        "backup" => handle_backup(db, &request.params),
+        "listBackups" => handle_list_backups(db),
+        "restore" => handle_restore(db, &request.params),
         _ => CommandResponse::error(format!("不明な操作: {}", request.operation)),
     }
 }

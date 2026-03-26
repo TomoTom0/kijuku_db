@@ -765,6 +765,62 @@ backups.forEach(backup => {
 
 ---
 
+#### `backupWithLabel(label: string): Promise<string | null>`
+
+ラベル付き手動バックアップを実行します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `label` | `string` | ✓ | バックアップのラベル（例: `"before_import"`） |
+
+**戻り値:** `Promise<string | null>` - バックアップファイルのパス。バックアップマネージャーが設定されていない場合は`null`
+
+**使用例:**
+
+```typescript
+const backupPath = await db.backupWithLabel('before_import');
+if (backupPath) {
+  console.log(`バックアップを作成しました: ${backupPath}`);
+}
+```
+
+---
+
+#### `restore(selector?: BackupSelector): string`
+
+バックアップからDBを復元します。復元前に現在のDBを`tmp/`へ自動退避します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `selector` | `BackupSelector` | | 復元するバックアップの選択条件（省略時: 最新） |
+
+**戻り値:** `string` - 復元に使用したバックアップファイルのパス
+
+**エラー:**
+- バックアップマネージャーが設定されていない場合: `Error`
+- 条件に一致するバックアップが存在しない場合: `Error`
+
+**使用例:**
+
+```typescript
+import { BackupSelector } from 'kijuku-db';
+
+// 最新のバックアップから復元
+const restoredPath = db.restore();
+
+// N番目に新しいバックアップから復元
+const restoredPath2 = db.restore(BackupSelector.nth(1));
+```
+
+**注意:**
+- 復元後はDB接続が再オープンされます。`KijukuDB`インスタンスはそのまま使用可能です
+
+---
+
 #### `getBackupManager(): BackupManager | undefined`
 
 BackupManagerインスタンスを取得します（高度な使用）。
@@ -825,6 +881,81 @@ db.close();
 **パラメータ:** なし
 
 **戻り値:** `boolean` - 有効なら`true`
+
+---
+
+## RemoteKijukuDB
+
+SSH経由でリモートDBを操作するクラス。`KijukuDB`と同等のAPIを非同期で提供します。
+
+### バックアップ操作
+
+#### `backup(label?: string): Promise<string>`
+
+リモートDBの手動バックアップを実行します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `label` | `string` | | バックアップのラベル（省略時はラベルなし） |
+
+**戻り値:** `Promise<string>` - バックアップファイルのパス（リモートサーバー上）
+
+**使用例:**
+
+```typescript
+const path = await remoteDb.backup();
+const pathWithLabel = await remoteDb.backup('before_import');
+```
+
+---
+
+#### `listBackups(): Promise<BackupInfo[]>`
+
+リモートDBのバックアップ一覧を取得します。
+
+**戻り値:** `Promise<BackupInfo[]>` - バックアップ情報の配列（作成日時の降順）
+
+**使用例:**
+
+```typescript
+const backups = await remoteDb.listBackups();
+backups.forEach(b => console.log(`${b.name} (${b.scope})`));
+```
+
+---
+
+#### `restore(selector?: RemoteBackupSelector): Promise<string>`
+
+リモートDBをバックアップから復元します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `selector` | `RemoteBackupSelector` | | 復元するバックアップの選択条件（省略時: 最新） |
+
+**RemoteBackupSelector:**
+
+```typescript
+type RemoteBackupSelector =
+  | { type: 'latest' }
+  | { type: 'nth'; n: number };
+```
+
+**戻り値:** `Promise<string>` - 復元に使用したバックアップファイルのパス
+
+**使用例:**
+
+```typescript
+// 最新から復元
+const path = await remoteDb.restore();
+const path2 = await remoteDb.restore({ type: 'latest' });
+
+// 2番目に新しいバックアップから復元
+const path3 = await remoteDb.restore({ type: 'nth', n: 1 });
+```
 
 ---
 

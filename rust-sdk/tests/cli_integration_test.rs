@@ -238,6 +238,99 @@ fn test_cli_error_handling() {
 }
 
 #[test]
+fn test_cli_backup() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+
+    let response = execute_cli_command(db_path, json!({
+        "operation": "backup",
+        "params": {}
+    }));
+
+    assert_eq!(response["success"], true);
+    assert!(response["data"]["path"].as_str().is_some());
+}
+
+#[test]
+fn test_cli_backup_with_label() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+
+    let response = execute_cli_command(db_path, json!({
+        "operation": "backup",
+        "params": { "label": "テストバックアップ" }
+    }));
+
+    assert_eq!(response["success"], true);
+    assert!(response["data"]["path"].as_str().is_some());
+}
+
+#[test]
+fn test_cli_list_backups() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+    execute_cli_command(db_path, json!({"operation": "backup", "params": {}}));
+
+    let response = execute_cli_command(db_path, json!({
+        "operation": "listBackups",
+        "params": {}
+    }));
+
+    assert_eq!(response["success"], true);
+    let backups = response["data"].as_array().unwrap();
+    assert_eq!(backups.len(), 1);
+    assert!(backups[0]["id"].as_str().is_some());
+    assert!(backups[0]["path"].as_str().is_some());
+    assert_eq!(backups[0]["scope"], "manual");
+}
+
+#[test]
+fn test_cli_restore() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+
+    // メディアを作成してからバックアップ
+    let create_response = execute_cli_command(db_path, json!({
+        "operation": "createMedia",
+        "params": { "data": { "title": "復元テスト作品", "media_type": "comic" } }
+    }));
+    let media_id = create_response["data"]["id"].as_i64().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "backup", "params": {}}));
+
+    // メディアを削除
+    execute_cli_command(db_path, json!({
+        "operation": "deleteMedia",
+        "params": { "id": media_id }
+    }));
+
+    // バックアップから復元
+    let restore_response = execute_cli_command(db_path, json!({
+        "operation": "restore",
+        "params": { "selector": { "type": "latest" } }
+    }));
+
+    assert_eq!(restore_response["success"], true);
+    assert!(restore_response["data"]["path"].as_str().is_some());
+
+    // 復元後にメディアが存在することを確認
+    let get_response = execute_cli_command(db_path, json!({
+        "operation": "getMedia",
+        "params": { "id": media_id }
+    }));
+    assert_eq!(get_response["success"], true);
+    assert_eq!(get_response["data"]["title"], "復元テスト作品");
+}
+
+#[test]
 fn test_cli_bulk_create() {
     let temp_file = NamedTempFile::new().unwrap();
     let db_path = temp_file.path().to_str().unwrap();
