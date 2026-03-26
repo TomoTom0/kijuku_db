@@ -378,6 +378,18 @@ const media = await remoteDb.createMedia({
 
 const results = await remoteDb.findMedia({ media_type: 'comic' });
 console.log(`検索結果: ${results.length}件`);
+
+// バックアップ操作
+const backupPath = await remoteDb.backup();
+const backupPathWithLabel = await remoteDb.backup('before_import');
+
+const backups = await remoteDb.listBackups();
+backups.forEach(b => console.log(`${b.name} (${b.scope})`));
+
+// 最新バックアップから復元
+const restoredPath = await remoteDb.restore();
+// N番目に新しいバックアップから復元
+const restoredPath2 = await remoteDb.restore({ type: 'nth', n: 1 });
 ```
 
 **注意:**

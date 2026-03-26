@@ -370,6 +370,11 @@ export class BackupManager {
     return backupInfo.path;
   }
 
+  /** 現在のDB接続を取得（restore後の参照更新用） */
+  getDb(): Database.Database {
+    return this.db;
+  }
+
   /** バックアップ一覧を取得（新しい順、全スコープ横断） */
   listBackups(): BackupInfo[] {
     return this.listBackupsFiltered(undefined);
@@ -449,17 +454,18 @@ export class BackupManager {
 
     if (backups.length === 0) return null;
 
-    switch (selector.kind.type) {
+    const kind = selector.kind;
+    switch (kind.type) {
       case 'latest':
         return backups[0] ?? null;
       case 'nth':
-        return backups[selector.kind.n] ?? null;
+        return backups[kind.n] ?? null;
       case 'before':
-        return backups.find((b) => b.createdAt < selector.kind.date) ?? null;
+        return backups.find((b) => b.createdAt < kind.date) ?? null;
       case 'after':
-        return backups.filter((b) => b.createdAt > selector.kind.date).at(-1) ?? null;
+        return backups.filter((b) => b.createdAt > kind.date).at(-1) ?? null;
       case 'closestTo': {
-        const targetTime = selector.kind.date.getTime();
+        const targetTime = kind.date.getTime();
         return backups.reduce((closest, current) => {
           const closestDiff = Math.abs(closest.createdAt.getTime() - targetTime);
           const currentDiff = Math.abs(current.createdAt.getTime() - targetTime);

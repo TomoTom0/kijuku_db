@@ -323,7 +323,10 @@ export class KijukuDB {
     if (!this.backupManager) {
       throw new Error('Backup manager not configured');
     }
-    return this.backupManager.restore(selector);
+    const restoredPath = this.backupManager.restore(selector);
+    // restore後にBackupManagerが接続を再オープンするため、KijukuDBの参照も更新
+    this.db = this.backupManager.getDb();
+    return restoredPath;
   }
 
   /** バックアップ一覧を取得 */

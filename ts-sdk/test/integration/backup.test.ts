@@ -91,6 +91,25 @@ describe('BackupManager', () => {
       const backups = db.listBackups();
       expect(backups[0].label).toBe('before_import');
     });
+
+    it('restore()でバックアップから復元できる', async () => {
+      // データを作成してバックアップ
+      db.createMedia({ title: '復元テスト', media_type: 'comic' });
+      await db.backup();
+
+      // データを追加
+      db.createMedia({ title: '追加データ', media_type: 'video' });
+      expect(db.findMedia({}).length).toBe(2);
+
+      // バックアップ時点に復元
+      const { BackupSelector } = await import('../../src/backup.js');
+      db.restore(BackupSelector.latest());
+
+      // 復元後は1件に戻っている
+      const afterRestore = db.findMedia({});
+      expect(afterRestore.length).toBe(1);
+      expect(afterRestore[0].title).toBe('復元テスト');
+    });
   });
 
   describe('自動バックアップ', () => {
