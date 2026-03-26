@@ -23,6 +23,8 @@ docs/
 ├── examples/
 │   └── ts-sdk/                # TypeScript SDKサンプルコード説明
 └── usage/
+    ├── cli/
+    │   └── README.md          # kijuku-cli 利用ガイド（サブコマンド一覧）
     └── sdk/
         ├── README.md          # SDK選択ガイド
         ├── ts/README.md       # TypeScript SDK利用ガイド
@@ -45,6 +47,7 @@ docs/
 | `docs/DATABASE_SETUP.md` | マイグレーション追加・DBスキーマ変更時 |
 | `docs/PERFORMANCE.md` | パフォーマンスに影響する実装変更時 |
 | `docs/TESTING.md` | テスト構成・テスト実行方法変更時 |
+| `docs/usage/cli/README.md` | CLIサブコマンドの追加・変更・削除時 |
 | `docs/usage/sdk/ts/README.md` | TypeScript SDKの公開API・型定義・使用方法変更時 |
 | `docs/usage/sdk/rust/README.md` | Rust SDKの公開API・型定義・使用方法変更時 |
 | `docs/examples/ts-sdk/` | TypeScript SDKのサンプルコードが古くなった時 |
