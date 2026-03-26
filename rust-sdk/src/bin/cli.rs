@@ -373,15 +373,20 @@ fn open_db_with_backup(db_path: &str) -> Option<KijukuDB> {
     }
 }
 
+fn open_and_migrate_db(db_path: &str) -> Option<KijukuDB> {
+    let mut db = open_db_with_backup(db_path)?;
+    if let Err(e) = db.migrate() {
+        eprintln!("マイグレーションに失敗: {}", e);
+        return None;
+    }
+    Some(db)
+}
+
 fn handle_backup_subcommand(db_path: &str, label: Option<String>) {
-    let mut db = match open_db_with_backup(db_path) {
+    let mut db = match open_and_migrate_db(db_path) {
         Some(db) => db,
         None => return,
     };
-    if let Err(e) = db.migrate() {
-        eprintln!("マイグレーションに失敗: {}", e);
-        return;
-    }
     let result = if let Some(ref l) = label {
         db.backup_with_label(l)
     } else {
@@ -395,14 +400,10 @@ fn handle_backup_subcommand(db_path: &str, label: Option<String>) {
 }
 
 fn handle_list_backups_subcommand(db_path: &str) {
-    let mut db = match open_db_with_backup(db_path) {
+    let mut db = match open_and_migrate_db(db_path) {
         Some(db) => db,
         None => return,
     };
-    if let Err(e) = db.migrate() {
-        eprintln!("マイグレーションに失敗: {}", e);
-        return;
-    }
     match db.list_backups() {
         Ok(backups) => {
             if backups.is_empty() {
@@ -424,14 +425,10 @@ fn handle_list_backups_subcommand(db_path: &str) {
 }
 
 fn handle_restore_subcommand(db_path: &str, nth: Option<usize>) {
-    let mut db = match open_db_with_backup(db_path) {
+    let mut db = match open_and_migrate_db(db_path) {
         Some(db) => db,
         None => return,
     };
-    if let Err(e) = db.migrate() {
-        eprintln!("マイグレーションに失敗: {}", e);
-        return;
-    }
     let selector = match nth {
         Some(n) => BackupSelector::nth(n),
         None => BackupSelector::latest(),
