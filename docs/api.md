@@ -775,7 +775,7 @@ backups.forEach(backup => {
 |------|-----|------|------|
 | `label` | `string` | ✓ | バックアップのラベル（例: `"before_import"`） |
 
-**戻り値:** `Promise<string | null>` - バックアップファイルのパス。バックアップマネージャーが設定されていない場合は`null`
+**戻り値:** `Promise<string | undefined>` - バックアップファイルのパス。バックアップマネージャーが設定されていない場合は`undefined`
 
 **使用例:**
 
