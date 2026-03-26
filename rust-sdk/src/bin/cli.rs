@@ -320,6 +320,20 @@ enum Commands {
         #[arg(long, default_value = "{}")]
         filter: String,
     },
+    /// バックアップを作成
+    Backup {
+        /// バックアップのラベル（省略可）
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// バックアップ一覧を表示
+    ListBackups,
+    /// バックアップから復元
+    Restore {
+        /// N番目のバックアップから復元（0が最新、省略時は最新）
+        #[arg(long)]
+        nth: Option<usize>,
+    },
 }
 
 async fn handle_server(db_path: &str, port: u16, password: Option<String>) {
@@ -340,6 +354,88 @@ async fn handle_server(db_path: &str, port: u16, password: Option<String>) {
         Err(e) => {
             eprintln!("データベースを開けませんでした: {}", e);
         }
+    }
+}
+
+fn open_db_with_backup(db_path: &str) -> Option<KijukuDB> {
+    match KijukuDB::open_with_options(
+        db_path,
+        DBOptions {
+            backup: Some(BackupOptions::default()),
+            ..Default::default()
+        },
+    ) {
+        Ok(db) => Some(db),
+        Err(e) => {
+            eprintln!("データベースのオープンに失敗: {}", e);
+            None
+        }
+    }
+}
+
+fn open_and_migrate_db(db_path: &str) -> Option<KijukuDB> {
+    let mut db = open_db_with_backup(db_path)?;
+    if let Err(e) = db.migrate() {
+        eprintln!("マイグレーションに失敗: {}", e);
+        return None;
+    }
+    Some(db)
+}
+
+fn handle_backup_subcommand(db_path: &str, label: Option<String>) {
+    let mut db = match open_and_migrate_db(db_path) {
+        Some(db) => db,
+        None => return,
+    };
+    let result = if let Some(ref l) = label {
+        db.backup_with_label(l)
+    } else {
+        db.backup()
+    };
+    match result {
+        Ok(Some(path)) => println!("{}", path),
+        Ok(None) => eprintln!("バックアップマネージャーが設定されていません"),
+        Err(e) => eprintln!("バックアップに失敗: {}", e),
+    }
+}
+
+fn handle_list_backups_subcommand(db_path: &str) {
+    let mut db = match open_and_migrate_db(db_path) {
+        Some(db) => db,
+        None => return,
+    };
+    match db.list_backups() {
+        Ok(backups) => {
+            if backups.is_empty() {
+                println!("バックアップはありません");
+                return;
+            }
+            for (i, info) in backups.iter().enumerate() {
+                let scope = match info.scope {
+                    BackupScope::Auto => "auto",
+                    BackupScope::Manual => "manual",
+                    BackupScope::Tmp => "tmp",
+                };
+                let label = info.label.as_deref().unwrap_or("-");
+                println!("[{}] {} scope={} label={}", i, info.name, scope, label);
+            }
+        }
+        Err(e) => eprintln!("バックアップ一覧の取得に失敗: {}", e),
+    }
+}
+
+fn handle_restore_subcommand(db_path: &str, nth: Option<usize>) {
+    let mut db = match open_and_migrate_db(db_path) {
+        Some(db) => db,
+        None => return,
+    };
+    let selector = match nth {
+        Some(n) => BackupSelector::nth(n),
+        None => BackupSelector::latest(),
+    };
+    match db.restore(&selector) {
+        Ok(path) => println!("{}", path.to_string_lossy()),
+        Err(e) => eprintln!("復元に失敗: {}", e),
     }
 }
 
@@ -404,6 +500,15 @@ async fn main() {
         }
         Some(Commands::UpdateExist { dry_run, filter }) => {
             handle_update_exist_subcommand(db_path, *dry_run, filter);
+        }
+        Some(Commands::Backup { label }) => {
+            handle_backup_subcommand(db_path, label.clone());
+        }
+        Some(Commands::ListBackups) => {
+            handle_list_backups_subcommand(db_path);
+        }
+        Some(Commands::Restore { nth }) => {
+            handle_restore_subcommand(db_path, *nth);
         }
         None => {
             handle_stdin(db_path);
