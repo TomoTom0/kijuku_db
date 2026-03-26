@@ -247,6 +247,39 @@ describeRemote('RemoteKijukuDB 統合テスト', () => {
     });
   });
 
+  describe('バックアップ操作', () => {
+    it('手動バックアップを作成できる', async () => {
+      const path = await remoteDb.backup();
+      expect(typeof path).toBe('string');
+      expect(path.length).toBeGreaterThan(0);
+    });
+
+    it('ラベル付きバックアップを作成できる', async () => {
+      const path = await remoteDb.backup('テストバックアップ');
+      expect(typeof path).toBe('string');
+    });
+
+    it('バックアップ一覧を取得できる', async () => {
+      const backups = await remoteDb.listBackups();
+      expect(Array.isArray(backups)).toBe(true);
+      expect(backups.length).toBeGreaterThan(0);
+      expect(backups[0].id).toBeDefined();
+      expect(backups[0].path).toBeDefined();
+      expect(backups[0].createdAt).toBeInstanceOf(Date);
+      expect(backups[0].scope).toBe('manual');
+    });
+
+    it('バックアップから復元できる', async () => {
+      await remoteDb.backup('復元テスト');
+      const restoredPath = await remoteDb.restore({ type: 'latest' });
+      expect(typeof restoredPath).toBe('string');
+
+      // 復元後もDBが正常に動作することを確認
+      const version = await remoteDb.getSchemaVersion();
+      expect(version).toBeGreaterThan(0);
+    });
+  });
+
   describe('クリーンアップ', () => {
     it('作成したメディアを削除できる', async () => {
       for (const mediaId of createdMediaIds) {

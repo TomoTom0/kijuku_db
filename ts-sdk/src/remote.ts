@@ -18,6 +18,14 @@ import type {
   BulkUpdateItem,
 } from './types.js';
 import type { UpdateExistOptions, UpdateExistResult } from './update_exist.js';
+import type { BackupInfo, BackupScope, BackupKind } from './backup.js';
+
+/**
+ * バックアップセレクター
+ */
+export type RemoteBackupSelector =
+  | { type: 'latest' }
+  | { type: 'nth'; n: number };
 
 /**
  * リモート接続設定
@@ -580,5 +588,59 @@ export class RemoteKijukuDB {
       },
     });
     return this.checkResponse(response);
+  }
+
+  /**
+   * 手動バックアップを実行
+   */
+  async backup(label?: string): Promise<string> {
+    const response = await this.executeRemoteCommand({
+      operation: 'backup',
+      params: { label: label ?? null },
+    });
+    const data = this.checkResponse(response);
+    return data.path;
+  }
+
+  /**
+   * バックアップ一覧を取得
+   */
+  async listBackups(): Promise<BackupInfo[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'listBackups',
+      params: {},
+    });
+    const data: Array<{
+      id: string;
+      name: string;
+      path: string;
+      createdAt: number;
+      scope: string;
+      kind: { type: string; baseId?: string };
+      label?: string;
+    }> = this.checkResponse(response);
+    return data.map((item) => ({
+      id: item.id,
+      name: item.name,
+      path: item.path,
+      createdAt: new Date(item.createdAt * 1000),
+      scope: item.scope as BackupScope,
+      kind: item.kind.type === 'diff'
+        ? ({ type: 'diff', baseId: item.kind.baseId! } as BackupKind)
+        : ({ type: 'full' } as BackupKind),
+      label: item.label,
+    }));
+  }
+
+  /**
+   * バックアップを復元
+   */
+  async restore(selector: RemoteBackupSelector = { type: 'latest' }): Promise<string> {
+    const response = await this.executeRemoteCommand({
+      operation: 'restore',
+      params: { selector },
+    });
+    const data = this.checkResponse(response);
+    return data.path;
   }
 }

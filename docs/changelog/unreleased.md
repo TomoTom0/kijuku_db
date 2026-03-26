@@ -16,6 +16,17 @@
 
 ## Added
 
+### CLIとRemoteKijukuDBへのバックアップ機能組み込み (TASK-155)
+
+- CLIのJSONコマンドハンドラに`backup`/`listBackups`/`restore`オペレーションを追加
+- `RemoteKijukuDB`に`backup()`/`listBackups()`/`restore()`メソッドを追加（SSH経由でRust CLIを呼び出す）
+- `BackupManager.getDb()`メソッドを追加（restore後のDB参照取得用）
+
+**ファイル:**
+- `rust-sdk/src/bin/cli.rs`: backup/listBackups/restoreオペレーション追加
+- `ts-sdk/src/remote.ts`: RemoteKijukuDBにbackup/listBackups/restoreメソッド追加
+- `ts-sdk/src/backup.ts`: `BackupManager.getDb()`追加
+
 ### 自動バックアップ機能 (TASK-44)
 
 - 時間間隔ベースの自動バックアップ機能を実装
@@ -81,6 +92,14 @@
 - `rand`, `sha2`, `uuid`: 認証・セキュリティ
 
 ## Fixed
+
+### `KijukuDB.restore()`がDB接続参照を更新しないバグを修正 (TASK-155)
+
+- `restore()`呼び出し後、`BackupManager`が内部でDB接続を再オープンするが、`KijukuDB`が旧参照を保持し続けるバグを修正
+- `restore()`後に`backupManager.getDb()`で新しい接続参照を取得するよう変更
+
+**ファイル:**
+- `ts-sdk/src/index.ts`: `KijukuDB.restore()`にDB参照更新を追加
 
 ### media削除時のカスケード削除漏れを修正 (TASK-138)
 
