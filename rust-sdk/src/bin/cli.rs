@@ -374,7 +374,7 @@ fn open_db_with_backup(db_path: &str) -> Option<KijukuDB> {
 }
 
 fn open_and_migrate_db(db_path: &str) -> Option<KijukuDB> {
-    let mut db = open_db_with_backup(db_path)?;
+    let db = open_db_with_backup(db_path)?;
     if let Err(e) = db.migrate() {
         eprintln!("マイグレーションに失敗: {}", e);
         return None;
@@ -383,7 +383,7 @@ fn open_and_migrate_db(db_path: &str) -> Option<KijukuDB> {
 }
 
 fn handle_backup_subcommand(db_path: &str, label: Option<String>) {
-    let mut db = match open_and_migrate_db(db_path) {
+    let db = match open_and_migrate_db(db_path) {
         Some(db) => db,
         None => return,
     };
@@ -400,7 +400,7 @@ fn handle_backup_subcommand(db_path: &str, label: Option<String>) {
 }
 
 fn handle_list_backups_subcommand(db_path: &str) {
-    let mut db = match open_and_migrate_db(db_path) {
+    let db = match open_and_migrate_db(db_path) {
         Some(db) => db,
         None => return,
     };

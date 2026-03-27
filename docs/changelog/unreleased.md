@@ -16,6 +16,15 @@
 
 ## Added
 
+### kijuku-cli に backup/list-backups/restore サブコマンドを追加 (TASK-158)
+
+- `kijuku-cli backup <db-path> [--label <label>]`: バックアップを作成しパスを出力
+- `kijuku-cli list-backups <db-path>`: バックアップ一覧を表示（index・name・scope・label）
+- `kijuku-cli restore <db-path> [--nth <n>]`: バックアップから復元（デフォルトは最新）
+
+**ファイル:**
+- `rust-sdk/src/bin/cli.rs`: backup/list-backups/restore サブコマンド追加
+
 ### CLIとRemoteKijukuDBへのバックアップ機能組み込み (TASK-155)
 
 - CLIのJSONコマンドハンドラに`backup`/`listBackups`/`restore`オペレーションを追加
