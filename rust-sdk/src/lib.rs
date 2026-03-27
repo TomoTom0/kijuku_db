@@ -44,6 +44,7 @@ pub mod remote;
 pub mod search;
 pub mod server;
 pub mod tag;
+pub mod thumbnail;
 pub mod types;
 pub mod update_exist;
 
@@ -58,6 +59,11 @@ pub use remote::{RemoteConfig, RemoteKijukuDB};
 pub use server::auth::{AuthManager, generate_password};
 pub use server::{ServerOptions, start_server};
 pub use types::*;
+pub use thumbnail::{
+    CheckThumbnailItemResult, CheckThumbnailResult, CheckThumbnailStatus, ThumbnailOptions,
+    UpdateThumbnailItemResult, UpdateThumbnailResult, UpdateThumbnailStatus,
+    resolve_thumbnail_path,
+};
 pub use update_exist::{UpdateExistItemResult, UpdateExistOptions, UpdateExistResult};
 
 use rusqlite::Connection;
@@ -193,6 +199,25 @@ impl KijukuDB {
         options: Option<&QueryOptions>,
     ) -> Result<Vec<Media>> {
         search::find_media(&self.conn, filter, options)
+    }
+
+    /// フィルタで絞り込んだメディアのサムネイル状態をチェックする
+    pub fn check_thumbnail(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+    ) -> Result<CheckThumbnailResult> {
+        thumbnail::check_thumbnail(&self.conn, filter, options)
+    }
+
+    /// フィルタで絞り込んだメディアのサムネイルを生成・更新する
+    pub fn update_thumbnail(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+        thumbnail_options: &ThumbnailOptions,
+    ) -> Result<UpdateThumbnailResult> {
+        thumbnail::update_thumbnail(&self.conn, filter, options, thumbnail_options)
     }
 
     /// フィルタで絞り込んだメディアのflag_existをファイル存在状態に基づいて更新する

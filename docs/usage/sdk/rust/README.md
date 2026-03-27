@@ -401,6 +401,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - 代替拡張子が見つかった場合は `extension` も自動更新（`dry_run = false` のとき）
 - `comic` で `page_count = null` の場合、実ページ数を自動設定
 
+### サムネイルチェック・生成（check_thumbnail / update_thumbnail）
+
+メディアのサムネイル状態をチェックし、必要に応じて生成します：
+
+```rust
+use kijuku_db::{KijukuDB, MediaFilter, ThumbnailOptions, MediaType};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = KijukuDB::open("./data/kijuku.db")?;
+
+    // サムネイル状態のチェック
+    let check = db.check_thumbnail(&MediaFilter::default(), None)?;
+    println!(
+        "合計: {}件, OK: {}件, 未設定: {}件, ファイルなし: {}件, スキップ: {}件",
+        check.total, check.ok, check.missing, check.file_not_found, check.skipped
+    );
+    // 詳細はdetail_fileから取得
+    let detail_json = std::fs::read_to_string(&check.detail_file)?;
+    let items: Vec<kijuku_db::CheckThumbnailItemResult> = serde_json::from_str(&detail_json)?;
+    for item in items {
+        println!("[{}] {}: {:?}", item.id, item.title, item.status);
+    }
+
+    // サムネイルの生成・更新（コミック対象）
+    let result = db.update_thumbnail(
+        &MediaFilter { media_type: Some(MediaType::Comic), ..Default::default() },
+        None,
+        &ThumbnailOptions { dry_run: false, force: false },
+    )?;
+    println!("生成: {}件, 既存: {}件, スキップ: {}件, エラー: {}件",
+        result.generated, result.already_exists, result.skipped, result.errors);
+
+    Ok(())
+}
+```
+
+**サムネイルパスの決定規則:**
+- `path` に含まれる最後の `content` コンポーネントを探す
+- その親ディレクトリに `cover/{uuid}.jpg` を配置
+- 例: `/media/onepiece/vol1/content` → `/media/onepiece/vol1/cover/{uuid}.jpg`
+
+**スキップ条件（以下のいずれかに該当する場合はスキップ）:**
+- `path` が未設定
+- `path` に `content` コンポーネントが含まれない
+- `{path}/001.{ext}` が存在しない
+
+**オプション:**
+- `dry_run`: DBを更新せず結果のみ確認（ファイルも生成しない）
+- `force`: 既存サムネイルがあっても再生成
+
 ### バルク挿入
 
 大量のメディアを効率的に登録：

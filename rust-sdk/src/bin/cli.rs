@@ -8,7 +8,7 @@ use include_dir::{include_dir, Dir};
 use kijuku_db::{
     AttributeValueType, BackupInfo, BackupKind, BackupOptions, BackupScope, BackupSelector,
     BulkUpdateItem, DBOptions, KijukuDB, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions,
-    UpdateExistOptions,
+    ThumbnailOptions, UpdateExistOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -181,6 +181,16 @@ struct UpdateExistParams {
     update_options: UpdateExistOptions,
 }
 
+/// check-thumbnail / update-thumbnailのパラメータ
+#[derive(Debug, Deserialize)]
+struct ThumbnailParams {
+    #[serde(default)]
+    filter: MediaFilter,
+    options: Option<QueryOptions>,
+    #[serde(default)]
+    thumbnail_options: ThumbnailOptions,
+}
+
 /// バックアップのパラメータ
 #[derive(Debug, Deserialize)]
 struct BackupParams {
@@ -316,6 +326,24 @@ enum Commands {
         /// DBを更新せず結果を出力のみ
         #[arg(long)]
         dry_run: bool,
+        /// MediaFilterのJSON文字列
+        #[arg(long, default_value = "{}")]
+        filter: String,
+    },
+    /// サムネイルの状態をチェックする
+    CheckThumbnail {
+        /// MediaFilterのJSON文字列
+        #[arg(long, default_value = "{}")]
+        filter: String,
+    },
+    /// サムネイルを生成・更新する
+    UpdateThumbnail {
+        /// DBを更新せず結果を出力のみ
+        #[arg(long)]
+        dry_run: bool,
+        /// 既存サムネイルを強制再生成する
+        #[arg(long)]
+        force: bool,
         /// MediaFilterのJSON文字列
         #[arg(long, default_value = "{}")]
         filter: String,
@@ -501,6 +529,12 @@ async fn main() {
         Some(Commands::UpdateExist { dry_run, filter }) => {
             handle_update_exist_subcommand(db_path, *dry_run, filter);
         }
+        Some(Commands::CheckThumbnail { filter }) => {
+            handle_check_thumbnail_subcommand(db_path, filter);
+        }
+        Some(Commands::UpdateThumbnail { dry_run, force, filter }) => {
+            handle_update_thumbnail_subcommand(db_path, *dry_run, *force, filter);
+        }
         Some(Commands::Backup { label }) => {
             handle_backup_subcommand(db_path, label.clone());
         }
@@ -588,6 +622,8 @@ fn execute_command(db: &mut KijukuDB, request: &CommandRequest) -> CommandRespon
         "deleteMediaAttribute" => handle_delete_media_attribute(db, &request.params),
         "deleteAllMediaAttributes" => handle_delete_all_media_attributes(db, &request.params),
         "updateExist" => handle_update_exist(db, &request.params),
+        "checkThumbnail" => handle_check_thumbnail(db, &request.params),
+        "updateThumbnail" => handle_update_thumbnail(db, &request.params),
         "backup" => handle_backup(db, &request.params),
         "listBackups" => handle_list_backups(db),
         "restore" => handle_restore(db, &request.params),
@@ -975,6 +1011,110 @@ fn handle_update_exist_subcommand(db_path: &str, dry_run: bool, filter_json: &st
             ))),
         },
         Err(e) => output_response(&CommandResponse::error(format!("update-existエラー: {}", e))),
+    }
+}
+
+fn handle_check_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: ThumbnailParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.check_thumbnail(&params.filter, params.options.as_ref()) {
+        Ok(result) => match serde_json::to_value(result) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
+        Err(e) => CommandResponse::error(format!("check-thumbnailエラー: {}", e)),
+    }
+}
+
+fn handle_update_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: ThumbnailParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.update_thumbnail(&params.filter, params.options.as_ref(), &params.thumbnail_options) {
+        Ok(result) => match serde_json::to_value(result) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
+        Err(e) => CommandResponse::error(format!("update-thumbnailエラー: {}", e)),
+    }
+}
+
+fn handle_check_thumbnail_subcommand(db_path: &str, filter_json: &str) {
+    let filter: MediaFilter = match serde_json::from_str(filter_json) {
+        Ok(f) => f,
+        Err(e) => {
+            let response = CommandResponse::error(format!("filterのJSONパースエラー: {}", e));
+            output_response(&response);
+            return;
+        }
+    };
+    let db = match KijukuDB::open(db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            let response = CommandResponse::error(format!("データベースのオープンに失敗: {}", e));
+            output_response(&response);
+            return;
+        }
+    };
+    if let Err(e) = db.migrate() {
+        let response = CommandResponse::error(format!("マイグレーションに失敗: {}", e));
+        output_response(&response);
+        return;
+    }
+    match db.check_thumbnail(&filter, None) {
+        Ok(result) => match serde_json::to_value(result) {
+            Ok(data) => output_response(&CommandResponse::success(data)),
+            Err(e) => output_response(&CommandResponse::error(format!(
+                "レスポンスのシリアライズに失敗: {}",
+                e
+            ))),
+        },
+        Err(e) => output_response(&CommandResponse::error(format!("check-thumbnailエラー: {}", e))),
+    }
+}
+
+fn handle_update_thumbnail_subcommand(
+    db_path: &str,
+    dry_run: bool,
+    force: bool,
+    filter_json: &str,
+) {
+    let filter: MediaFilter = match serde_json::from_str(filter_json) {
+        Ok(f) => f,
+        Err(e) => {
+            let response = CommandResponse::error(format!("filterのJSONパースエラー: {}", e));
+            output_response(&response);
+            return;
+        }
+    };
+    let db = match KijukuDB::open(db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            let response = CommandResponse::error(format!("データベースのオープンに失敗: {}", e));
+            output_response(&response);
+            return;
+        }
+    };
+    if let Err(e) = db.migrate() {
+        let response = CommandResponse::error(format!("マイグレーションに失敗: {}", e));
+        output_response(&response);
+        return;
+    }
+    let thumbnail_options = ThumbnailOptions { dry_run, force };
+    match db.update_thumbnail(&filter, None, &thumbnail_options) {
+        Ok(result) => match serde_json::to_value(result) {
+            Ok(data) => output_response(&CommandResponse::success(data)),
+            Err(e) => output_response(&CommandResponse::error(format!(
+                "レスポンスのシリアライズに失敗: {}",
+                e
+            ))),
+        },
+        Err(e) => {
+            output_response(&CommandResponse::error(format!("update-thumbnailエラー: {}", e)))
+        }
     }
 }
 
