@@ -5,20 +5,6 @@ use crate::types::{Media, MediaFilter, MediaUpdateInput, QueryOptions};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
-use std::process;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn temp_file_path(suffix: &str) -> String {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let pid = process::id();
-    std::env::temp_dir()
-        .join(format!("kijuku-thumbnail-{}-{}{}", pid, ts, suffix))
-        .to_string_lossy()
-        .into_owned()
-}
 
 /// pathからサムネイルの期待パスを計算する
 ///
@@ -90,8 +76,8 @@ pub struct CheckThumbnailResult {
     pub missing: usize,
     pub file_not_found: usize,
     pub skipped: usize,
-    /// 全件の詳細結果を含むJSONファイルのパス
-    pub detail_file: String,
+    /// 全件の詳細結果
+    pub details: Vec<CheckThumbnailItemResult>,
 }
 
 /// update_thumbnailの1件のステータス
@@ -126,8 +112,8 @@ pub struct UpdateThumbnailResult {
     pub already_exists: usize,
     pub skipped: usize,
     pub errors: usize,
-    /// 全件の詳細結果を含むJSONファイルのパス
-    pub detail_file: String,
+    /// 全件の詳細結果
+    pub details: Vec<UpdateThumbnailItemResult>,
 }
 
 /// 1件のメディアのサムネイル状態をチェックする
@@ -167,12 +153,6 @@ fn check_media_thumbnail(media: &Media) -> CheckThumbnailItemResult {
 }
 
 /// フィルタで絞り込んだメディアのサムネイル状態をチェックする
-///
-/// # 一時ファイル
-///
-/// この関数は結果を格納するために一時ファイルを作成します。
-/// 返される [`CheckThumbnailResult`] の `detail_file` に含まれる
-/// ファイルパスは、呼び出し側が不要になった時点で削除する責任があります。
 pub fn check_thumbnail(
     conn: &Connection,
     filter: &MediaFilter,
@@ -184,7 +164,7 @@ pub fn check_thumbnail(
     let mut missing = 0usize;
     let mut file_not_found = 0usize;
     let mut skipped = 0usize;
-    let mut items: Vec<CheckThumbnailItemResult> = Vec::new();
+    let mut details: Vec<CheckThumbnailItemResult> = Vec::new();
 
     for media in &media_list {
         let item = check_media_thumbnail(media);
@@ -194,15 +174,24 @@ pub fn check_thumbnail(
             CheckThumbnailStatus::FileNotFound => file_not_found += 1,
             CheckThumbnailStatus::Skipped { .. } => skipped += 1,
         }
-        items.push(item);
+        details.push(item);
     }
 
-    let detail_file = temp_file_path("-check-detail.json");
-    let detail_json = serde_json::to_string(&items)
-        .map_err(|e| crate::error::KijukuError::Parse(e.to_string()))?;
-    std::fs::write(&detail_file, &detail_json)?;
+    Ok(CheckThumbnailResult { total, ok, missing, file_not_found, skipped, details })
+}
 
-    Ok(CheckThumbnailResult { total, ok, missing, file_not_found, skipped, detail_file })
+fn build_item_result(
+    media: &Media,
+    status: UpdateThumbnailStatus,
+    thumbnail_path: Option<String>,
+) -> UpdateThumbnailItemResult {
+    UpdateThumbnailItemResult {
+        id: media.id,
+        uuid: media.uuid.clone(),
+        title: media.title.clone(),
+        thumbnail_path,
+        status,
+    }
 }
 
 /// 1件のメディアのサムネイルを生成する
@@ -214,13 +203,11 @@ fn update_media_thumbnail(
     // pathが未設定の場合はスキップ
     let path_str = match &media.path {
         None => {
-            return Ok(UpdateThumbnailItemResult {
-                id: media.id,
-                uuid: media.uuid.clone(),
-                title: media.title.clone(),
-                thumbnail_path: None,
-                status: UpdateThumbnailStatus::Skipped { reason: "pathが未設定".to_string() },
-            });
+            return Ok(build_item_result(
+                media,
+                UpdateThumbnailStatus::Skipped { reason: "pathが未設定".to_string() },
+                None,
+            ));
         }
         Some(p) => p.clone(),
     };
@@ -228,15 +215,13 @@ fn update_media_thumbnail(
     // contentが含まれない場合はスキップ
     let expected_path = match resolve_thumbnail_path(&path_str, &media.uuid) {
         None => {
-            return Ok(UpdateThumbnailItemResult {
-                id: media.id,
-                uuid: media.uuid.clone(),
-                title: media.title.clone(),
-                thumbnail_path: None,
-                status: UpdateThumbnailStatus::Skipped {
+            return Ok(build_item_result(
+                media,
+                UpdateThumbnailStatus::Skipped {
                     reason: "pathにcontentが含まれていない".to_string(),
                 },
-            });
+                None,
+            ));
         }
         Some(p) => p,
     };
@@ -245,69 +230,57 @@ fn update_media_thumbnail(
     let ext = media.extension.as_deref().unwrap_or("jpg");
     let first_page = Path::new(&path_str).join(format!("001.{}", ext));
     if !first_page.exists() {
-        return Ok(UpdateThumbnailItemResult {
-            id: media.id,
-            uuid: media.uuid.clone(),
-            title: media.title.clone(),
-            thumbnail_path: None,
-            status: UpdateThumbnailStatus::Skipped {
-                reason: format!("001.{} が存在しない", ext),
-            },
-        });
+        return Ok(build_item_result(
+            media,
+            UpdateThumbnailStatus::Skipped { reason: format!("001.{} が存在しない", ext) },
+            None,
+        ));
     }
 
     // forceでない場合、既存サムネイルが正常であればスキップ
     if !options.force {
         if let Some(ref current) = media.thumbnail_path {
             if current == &expected_path && Path::new(&expected_path).exists() {
-                return Ok(UpdateThumbnailItemResult {
-                    id: media.id,
-                    uuid: media.uuid.clone(),
-                    title: media.title.clone(),
-                    thumbnail_path: Some(expected_path),
-                    status: UpdateThumbnailStatus::AlreadyExists,
-                });
+                return Ok(build_item_result(
+                    media,
+                    UpdateThumbnailStatus::AlreadyExists,
+                    Some(expected_path),
+                ));
             }
         }
     }
 
     // dry_runの場合は生成予定として返す
     if options.dry_run {
-        return Ok(UpdateThumbnailItemResult {
-            id: media.id,
-            uuid: media.uuid.clone(),
-            title: media.title.clone(),
-            thumbnail_path: Some(expected_path),
-            status: UpdateThumbnailStatus::Generated,
-        });
+        return Ok(build_item_result(
+            media,
+            UpdateThumbnailStatus::Generated,
+            Some(expected_path),
+        ));
     }
 
     // cover/ ディレクトリを作成
     let cover_dir = match Path::new(&expected_path).parent() {
         Some(d) => d.to_path_buf(),
         None => {
-            return Ok(UpdateThumbnailItemResult {
-                id: media.id,
-                uuid: media.uuid.clone(),
-                title: media.title.clone(),
-                thumbnail_path: None,
-                status: UpdateThumbnailStatus::Error {
+            return Ok(build_item_result(
+                media,
+                UpdateThumbnailStatus::Error {
                     message: "サムネイルパスの親ディレクトリが取得できない".to_string(),
                 },
-            });
+                None,
+            ));
         }
     };
 
     if let Err(e) = std::fs::create_dir_all(&cover_dir) {
-        return Ok(UpdateThumbnailItemResult {
-            id: media.id,
-            uuid: media.uuid.clone(),
-            title: media.title.clone(),
-            thumbnail_path: None,
-            status: UpdateThumbnailStatus::Error {
+        return Ok(build_item_result(
+            media,
+            UpdateThumbnailStatus::Error {
                 message: format!("cover/ディレクトリの作成に失敗: {}", e),
             },
-        });
+            None,
+        ));
     }
 
     // ImageMagick の convert でサムネイルを生成（高さ180px固定、品質85）
@@ -322,27 +295,23 @@ fn update_media_thumbnail(
 
     match convert_result {
         Err(e) => {
-            return Ok(UpdateThumbnailItemResult {
-                id: media.id,
-                uuid: media.uuid.clone(),
-                title: media.title.clone(),
-                thumbnail_path: None,
-                status: UpdateThumbnailStatus::Error {
+            return Ok(build_item_result(
+                media,
+                UpdateThumbnailStatus::Error {
                     message: format!("convertの実行に失敗: {}", e),
                 },
-            });
+                None,
+            ));
         }
         Ok(output) if !output.status.success() => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Ok(UpdateThumbnailItemResult {
-                id: media.id,
-                uuid: media.uuid.clone(),
-                title: media.title.clone(),
-                thumbnail_path: None,
-                status: UpdateThumbnailStatus::Error {
+            return Ok(build_item_result(
+                media,
+                UpdateThumbnailStatus::Error {
                     message: format!("convert失敗: {}", stderr.trim()),
                 },
-            });
+                None,
+            ));
         }
         Ok(_) => {}
     }
@@ -353,33 +322,17 @@ fn update_media_thumbnail(
         ..Default::default()
     };
     if let Err(e) = update_media(conn, media.id, &update) {
-        return Ok(UpdateThumbnailItemResult {
-            id: media.id,
-            uuid: media.uuid.clone(),
-            title: media.title.clone(),
-            thumbnail_path: Some(expected_path),
-            status: UpdateThumbnailStatus::Error {
-                message: format!("DB更新に失敗: {}", e),
-            },
-        });
+        return Ok(build_item_result(
+            media,
+            UpdateThumbnailStatus::Error { message: format!("DB更新に失敗: {}", e) },
+            Some(expected_path),
+        ));
     }
 
-    Ok(UpdateThumbnailItemResult {
-        id: media.id,
-        uuid: media.uuid.clone(),
-        title: media.title.clone(),
-        thumbnail_path: Some(expected_path),
-        status: UpdateThumbnailStatus::Generated,
-    })
+    Ok(build_item_result(media, UpdateThumbnailStatus::Generated, Some(expected_path)))
 }
 
 /// フィルタで絞り込んだメディアのサムネイルを生成・更新する
-///
-/// # 一時ファイル
-///
-/// この関数は結果を格納するために一時ファイルを作成します。
-/// 返される [`UpdateThumbnailResult`] の `detail_file` に含まれる
-/// ファイルパスは、呼び出し側が不要になった時点で削除する責任があります。
 pub fn update_thumbnail(
     conn: &Connection,
     filter: &MediaFilter,
@@ -392,7 +345,7 @@ pub fn update_thumbnail(
     let mut already_exists = 0usize;
     let mut skipped = 0usize;
     let mut errors = 0usize;
-    let mut items: Vec<UpdateThumbnailItemResult> = Vec::new();
+    let mut details: Vec<UpdateThumbnailItemResult> = Vec::new();
 
     for media in &media_list {
         let item = update_media_thumbnail(conn, media, options)?;
@@ -402,15 +355,10 @@ pub fn update_thumbnail(
             UpdateThumbnailStatus::Skipped { .. } => skipped += 1,
             UpdateThumbnailStatus::Error { .. } => errors += 1,
         }
-        items.push(item);
+        details.push(item);
     }
 
-    let detail_file = temp_file_path("-update-detail.json");
-    let detail_json = serde_json::to_string(&items)
-        .map_err(|e| crate::error::KijukuError::Parse(e.to_string()))?;
-    std::fs::write(&detail_file, &detail_json)?;
-
-    Ok(UpdateThumbnailResult { total, generated, already_exists, skipped, errors, detail_file })
+    Ok(UpdateThumbnailResult { total, generated, already_exists, skipped, errors, details })
 }
 
 #[cfg(test)]
@@ -469,10 +417,8 @@ mod tests {
         .unwrap();
 
         let result = check_thumbnail(&conn, &MediaFilter::default(), None).unwrap();
-        let items: Vec<CheckThumbnailItemResult> =
-            serde_json::from_str(&fs::read_to_string(&result.detail_file).unwrap()).unwrap();
         assert_eq!(result.skipped, 1);
-        assert!(matches!(items[0].status, CheckThumbnailStatus::Skipped { .. }));
+        assert!(matches!(result.details[0].status, CheckThumbnailStatus::Skipped { .. }));
     }
 
     #[test]
@@ -684,5 +630,71 @@ mod tests {
         // ファイルも生成されていない
         let cover_dir = tmp.path().join("cover");
         assert!(!cover_dir.exists());
+    }
+
+    #[test]
+    fn test_update_thumbnail_success_generates_and_updates_db() {
+        // fake convertスクリプトを作成してPATHに追加
+        let fake_bin_dir = TempDir::new().unwrap();
+        let fake_convert = fake_bin_dir.path().join("convert");
+        // 最後の引数（出力先）に空ファイルを作成するだけのスクリプト
+        // POSIX互換の最終引数取得: for last; do true; done
+        fs::write(
+            &fake_convert,
+            "#!/bin/sh\nfor last; do true; done\ntouch \"$last\"\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&fake_convert, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+        let uuid = "test-uuid-success";
+
+        let content_dir = tmp.path().join("content");
+        fs::create_dir(&content_dir).unwrap();
+        fs::write(content_dir.join("001.jpg"), b"dummy page").unwrap();
+
+        let media = create_media(&conn, &MediaInput {
+            title: "成功ケース".to_string(),
+            media_type: MediaType::Comic,
+            path: Some(content_dir.to_str().unwrap().to_string()),
+            uuid: Some(uuid.to_string()),
+            extension: Some("jpg".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        // fakeのconvertをPATHの先頭に追加して実行
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", fake_bin_dir.path().display(), original_path);
+        let result = {
+            // SAFETY: テスト内でのみPATHを変更
+            std::env::set_var("PATH", &new_path);
+            let r = update_thumbnail(
+                &conn,
+                &MediaFilter::default(),
+                None,
+                &ThumbnailOptions { dry_run: false, force: false },
+            );
+            std::env::set_var("PATH", &original_path);
+            r
+        }
+        .unwrap();
+
+        assert_eq!(result.generated, 1);
+        assert_eq!(result.errors, 0);
+
+        // DBにthumbnail_pathが保存されている
+        let db_media = get_media(&conn, media.id).unwrap();
+        let expected_thumb = format!("{}/cover/{}.jpg", tmp.path().display(), uuid);
+        assert_eq!(db_media.thumbnail_path, Some(expected_thumb));
+
+        // coverディレクトリが作成されている
+        let cover_dir = tmp.path().join("cover");
+        assert!(cover_dir.exists());
     }
 }

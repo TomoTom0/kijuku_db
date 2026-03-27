@@ -1015,7 +1015,7 @@ fn handle_update_exist_subcommand(db_path: &str, dry_run: bool, filter_json: &st
 }
 
 fn handle_check_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
-    let params: ThumbnailParams = match serde_json::from_value(params.clone()) {
+    let params: ThumbnailParams = match ThumbnailParams::deserialize(params) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
@@ -1029,7 +1029,7 @@ fn handle_check_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> CommandR
 }
 
 fn handle_update_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
-    let params: ThumbnailParams = match serde_json::from_value(params.clone()) {
+    let params: ThumbnailParams = match ThumbnailParams::deserialize(params) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
@@ -1042,6 +1042,21 @@ fn handle_update_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> Command
     }
 }
 
+fn open_and_migrate_db_for_json_output(db_path: &str) -> Option<KijukuDB> {
+    let db = match KijukuDB::open(db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            output_response(&CommandResponse::error(format!("データベースのオープンに失敗: {}", e)));
+            return None;
+        }
+    };
+    if let Err(e) = db.migrate() {
+        output_response(&CommandResponse::error(format!("マイグレーションに失敗: {}", e)));
+        return None;
+    }
+    Some(db)
+}
+
 fn handle_check_thumbnail_subcommand(db_path: &str, filter_json: &str) {
     let filter: MediaFilter = match serde_json::from_str(filter_json) {
         Ok(f) => f,
@@ -1051,19 +1066,10 @@ fn handle_check_thumbnail_subcommand(db_path: &str, filter_json: &str) {
             return;
         }
     };
-    let db = match KijukuDB::open(db_path) {
-        Ok(db) => db,
-        Err(e) => {
-            let response = CommandResponse::error(format!("データベースのオープンに失敗: {}", e));
-            output_response(&response);
-            return;
-        }
+    let db = match open_and_migrate_db_for_json_output(db_path) {
+        Some(db) => db,
+        None => return,
     };
-    if let Err(e) = db.migrate() {
-        let response = CommandResponse::error(format!("マイグレーションに失敗: {}", e));
-        output_response(&response);
-        return;
-    }
     match db.check_thumbnail(&filter, None) {
         Ok(result) => match serde_json::to_value(result) {
             Ok(data) => output_response(&CommandResponse::success(data)),
@@ -1090,19 +1096,10 @@ fn handle_update_thumbnail_subcommand(
             return;
         }
     };
-    let db = match KijukuDB::open(db_path) {
-        Ok(db) => db,
-        Err(e) => {
-            let response = CommandResponse::error(format!("データベースのオープンに失敗: {}", e));
-            output_response(&response);
-            return;
-        }
+    let db = match open_and_migrate_db_for_json_output(db_path) {
+        Some(db) => db,
+        None => return,
     };
-    if let Err(e) = db.migrate() {
-        let response = CommandResponse::error(format!("マイグレーションに失敗: {}", e));
-        output_response(&response);
-        return;
-    }
     let thumbnail_options = ThumbnailOptions { dry_run, force };
     match db.update_thumbnail(&filter, None, &thumbnail_options) {
         Ok(result) => match serde_json::to_value(result) {
