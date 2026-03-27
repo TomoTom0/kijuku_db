@@ -1,17 +1,25 @@
 use serde_json::{json, Value};
-use std::process::{Command, Stdio};
+use std::fs;
 use std::io::Write;
-use tempfile::NamedTempFile;
+use std::process::{Command, Stdio};
+use tempfile::{NamedTempFile, TempDir};
 
 /// CLIにJSONコマンドを送信し、レスポンスを取得する
 fn execute_cli_command(db_path: &str, command: Value) -> Value {
-    let mut child = Command::new("cargo")
-        .args(&["run", "--bin", "kijuku-cli", "--", "--db", db_path])
+    execute_cli_command_with_env(db_path, command, &[])
+}
+
+/// CLIにJSONコマンドを送信し、レスポンスを取得する（環境変数追加版）
+fn execute_cli_command_with_env(db_path: &str, command: Value, env: &[(&str, &str)]) -> Value {
+    let mut cmd = Command::new("cargo");
+    cmd.args(&["run", "--bin", "kijuku-cli", "--", "--db", db_path])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("CLIの起動に失敗");
+        .stderr(Stdio::piped());
+    for (key, val) in env {
+        cmd.env(key, val);
+    }
+    let mut child = cmd.spawn().expect("CLIの起動に失敗");
 
     // 標準入力にJSONコマンドを書き込む
     let command_str = serde_json::to_string(&command).unwrap();
@@ -328,6 +336,245 @@ fn test_cli_restore() {
     }));
     assert_eq!(get_response["success"], true);
     assert_eq!(get_response["data"]["title"], "復元テスト作品");
+}
+
+#[test]
+fn test_cli_check_thumbnail_skipped_no_path() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+
+    // pathなしのメディアを作成
+    execute_cli_command(db_path, json!({
+        "operation": "createMedia",
+        "params": { "data": { "title": "pathなし", "media_type": "comic" } }
+    }));
+
+    let response = execute_cli_command(db_path, json!({
+        "operation": "checkThumbnail",
+        "params": {}
+    }));
+
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["total"], 1);
+    assert_eq!(response["data"]["skipped"], 1);
+    assert_eq!(response["data"]["ok"], 0);
+    assert_eq!(response["data"]["missing"], 0);
+    assert!(response["data"]["details"].is_array());
+}
+
+#[test]
+fn test_cli_check_thumbnail_missing() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+
+    // contentありのpathを持つメディア（thumbnail_pathなし）
+    execute_cli_command(db_path, json!({
+        "operation": "createMedia",
+        "params": {
+            "data": {
+                "title": "サムネなし",
+                "media_type": "comic",
+                "path": "/media/onepiece/vol1/content",
+                "uuid": "test-uuid-missing-thumb"
+            }
+        }
+    }));
+
+    let response = execute_cli_command(db_path, json!({
+        "operation": "checkThumbnail",
+        "params": {}
+    }));
+
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["total"], 1);
+    assert_eq!(response["data"]["missing"], 1);
+    assert_eq!(response["data"]["skipped"], 0);
+}
+
+#[test]
+fn test_cli_check_thumbnail_with_filter() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+
+    // comicとvideo各1件を作成
+    execute_cli_command(db_path, json!({
+        "operation": "createMedia",
+        "params": {
+            "data": {
+                "title": "コミック",
+                "media_type": "comic",
+                "path": "/media/onepiece/content",
+                "uuid": "uuid-comic-filter"
+            }
+        }
+    }));
+    execute_cli_command(db_path, json!({
+        "operation": "createMedia",
+        "params": { "data": { "title": "ビデオ", "media_type": "video" } }
+    }));
+
+    // comicのみを対象にフィルタ
+    let response = execute_cli_command(db_path, json!({
+        "operation": "checkThumbnail",
+        "params": { "filter": { "media_type": "comic" } }
+    }));
+
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["total"], 1);
+}
+
+#[test]
+fn test_cli_update_thumbnail_skip_no_content() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+
+    // contentなしのpathを持つメディア
+    execute_cli_command(db_path, json!({
+        "operation": "createMedia",
+        "params": {
+            "data": {
+                "title": "contentなし",
+                "media_type": "comic",
+                "path": "/media/onepiece/vol1",
+                "uuid": "test-uuid-no-content-cli"
+            }
+        }
+    }));
+
+    let response = execute_cli_command(db_path, json!({
+        "operation": "updateThumbnail",
+        "params": {}
+    }));
+
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["total"], 1);
+    assert_eq!(response["data"]["skipped"], 1);
+    assert_eq!(response["data"]["generated"], 0);
+}
+
+#[test]
+fn test_cli_update_thumbnail_dry_run_no_db_update() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+    let tmp_dir = TempDir::new().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+
+    // 001.jpgを持つcontentディレクトリを用意
+    let content_dir = tmp_dir.path().join("content");
+    fs::create_dir(&content_dir).unwrap();
+    fs::write(content_dir.join("001.jpg"), b"dummy").unwrap();
+
+    let create_response = execute_cli_command(db_path, json!({
+        "operation": "createMedia",
+        "params": {
+            "data": {
+                "title": "dry_runテスト",
+                "media_type": "comic",
+                "path": content_dir.to_str().unwrap(),
+                "uuid": "test-uuid-dryrun-cli",
+                "extension": "jpg"
+            }
+        }
+    }));
+    let media_id = create_response["data"]["id"].as_i64().unwrap();
+
+    let response = execute_cli_command(db_path, json!({
+        "operation": "updateThumbnail",
+        "params": { "thumbnail_options": { "dry_run": true, "force": false } }
+    }));
+
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["generated"], 1);
+
+    // DBのthumbnail_pathは更新されていないことを確認
+    let get_response = execute_cli_command(db_path, json!({
+        "operation": "getMedia",
+        "params": { "id": media_id }
+    }));
+    assert_eq!(get_response["success"], true);
+    assert!(get_response["data"]["thumbnail_path"].is_null());
+
+    // coverディレクトリも作成されていないことを確認
+    assert!(!tmp_dir.path().join("cover").exists());
+}
+
+#[test]
+fn test_cli_update_thumbnail_success_generates_and_updates_db() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+    let tmp_dir = TempDir::new().unwrap();
+
+    // fake convertスクリプトを作成
+    let fake_bin_dir = TempDir::new().unwrap();
+    let fake_convert = fake_bin_dir.path().join("convert");
+    fs::write(
+        &fake_convert,
+        "#!/bin/sh\nfor last; do true; done\ntouch \"$last\"\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&fake_convert, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fake_bin_dir.path().display(), original_path);
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+
+    // 001.jpgを持つcontentディレクトリを用意
+    let content_dir = tmp_dir.path().join("content");
+    fs::create_dir(&content_dir).unwrap();
+    fs::write(content_dir.join("001.jpg"), b"dummy").unwrap();
+
+    let uuid = "test-uuid-success-cli";
+    let create_response = execute_cli_command(db_path, json!({
+        "operation": "createMedia",
+        "params": {
+            "data": {
+                "title": "成功ケース",
+                "media_type": "comic",
+                "path": content_dir.to_str().unwrap(),
+                "uuid": uuid,
+                "extension": "jpg"
+            }
+        }
+    }));
+    let media_id = create_response["data"]["id"].as_i64().unwrap();
+
+    let response = execute_cli_command_with_env(
+        db_path,
+        json!({
+            "operation": "updateThumbnail",
+            "params": { "thumbnail_options": { "dry_run": false, "force": false } }
+        }),
+        &[("PATH", new_path.as_str())],
+    );
+
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["generated"], 1);
+    assert_eq!(response["data"]["errors"], 0);
+
+    // DBにthumbnail_pathが保存されている
+    let get_response = execute_cli_command(db_path, json!({
+        "operation": "getMedia",
+        "params": { "id": media_id }
+    }));
+    assert_eq!(get_response["success"], true);
+    assert!(get_response["data"]["thumbnail_path"].as_str().is_some());
+
+    // coverディレクトリが作成されている
+    assert!(tmp_dir.path().join("cover").exists());
 }
 
 #[test]

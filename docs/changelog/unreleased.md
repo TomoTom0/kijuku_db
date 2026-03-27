@@ -16,6 +16,21 @@
 
 ## Added
 
+### check-thumbnail / update-thumbnail サブコマンドの追加 (TASK-161)
+
+- `kijuku-cli check-thumbnail [--filter '{}']`: サムネイルの状態をチェック（DB・ファイル整合性確認）
+- `kijuku-cli update-thumbnail [--filter '{}'] [--dry-run] [--force]`: サムネイルを生成・更新
+- Rust SDK に `check_thumbnail()` / `update_thumbnail()` メソッドを追加
+- CLI JSON APIに `checkThumbnail` / `updateThumbnail` オペレーションを追加
+- サムネイルパスは `{pathのlast content親}/cover/{uuid}.jpg` に一貫して作成
+- ImageMagick `convert` で高さ180px固定（幅は縦横比維持）、品質85でリサイズ
+- `path` が未設定、`path` に `content` コンポーネントが含まれない、`001.{ext}` が存在しない場合はスキップ
+
+**ファイル:**
+- `rust-sdk/src/thumbnail.rs`: コアロジック（新規）
+- `rust-sdk/src/lib.rs`: モジュール追加・KijukuDBメソッド追加
+- `rust-sdk/src/bin/cli.rs`: サブコマンド・JSONハンドラ追加
+
 ### kijuku-cli に backup/list-backups/restore サブコマンドを追加 (TASK-158)
 
 - `kijuku-cli backup <db-path> [--label <label>]`: バックアップを作成しパスを出力
