@@ -52,8 +52,8 @@ kijuku-cli --db ./data/kijuku.db list-backups
 出力例：
 
 ```
-[0] 2026-03-26T12:00:00.db scope=auto label=-
-[1] 2026-03-26T12:30:00.db scope=manual label=before-migration
+[0] 2023-10-26T12-00-00.db scope=auto label=-
+[1] 2023-10-26T12-30-00.db scope=manual label=before-migration
 ```
 
 - `[N]`: インデックス番号（`restore --nth` で指定する番号）
