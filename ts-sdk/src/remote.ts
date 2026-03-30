@@ -124,7 +124,7 @@ export class RemoteKijukuDB {
   /**
    * SSH接続を確立
    */
-  private async connect(): Promise<void> {
+  private async connect(timeoutMs = 30_000): Promise<void> {
     if (this.sshClient) {
       return; // 既に接続済み
     }
@@ -142,7 +142,7 @@ export class RemoteKijukuDB {
         reject(new Error(`SSH接続エラー: ${err.message}`));
       });
 
-      client.connect(sshConfig);
+      client.connect({ ...sshConfig, readyTimeout: timeoutMs });
     });
   }
 
@@ -268,7 +268,7 @@ export class RemoteKijukuDB {
    * リモートでJSONコマンドを実行
    */
   private async executeRemoteCommand(request: CommandRequest, timeoutMs = 30_000): Promise<CommandResponse> {
-    await this.connect();
+    await this.connect(timeoutMs);
 
     try {
       // バイナリの存在確認
