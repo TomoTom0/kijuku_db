@@ -159,22 +159,30 @@ export class RemoteKijukuDB {
   /**
    * リモートでコマンドを実行
    */
-  private async execCommand(command: string): Promise<string> {
+  private async execCommand(command: string, timeoutMs = 30_000): Promise<string> {
     if (!this.sshClient) {
       throw new Error('SSH接続が確立されていません');
     }
 
     return new Promise((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
       this.sshClient!.exec(command, (err, stream) => {
         if (err) {
           reject(new Error(`コマンド実行エラー: ${err.message}`));
           return;
         }
 
+        timer = setTimeout(() => {
+          stream.destroy();
+          reject(new Error(`コマンドがタイムアウトしました (${timeoutMs}ms)`));
+        }, timeoutMs);
+
         let stdout = '';
         let stderr = '';
 
         stream.on('close', (code: number) => {
+          if (timer) clearTimeout(timer);
           if (code !== 0) {
             reject(new Error(`コマンドが失敗しました (exit code: ${code}): ${stderr}`));
           } else {
@@ -208,22 +216,28 @@ export class RemoteKijukuDB {
   /**
    * ローカルからリモートにファイルを転送
    */
-  private async uploadFile(localPath: string, remotePath: string): Promise<void> {
+  private async uploadFile(localPath: string, remotePath: string, timeoutMs = 60_000): Promise<void> {
     if (!this.sshClient) {
       throw new Error('SSH接続が確立されていません');
     }
 
     return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`ファイル転送がタイムアウトしました (${timeoutMs}ms): ${remotePath}`));
+      }, timeoutMs);
+
       this.sshClient!.sftp((err, sftp) => {
         if (err) {
+          clearTimeout(timer);
           reject(new Error(`SFTP接続エラー: ${err.message}`));
           return;
         }
 
         const localData = readFileSync(localPath);
-        sftp.writeFile(remotePath, localData, (err) => {
-          if (err) {
-            reject(new Error(`ファイル転送エラー: ${err.message}`));
+        sftp.writeFile(remotePath, localData, (writeErr) => {
+          clearTimeout(timer);
+          if (writeErr) {
+            reject(new Error(`ファイル転送エラー: ${writeErr.message}`));
           } else {
             resolve();
           }
@@ -253,7 +267,7 @@ export class RemoteKijukuDB {
   /**
    * リモートでJSONコマンドを実行
    */
-  private async executeRemoteCommand(request: CommandRequest): Promise<CommandResponse> {
+  private async executeRemoteCommand(request: CommandRequest, timeoutMs = 30_000): Promise<CommandResponse> {
     await this.connect();
 
     try {
@@ -271,7 +285,7 @@ export class RemoteKijukuDB {
       const jsonInput = JSON.stringify(request);
       const command = `echo '${jsonInput}' | ${remoteBinaryPath} --db ${remoteDbPath}`;
 
-      const output = await this.execCommand(command);
+      const output = await this.execCommand(command, timeoutMs);
       const response: CommandResponse = JSON.parse(output.trim());
 
       return response;
@@ -597,7 +611,7 @@ export class RemoteKijukuDB {
     const response = await this.executeRemoteCommand({
       operation: 'backup',
       params: { label: label ?? null },
-    });
+    }, 5 * 60_000);
     const data = this.checkResponse(response);
     return data.path;
   }
