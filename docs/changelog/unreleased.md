@@ -117,6 +117,16 @@
 
 ## Fixed
 
+### RemoteKijukuDB: execCommand・uploadFileにタイムアウトを追加 (TASK-168)
+
+- `execCommand`にタイムアウト（デフォルト30秒）を追加。タイムアウト時はSSHストリームを`stream.destroy()`でクリーンアップしてエラーを返す
+- `uploadFile`（バイナリ転送）にタイムアウト（デフォルト60秒）を追加
+- `backup()`は5分のタイムアウトで実行するよう変更。大きなDBでも余裕を持って処理できる
+- これにより、リモートバックアップが永遠に止まったように見える問題を解消
+
+**ファイル:**
+- `ts-sdk/src/remote.ts`: `execCommand` / `uploadFile` / `executeRemoteCommand` にタイムアウト追加
+
 ### `KijukuDB.restore()`がDB接続参照を更新しないバグを修正 (TASK-155)
 
 - `restore()`呼び出し後、`BackupManager`が内部でDB接続を再オープンするが、`KijukuDB`が旧参照を保持し続けるバグを修正
