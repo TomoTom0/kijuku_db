@@ -117,6 +117,18 @@
 
 ## Fixed
 
+### SQLite DBロック時のリトライ戦略を実装 (TASK-174)
+
+- バックアップ開始時に DB がロックされている場合、即エラーにならず段階的なリトライを行うよう改善
+- `BackupOptions` に以下のフィールドを追加（Rust SDK）:
+  - `busy_timeout_ms`: 1回の試行でロック解放を待つ最大時間（デフォルト: 5,000ms）
+  - `retry_intervals_ms`: リトライ間隔リスト（デフォルト: `[5_000, 10_000, 30_000, 60_000]`ms）
+- リトライ間隔リストの長さがリトライ回数を決定する（デフォルト: 4回）
+- `SQLITE_BUSY` / `SQLITE_LOCKED` 以外のエラーは即座に返す
+
+**ファイル:**
+- `rust-sdk/src/backup.rs`: `BackupOptions`・`BackupManager` にリトライ設定追加、`copy_db_to` にリトライロジック実装
+
 ### RemoteKijukuDB: backup・restoreのタイムアウトをDBサイズから自動計算 (TASK-170)
 
 - `backup(label?, timeoutMs?)` / `restore(selector?, timeoutMs?)` にオプションの `timeoutMs` 引数を追加
