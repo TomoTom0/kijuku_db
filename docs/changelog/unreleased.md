@@ -117,15 +117,22 @@
 
 ## Fixed
 
+### RemoteKijukuDB: backup・restoreのタイムアウトをDBサイズから自動計算 (TASK-170)
+
+- `backup(label?, timeoutMs?)` / `restore(selector?, timeoutMs?)` にオプションの `timeoutMs` 引数を追加
+- 省略時はリモートDBのファイルサイズを `stat` で取得し、HDD速度・バッチ設定から自動計算
+- rusqliteバックアップ設定を `5ページ/250msスリープ` から `750,000ページ/10秒スリープ` に変更。大容量DBでのバックアップ時間を大幅短縮
+- SSH接続タイムアウト（`readyTimeout`）をコマンド実行タイムアウトから分離し、常に30秒固定に
+
 ### RemoteKijukuDB: execCommand・uploadFileにタイムアウトを追加 (TASK-168)
 
 - `execCommand`にタイムアウト（デフォルト30秒）を追加。タイムアウト時はSSHストリームを`stream.destroy()`でクリーンアップしてエラーを返す
 - `uploadFile`（バイナリ転送）にタイムアウト（デフォルト60秒）を追加
-- `backup()`は5分のタイムアウトで実行するよう変更。大きなDBでも余裕を持って処理できる
-- これにより、リモートバックアップが永遠に止まったように見える問題を解消
 
 **ファイル:**
 - `ts-sdk/src/remote.ts`: `execCommand` / `uploadFile` / `executeRemoteCommand` にタイムアウト追加
+- `ts-sdk/src/remote.ts`: `backup()` / `restore()` のタイムアウト動的計算・引数追加
+- `rust-sdk/src/backup.rs`: `run_to_completion` のバッチ設定を変更
 
 ### `KijukuDB.restore()`がDB接続参照を更新しないバグを修正 (TASK-155)
 

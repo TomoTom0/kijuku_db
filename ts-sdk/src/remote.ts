@@ -122,9 +122,24 @@ export class RemoteKijukuDB {
   }
 
   /**
+   * シェルコマンド内でパスを安全に使用できるようにクォートする
+   * ~はSSHリモートの$HOMEに変換し、シングルクォートで残りを保護する
+   */
+  private escapeShellPath(filePath: string): string {
+    if (filePath.startsWith('~/')) {
+      const rest = filePath.slice(2).replace(/'/g, "'\\''");
+      return `"$HOME"/'${rest}'`;
+    }
+    if (filePath === '~') {
+      return '"$HOME"';
+    }
+    return `'${filePath.replace(/'/g, "'\\''")}'`;
+  }
+
+  /**
    * SSH接続を確立
    */
-  private async connect(timeoutMs = 30_000): Promise<void> {
+  private async connect(connectTimeoutMs = 30_000): Promise<void> {
     if (this.sshClient) {
       return; // 既に接続済み
     }
@@ -142,7 +157,7 @@ export class RemoteKijukuDB {
         reject(new Error(`SSH接続エラー: ${err.message}`));
       });
 
-      client.connect({ ...sshConfig, readyTimeout: timeoutMs });
+      client.connect({ ...sshConfig, readyTimeout: connectTimeoutMs });
     });
   }
 
@@ -202,11 +217,39 @@ export class RemoteKijukuDB {
   }
 
   /**
+   * リモートファイルのサイズを取得（バイト）
+   */
+  private async getRemoteFileSize(filePath: string): Promise<number> {
+    const output = await this.execCommand(`stat -c %s ${this.escapeShellPath(filePath)} 2>/dev/null || echo 0`);
+    return parseInt(output.trim(), 10) || 0;
+  }
+
+  /**
+   * DBサイズに基づいてバックアップのタイムアウトを計算（ms）
+   *
+   * rusqliteバックアップ設定: 750,000ページ/バッチ, 10秒スリープ
+   * HDD想定速度: 50MB/s
+   */
+  private calcBackupTimeoutMs(dbSizeBytes: number): number {
+    const PAGE_SIZE = 4096;
+    const HDD_BYTES_PER_MS = (50 * 1024 * 1024) / 1000;
+    const BATCH_PAGES = 750_000;
+    const SLEEP_PER_BATCH_MS = 10_000;
+    const MARGIN = 2;
+
+    const copyTimeMs = dbSizeBytes / HDD_BYTES_PER_MS;
+    const numBatches = Math.ceil(dbSizeBytes / (BATCH_PAGES * PAGE_SIZE));
+    const sleepTimeMs = numBatches * SLEEP_PER_BATCH_MS;
+
+    return Math.max((copyTimeMs + sleepTimeMs) * MARGIN, 60_000);
+  }
+
+  /**
    * リモートファイルの存在確認
    */
   private async checkFileExists(filePath: string): Promise<boolean> {
     try {
-      await this.execCommand(`test -f ${filePath} && echo "exists"`);
+      await this.execCommand(`test -f ${this.escapeShellPath(filePath)} && echo "exists"`);
       return true;
     } catch {
       return false;
@@ -255,20 +298,20 @@ export class RemoteKijukuDB {
     const remoteDir = remoteBinaryPath.substring(0, remoteBinaryPath.lastIndexOf('/'));
 
     // リモートにディレクトリ作成
-    await this.execCommand(`mkdir -p ${remoteDir}`);
+    await this.execCommand(`mkdir -p ${this.escapeShellPath(remoteDir)}`);
 
     // バイナリを転送
     await this.uploadFile(localBinaryPath, remoteBinaryPath);
 
     // 実行権限を付与
-    await this.execCommand(`chmod +x ${remoteBinaryPath}`);
+    await this.execCommand(`chmod +x ${this.escapeShellPath(remoteBinaryPath)}`);
   }
 
   /**
    * リモートでJSONコマンドを実行
    */
   private async executeRemoteCommand(request: CommandRequest, timeoutMs = 30_000): Promise<CommandResponse> {
-    await this.connect(timeoutMs);
+    await this.connect();
 
     try {
       // バイナリの存在確認
@@ -283,7 +326,8 @@ export class RemoteKijukuDB {
       // コマンドを実行
       const remoteDbPath = this.getRemoteDbPath();
       const jsonInput = JSON.stringify(request);
-      const command = `echo '${jsonInput}' | ${remoteBinaryPath} --db ${remoteDbPath}`;
+      const escapedJson = jsonInput.replace(/'/g, "'\\''");
+      const command = `echo '${escapedJson}' | ${this.escapeShellPath(remoteBinaryPath)} --db ${this.escapeShellPath(remoteDbPath)}`;
 
       const output = await this.execCommand(command, timeoutMs);
       const response: CommandResponse = JSON.parse(output.trim());
@@ -607,13 +651,20 @@ export class RemoteKijukuDB {
   /**
    * 手動バックアップを実行
    */
-  async backup(label?: string): Promise<string> {
-    const response = await this.executeRemoteCommand({
-      operation: 'backup',
-      params: { label: label ?? null },
-    }, 5 * 60_000);
-    const data = this.checkResponse(response);
-    return data.path;
+  async backup(label?: string, timeoutMs?: number): Promise<string> {
+    await this.connect();
+    try {
+      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
+      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
+      const response = await this.executeRemoteCommand({
+        operation: 'backup',
+        params: { label: label ?? null },
+      }, resolvedTimeoutMs);
+      const data = this.checkResponse(response);
+      return data.path;
+    } finally {
+      await this.disconnect();
+    }
   }
 
   /**
@@ -649,12 +700,21 @@ export class RemoteKijukuDB {
   /**
    * バックアップを復元
    */
-  async restore(selector: RemoteBackupSelector = { type: 'latest' }): Promise<string> {
-    const response = await this.executeRemoteCommand({
-      operation: 'restore',
-      params: { selector },
-    });
-    const data = this.checkResponse(response);
-    return data.path;
+  async restore(selector: RemoteBackupSelector = { type: 'latest' }, timeoutMs?: number): Promise<string> {
+    await this.connect();
+    try {
+      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
+      // restoreは「現在のDBの退避バックアップ」+「バックアップファイルからの復元」の2段階。
+      // バックアップファイルのサイズは事前に取得できないため、2倍のタイムアウトを設定する。
+      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes) * 2;
+      const response = await this.executeRemoteCommand({
+        operation: 'restore',
+        params: { selector },
+      }, resolvedTimeoutMs);
+      const data = this.checkResponse(response);
+      return data.path;
+    } finally {
+      await this.disconnect();
+    }
   }
 }
