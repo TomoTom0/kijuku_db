@@ -419,7 +419,7 @@ impl BackupManager {
                 tmp_dir.join(format!("{}.{}-pre_restore.db", self.db_stem, timestamp));
             let mut dst = rusqlite::Connection::open(&pre_restore_path)?;
             let bk = rusqlite::backup::Backup::new(conn, &mut dst)?;
-            bk.run_to_completion(10_000, std::time::Duration::from_millis(100), None)?;
+            bk.run_to_completion(750_000, std::time::Duration::from_secs(10), None)?;
         }
 
         // 2. バックアップを復元
@@ -428,7 +428,7 @@ impl BackupManager {
                 let src =
                     rusqlite::Connection::open_with_flags(&backup_info.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
                 let bk = rusqlite::backup::Backup::new(&src, conn)?;
-                bk.run_to_completion(10_000, std::time::Duration::from_millis(100), None)?;
+                bk.run_to_completion(750_000, std::time::Duration::from_secs(10), None)?;
             }
             BackupKind::Diff { base_id } => {
                 let base = self
@@ -444,7 +444,7 @@ impl BackupManager {
 
                 let src = rusqlite::Connection::open_with_flags(&temp_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
                 let bk = rusqlite::backup::Backup::new(&src, conn)?;
-                bk.run_to_completion(10_000, std::time::Duration::from_millis(100), None)?;
+                bk.run_to_completion(750_000, std::time::Duration::from_secs(10), None)?;
                 let _ = fs::remove_file(&temp_path);
             }
         }
@@ -607,7 +607,7 @@ impl BackupManager {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
         let bk = rusqlite::backup::Backup::new(&src_conn, &mut dst_conn)?;
-        bk.run_to_completion(10_000, std::time::Duration::from_millis(100), None)?;
+        bk.run_to_completion(750_000, std::time::Duration::from_secs(10), None)?;
         Ok(())
     }
 

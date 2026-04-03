@@ -227,14 +227,14 @@ export class RemoteKijukuDB {
   /**
    * DBサイズに基づいてバックアップのタイムアウトを計算（ms）
    *
-   * rusqliteバックアップ設定: 10,000ページ/バッチ, 100msスリープ
+   * rusqliteバックアップ設定: 750,000ページ/バッチ, 10秒スリープ
    * HDD想定速度: 50MB/s
    */
   private calcBackupTimeoutMs(dbSizeBytes: number): number {
     const PAGE_SIZE = 4096;
     const HDD_BYTES_PER_MS = (50 * 1024 * 1024) / 1000;
-    const BATCH_PAGES = 10_000;
-    const SLEEP_PER_BATCH_MS = 100;
+    const BATCH_PAGES = 750_000;
+    const SLEEP_PER_BATCH_MS = 10_000;
     const MARGIN = 2;
 
     const copyTimeMs = dbSizeBytes / HDD_BYTES_PER_MS;
