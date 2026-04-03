@@ -490,9 +490,13 @@ use kijuku_db::{KijukuDB, BackupOptions, BackupSelector, DBOptions};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = KijukuDB::open_with_options("./data/kijuku.db", DBOptions {
         backup: Some(BackupOptions {
-            enabled: true,
-            interval_ms: 3_600_000, // 1時間ごと
-            backup_dir: "./backups".to_string(),
+            enabled: Some(true),
+            interval_ms: Some(3_600_000), // 1時間ごと
+            backup_dir: Some("./backups".to_string()),
+            // DBロック時のリトライ設定（省略時はデフォルト値）
+            // busy_timeout_ms: Some(5_000),
+            // retry_intervals_ms: Some(vec![5_000, 10_000, 30_000, 60_000]),
+            ..Default::default()
         }),
         ..Default::default()
     })?;
