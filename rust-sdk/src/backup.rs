@@ -158,6 +158,10 @@ pub struct BackupOptions {
     pub max_age_days: Option<u64>,
     /// 保持ポリシー
     pub retention_policy: Option<RetentionPolicy>,
+    /// DBロック時に1回の試行で待機する最大時間（ミリ秒）
+    pub busy_timeout_ms: Option<u64>,
+    /// DBロック時のリトライ間隔（ミリ秒）のリスト。長さがリトライ回数を決定する
+    pub retry_intervals_ms: Option<Vec<u64>>,
 }
 
 impl Default for BackupOptions {
@@ -171,6 +175,8 @@ impl Default for BackupOptions {
             max_backups: None,
             max_age_days: None,
             retention_policy: None,
+            busy_timeout_ms: Some(5_000),
+            retry_intervals_ms: Some(vec![5_000, 10_000, 30_000, 60_000]),
         }
     }
 }
@@ -239,6 +245,8 @@ pub struct BackupManager {
     max_backups: Option<usize>,
     max_age_days: Option<u64>,
     retention_policy: Option<RetentionPolicy>,
+    busy_timeout_ms: u64,
+    retry_intervals_ms: Vec<u64>,
 }
 
 impl BackupManager {
@@ -262,6 +270,10 @@ impl BackupManager {
         let enabled = options.enabled.unwrap_or(true);
         let auto_enabled = options.auto_enabled.unwrap_or(true);
         let tmp_retention_secs = options.tmp_retention_secs.unwrap_or(604_800);
+        let busy_timeout_ms = options.busy_timeout_ms.unwrap_or(5_000);
+        let retry_intervals_ms = options
+            .retry_intervals_ms
+            .unwrap_or_else(|| vec![5_000, 10_000, 30_000, 60_000]);
 
         if enabled {
             fs::create_dir_all(backup_dir.join("auto"))?;
@@ -282,6 +294,8 @@ impl BackupManager {
             max_backups: options.max_backups,
             max_age_days: options.max_age_days,
             retention_policy: options.retention_policy,
+            busy_timeout_ms,
+            retry_intervals_ms,
         })
     }
 
@@ -601,13 +615,33 @@ impl BackupManager {
     // ---- private helpers ----
 
     fn copy_db_to(&self, dst_path: &Path) -> Result<()> {
+        match self.try_copy_db_to(dst_path) {
+            Ok(()) => return Ok(()),
+            Err(e) if !is_busy_error(&e) => return Err(e),
+            Err(e) => {
+                let mut last_err = e;
+                for &interval_ms in &self.retry_intervals_ms {
+                    std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+                    match self.try_copy_db_to(dst_path) {
+                        Ok(()) => return Ok(()),
+                        Err(e) if is_busy_error(&e) => last_err = e,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(last_err)
+            }
+        }
+    }
+
+    fn try_copy_db_to(&self, dst_path: &Path) -> Result<()> {
         let mut dst_conn = rusqlite::Connection::open(dst_path)?;
         let src_conn = rusqlite::Connection::open_with_flags(
             &self.db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
+        src_conn.busy_timeout(std::time::Duration::from_millis(self.busy_timeout_ms))?;
         let bk = rusqlite::backup::Backup::new(&src_conn, &mut dst_conn)?;
-        bk.run_to_completion(750_000, std::time::Duration::from_secs(10), None)?;
+        bk.run_to_completion(750_000, std::time::Duration::from_millis(100), None)?;
         Ok(())
     }
 
@@ -1220,6 +1254,16 @@ fn parse_csv_record(line: &str) -> Option<AutoRecord> {
 // ユーティリティ
 // ============================================================
 
+fn is_busy_error(err: &KijukuError) -> bool {
+    match err {
+        KijukuError::Database(rusqlite::Error::SqliteFailure(sqlite_err, _)) => {
+            sqlite_err.code == rusqlite::ffi::ErrorCode::DatabaseBusy
+                || sqlite_err.code == rusqlite::ffi::ErrorCode::DatabaseLocked
+        }
+        _ => false,
+    }
+}
+
 fn now_ms() -> Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1288,6 +1332,49 @@ mod tests {
         assert_eq!(options.enabled, Some(true));
         assert_eq!(options.auto_enabled, Some(true));
         assert!(options.retention_policy.is_none());
+        assert_eq!(options.busy_timeout_ms, Some(5_000));
+        assert_eq!(
+            options.retry_intervals_ms,
+            Some(vec![5_000, 10_000, 30_000, 60_000])
+        );
+    }
+
+    #[test]
+    fn test_backup_retry_options_custom() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = create_test_db(temp_dir.path());
+        let backup_dir = temp_dir.path().join("backups");
+
+        let options = BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            busy_timeout_ms: Some(1_000),
+            retry_intervals_ms: Some(vec![500, 1_000]),
+            ..Default::default()
+        };
+
+        let manager = BackupManager::new(&db_path, options).unwrap();
+        assert_eq!(manager.busy_timeout_ms, 1_000);
+        assert_eq!(manager.retry_intervals_ms, vec![500, 1_000]);
+    }
+
+    #[test]
+    fn test_backup_retry_options_default_fallback() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = create_test_db(temp_dir.path());
+        let backup_dir = temp_dir.path().join("backups");
+
+        let options = BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            busy_timeout_ms: None,
+            retry_intervals_ms: None,
+            ..Default::default()
+        };
+
+        let manager = BackupManager::new(&db_path, options).unwrap();
+        assert_eq!(manager.busy_timeout_ms, 5_000);
+        assert_eq!(manager.retry_intervals_ms, vec![5_000, 10_000, 30_000, 60_000]);
     }
 
     #[test]
