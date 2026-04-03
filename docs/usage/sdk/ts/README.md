@@ -382,6 +382,8 @@ console.log(`検索結果: ${results.length}件`);
 // バックアップ操作
 const backupPath = await remoteDb.backup();
 const backupPathWithLabel = await remoteDb.backup('before_import');
+// タイムアウトを明示的に指定（例: 30分）
+const backupPathWithTimeout = await remoteDb.backup('large_db', 30 * 60_000);
 
 const backups = await remoteDb.listBackups();
 backups.forEach(b => console.log(`${b.name} (${b.scope})`));
@@ -390,6 +392,8 @@ backups.forEach(b => console.log(`${b.name} (${b.scope})`));
 const restoredPath = await remoteDb.restore();
 // N番目に新しいバックアップから復元
 const restoredPath2 = await remoteDb.restore({ type: 'nth', n: 1 });
+// タイムアウトを明示的に指定
+const restoredPath3 = await remoteDb.restore({ type: 'latest' }, 30 * 60_000);
 ```
 
 **注意:**

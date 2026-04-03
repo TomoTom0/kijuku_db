@@ -890,7 +890,7 @@ SSH経由でリモートDBを操作するクラス。`KijukuDB`と同等のAPI�
 
 ### バックアップ操作
 
-#### `backup(label?: string): Promise<string>`
+#### `backup(label?: string, timeoutMs?: number): Promise<string>`
 
 リモートDBの手動バックアップを実行します。
 
@@ -899,6 +899,7 @@ SSH経由でリモートDBを操作するクラス。`KijukuDB`と同等のAPI�
 | 名前 | 型 | 必須 | 説明 |
 |------|-----|------|------|
 | `label` | `string` | | バックアップのラベル（省略時はラベルなし） |
+| `timeoutMs` | `number` | | タイムアウト（ms）。省略時はDBサイズから自動計算 |
 
 **戻り値:** `Promise<string>` - バックアップファイルのパス（リモートサーバー上）
 
@@ -907,6 +908,8 @@ SSH経由でリモートDBを操作するクラス。`KijukuDB`と同等のAPI�
 ```typescript
 const path = await remoteDb.backup();
 const pathWithLabel = await remoteDb.backup('before_import');
+// タイムアウトを明示的に指定（例: 30分）
+const pathWithTimeout = await remoteDb.backup('large_db', 30 * 60_000);
 ```
 
 ---
@@ -926,7 +929,7 @@ backups.forEach(b => console.log(`${b.name} (${b.scope})`));
 
 ---
 
-#### `restore(selector?: RemoteBackupSelector): Promise<string>`
+#### `restore(selector?: RemoteBackupSelector, timeoutMs?: number): Promise<string>`
 
 リモートDBをバックアップから復元します。
 
@@ -935,6 +938,7 @@ backups.forEach(b => console.log(`${b.name} (${b.scope})`));
 | 名前 | 型 | 必須 | 説明 |
 |------|-----|------|------|
 | `selector` | `RemoteBackupSelector` | | 復元するバックアップの選択条件（省略時: 最新） |
+| `timeoutMs` | `number` | | タイムアウト（ms）。省略時はDBサイズから自動計算 |
 
 **RemoteBackupSelector:**
 
