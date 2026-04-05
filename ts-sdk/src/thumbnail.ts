@@ -147,7 +147,8 @@ function updateMediaThumbnail(
   try {
     fs.mkdirSync(coverDir, { recursive: true });
   } catch (e) {
-    return build({ type: 'error', message: `cover/ディレクトリの作成に失敗: ${e}` });
+    const message = e instanceof Error ? e.message : String(e);
+    return build({ type: 'error', message: `cover/ディレクトリの作成に失敗: ${message}` });
   }
 
   const result = spawnSync('convert', [firstPage, '-resize', 'x180', '-quality', '85', expectedPath]);
@@ -162,7 +163,8 @@ function updateMediaThumbnail(
   try {
     updateMedia(db, media.id, { thumbnail_path: expectedPath });
   } catch (e) {
-    return build({ type: 'error', message: `DB更新に失敗: ${e}` }, expectedPath);
+    const message = e instanceof Error ? e.message : String(e);
+    return build({ type: 'error', message: `DB更新に失敗: ${message}` }, expectedPath);
   }
 
   return build({ type: 'generated' }, expectedPath);
