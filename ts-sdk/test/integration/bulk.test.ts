@@ -3,6 +3,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { KijukuDB, MediaInput } from '../../src/index.js';
+import { bulkCreateMedia as internalBulkCreate } from '../../src/bulk.js';
 
 describe('Bulk Operations', () => {
   let db: KijukuDB;
@@ -146,6 +147,34 @@ describe('Bulk Operations', () => {
       expect(retrieved2).not.toBeNull();
       expect(retrieved1?.title).toBe('コミック1');
       expect(retrieved2?.title).toBe('コミック2');
+    });
+
+    test('501件以上でも全件作成できる（バッチ分割）', () => {
+      const inputs: MediaInput[] = Array.from({ length: 501 }, (_, i) => ({
+        title: `コミック${i + 1}`,
+        media_type: 'comic' as const,
+      }));
+
+      const results = db.bulkCreateMedia(inputs);
+
+      expect(results).toHaveLength(501);
+      const allMedia = db.findMedia({});
+      expect(allMedia).toHaveLength(501);
+    });
+
+    test('バッチをまたいで前バッチはコミット済み（バッチ分割の挙動確認）', () => {
+      // maxBatchSize=2 で3件目（2バッチ目）にエラーを起こすと、1バッチ目はコミット済み
+      const validInputs: MediaInput[] = [
+        { title: 'コミック1', media_type: 'comic' },
+        { title: 'コミック2', media_type: 'comic' },
+        { title: '', media_type: 'invalid' } as MediaInput, // 3件目でエラー
+      ];
+
+      expect(() => internalBulkCreate(db['db'], validInputs, 2)).toThrow();
+
+      // 最初のバッチ（2件）はコミット済みのはず
+      const allMedia = db.findMedia({});
+      expect(allMedia).toHaveLength(2);
     });
 
     test('通常のcreateMediaとの混在が正しく処理される', () => {

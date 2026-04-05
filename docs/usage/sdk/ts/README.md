@@ -286,6 +286,46 @@ items.forEach((item: UpdateExistItemResult) => {
 - 代替拡張子が見つかった場合は `extension` も自動更新（`dry_run = false` のとき）
 - `comic` で `page_count = null` の場合、実ページ数を自動設定
 
+### サムネイル操作（checkThumbnail / updateThumbnail）
+
+#### checkThumbnail
+
+メディアのサムネイル状態をチェックします（ファイル生成は行いません）：
+
+```typescript
+const result = db.checkThumbnail({});
+console.log(`対象: ${result.total}件, OK: ${result.ok}件, 未生成: ${result.missing}件`);
+
+result.details.forEach(item => {
+  if (item.status.type !== 'ok') {
+    console.log(`[${item.id}] ${item.title}: ${item.status.type}`);
+  }
+});
+```
+
+#### updateThumbnail
+
+ImageMagick (`convert`) を使用してサムネイルを生成・更新します：
+
+```typescript
+// 全メディアのサムネイルを生成（既存はスキップ）
+const result = db.updateThumbnail({});
+console.log(`生成: ${result.generated}件, スキップ: ${result.skipped}件, エラー: ${result.errors}件`);
+
+// dry_run: 生成せずに対象を確認
+const dryResult = db.updateThumbnail({}, undefined, { dry_run: true });
+
+// force: 既存サムネイルも再生成
+const forceResult = db.updateThumbnail({ media_type: 'comic' }, undefined, { force: true });
+```
+
+**サムネイル生成のロジック:**
+- `path` が未設定 → スキップ
+- `path` に `content` コンポーネントが含まれない → スキップ
+- `{path}/001.{ext}` が存在しない → スキップ
+- サムネイルパス: `{content親}/cover/{uuid}.jpg`
+- ImageMagick `convert` で高さ 180px 固定（縦横比維持）、品質 85
+
 ### 自動バックアップ
 
 データベースの自動バックアップを設定できます：
@@ -400,6 +440,44 @@ const restoredPath3 = await remoteDb.restore({ type: 'latest' }, 30 * 60_000);
 - リモート操作は非同期（async/await）です
 - 初回実行時、リモート側にバイナリが存在しない場合は自動的に転送されます
 
+#### リモートDBでのバルク操作（重要）
+
+リモートDBでは、**1操作ごとにSSHコマンドが1回実行されます**。個別操作をループで繰り返すと接続回数が爆発的に増加し、接続がbanされる可能性があります。
+
+```typescript
+// ❌ 危険: 1000件 = 1000回のSSH呼び出し
+for (const item of largeDataset) {
+  await remoteDb.createMedia(item);  // SSHが1000回実行される
+}
+
+// ✅ 推奨: 1回のSSH呼び出しで完結
+await remoteDb.bulkCreateMedia(largeDataset);
+```
+
+バルク操作は `RemoteKijukuDB` でも同じAPIで使えます：
+
+```typescript
+// 一括作成
+const created = await remoteDb.bulkCreateMedia([
+  { title: '作品1', media_type: 'comic' },
+  { title: '作品2', media_type: 'comic' },
+  // ... 何千件でも1回のSSH呼び出し
+]);
+
+// 一括更新
+await remoteDb.bulkUpdateMedia([
+  { id: 1, data: { artist: '新しい作者名' } },
+  { id: 2, data: { series: '新しいシリーズ名' } },
+]);
+
+// 一括削除
+await remoteDb.bulkDeleteMedia([1, 2, 3, 4, 5]);
+
+// 検索結果を一括削除する場合
+const oldMedia = await remoteDb.findMedia({ source: 'deprecated' });
+await remoteDb.bulkDeleteMedia(oldMedia.map(m => m.id));
+```
+
 ### Web GUIサーバー（特殊ケース）
 
 **通常はCLIツールを使用してください：**
@@ -462,10 +540,7 @@ const options: QueryOptions = {
 # データベースファイルのパス（デフォルト値）
 DATABASE_PATH=./data/kijuku.db
 
-# クエリタイムアウト（ミリ秒）
-KIJUKU_DB_TIMEOUT=5000
-
-# SQLログ出力の有効化
+# クエリログ出力の有効化
 KIJUKU_DB_VERBOSE=true
 
 # リモートDB設定

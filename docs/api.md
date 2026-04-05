@@ -37,7 +37,7 @@
 
 | プロパティ | 型 | デフォルト | 説明 |
 |-----------|-----|-----------|------|
-| `timeout` | `number` | `5000` | クエリタイムアウト（ミリ秒） |
+| `timeout` | `number` | `5000` | SQLite ビジータイムアウト（ミリ秒）。他プロセスが DB をロック中のとき、この時間待機してから `SQLITE_BUSY` エラーを返す |
 | `readonly` | `boolean` | `false` | 読み取り専用モードで開く |
 | `verbose` | `boolean` | `false` | SQLログを標準出力に表示 |
 | `backup` | `BackupOptions` | `undefined` | 自動バックアップ設定 |
@@ -841,6 +841,82 @@ if (manager) {
 
 ---
 
+### サムネイル操作
+
+#### `checkThumbnail(filter?: MediaFilter, options?: QueryOptions): CheckThumbnailResult`
+
+フィルタで絞り込んだメディアのサムネイル状態をチェックします（ファイル生成は行いません）。
+
+**パラメータ:**
+
+| パラメータ | 型 | デフォルト | 説明 |
+|-----------|-----|-----------|------|
+| `filter` | `MediaFilter` | `{}` | 対象メディアの絞り込み条件 |
+| `options` | `QueryOptions` | | ページネーション等のオプション |
+
+**戻り値:** `CheckThumbnailResult`
+
+```typescript
+interface CheckThumbnailResult {
+  total: number;
+  ok: number;
+  missing: number;
+  file_not_found: number;
+  skipped: number;
+  details: CheckThumbnailItemResult[];
+}
+```
+
+**使用例:**
+
+```typescript
+const result = db.checkThumbnail({ media_type: 'comic' });
+console.log(`OK: ${result.ok}件, 未生成: ${result.missing}件`);
+```
+
+---
+
+#### `updateThumbnail(filter?: MediaFilter, options?: QueryOptions, thumbnailOptions?: ThumbnailOptions): UpdateThumbnailResult`
+
+フィルタで絞り込んだメディアのサムネイルを生成・更新します。ImageMagick (`convert`) が必要です。
+
+**パラメータ:**
+
+| パラメータ | 型 | デフォルト | 説明 |
+|-----------|-----|-----------|------|
+| `filter` | `MediaFilter` | `{}` | 対象メディアの絞り込み条件 |
+| `options` | `QueryOptions` | | ページネーション等のオプション |
+| `thumbnailOptions` | `ThumbnailOptions` | `{}` | サムネイル生成オプション |
+
+**ThumbnailOptions:**
+
+| プロパティ | 型 | デフォルト | 説明 |
+|-----------|-----|-----------|------|
+| `dry_run` | `boolean` | `false` | DBを更新せず結果を出力のみ |
+| `force` | `boolean` | `false` | 既存サムネイルを強制再生成 |
+
+**戻り値:** `UpdateThumbnailResult`
+
+```typescript
+interface UpdateThumbnailResult {
+  total: number;
+  generated: number;
+  already_exists: number;
+  skipped: number;
+  errors: number;
+  details: UpdateThumbnailItemResult[];
+}
+```
+
+**使用例:**
+
+```typescript
+const result = db.updateThumbnail({}, undefined, { dry_run: true });
+console.log(`生成予定: ${result.generated}件`);
+```
+
+---
+
 ### その他
 
 #### `close(): void`
@@ -1374,21 +1450,25 @@ try {
 
 ## 環境変数
 
-以下の環境変数を設定できます：
+TypeScript SDK CLI が読み込む環境変数：
 
 | 変数名 | 説明 | デフォルト |
 |--------|------|-----------|
 | `DATABASE_PATH` | データベースファイルのパス | `./kijuku.db` |
-| `KIJUKU_DB_TIMEOUT` | タイムアウト時間（ミリ秒） | `5000` |
-| `KIJUKU_DB_VERBOSE` | SQLログ出力 | `false` |
+| `KIJUKU_DB_VERBOSE` | SQLログ出力（`true` で有効） | `false` |
 
 **設定例:**
 
 ```bash
 export DATABASE_PATH=/var/lib/kijuku/kijuku.db
-export KIJUKU_DB_TIMEOUT=10000
 export KIJUKU_DB_VERBOSE=true
 ```
+
+> **Rust CLI の場合:** `KIJUKU_DB_VERBOSE` 環境変数ではなく `--verbose` フラグを使用してください。
+>
+> ```bash
+> kijuku-cli --db ./kijuku.db --verbose update-exist
+> ```
 
 ---
 

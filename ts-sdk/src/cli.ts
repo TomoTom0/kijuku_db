@@ -148,9 +148,14 @@ function parseArgs(args: string[]): {
   for (let i = 1; i < args.length; i++) {
     if (args[i].startsWith('--')) {
       const key = args[i].slice(2);
-      const value = args[i + 1] || '';
-      options[key] = value;
-      i++;
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('--')) {
+        // 値なしフラグ（例: --verbose, --dry-run）
+        options[key] = 'true';
+      } else {
+        options[key] = next;
+        i++;
+      }
     }
   }
 
@@ -200,7 +205,7 @@ export function parseDbPath(dbPath: string): {
  * @param dbPath - データベースパス
  * @returns KijukuDB または RemoteKijukuDB
  */
-export function createDatabase(dbPath: string): KijukuDB | RemoteKijukuDB {
+export function createDatabase(dbPath: string, verbose = false): KijukuDB | RemoteKijukuDB {
   const parsed = parseDbPath(dbPath);
 
   if (parsed.isRemote) {
@@ -211,7 +216,7 @@ export function createDatabase(dbPath: string): KijukuDB | RemoteKijukuDB {
     });
   } else {
     // ローカルDB
-    return new KijukuDB(parsed.localPath!);
+    return new KijukuDB(parsed.localPath!, { verbose });
   }
 }
 
@@ -238,7 +243,8 @@ async function runMigrate(options: Record<string, string>): Promise<void> {
       console.log(`マイグレーション完了 (バージョン: ${version})`);
     } else {
       // ローカルDB
-      const db = new KijukuDB(parsed.localPath!);
+      const verbose = options.verbose === 'true';
+      const db = new KijukuDB(parsed.localPath!, { verbose });
       db.migrate();
 
       const version = db.getSchemaVersion();
@@ -260,7 +266,7 @@ async function runSearch(options: Record<string, string>): Promise<void> {
   const parsed = parseDbPath(dbPath);
 
   try {
-    const db = createDatabase(dbPath);
+    const db = createDatabase(dbPath, options.verbose === 'true');
 
     // フィルタ条件を構築
     const filter: any = {};
@@ -325,7 +331,7 @@ async function runImport(options: Record<string, string>): Promise<void> {
   }
 
   try {
-    const db = createDatabase(dbPath);
+    const db = createDatabase(dbPath, options.verbose === 'true');
     const ext = path.extname(filePath).toLowerCase();
     const content = fs.readFileSync(filePath, 'utf-8');
 
@@ -458,7 +464,7 @@ async function runServer(options: Record<string, string>): Promise<void> {
   }
 
   try {
-    const db = new KijukuDB(parsed.localPath!);
+    const db = new KijukuDB(parsed.localPath!, { verbose: options.verbose === 'true' });
     db.migrate();
 
     const port = options.port ? parseInt(options.port, 10) : 40001;
