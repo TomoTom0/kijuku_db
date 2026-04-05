@@ -170,6 +170,63 @@ export interface BackupOptions {
 }
 
 /**
+ * サムネイル操作オプション
+ */
+export interface ThumbnailOptions {
+  /** trueの場合、DBを更新せず結果を出力のみ（updateThumbnailのみ有効） */
+  dry_run?: boolean;
+  /** trueの場合、既にサムネイルが存在しても再生成する（updateThumbnailのみ有効） */
+  force?: boolean;
+}
+
+export type CheckThumbnailStatus =
+  | { type: 'ok' }
+  | { type: 'skipped'; reason: string }
+  | { type: 'missing' }
+  | { type: 'fileNotFound' };
+
+export interface CheckThumbnailItemResult {
+  id: number;
+  uuid: string;
+  title: string;
+  expected_path?: string;
+  current_path?: string;
+  status: CheckThumbnailStatus;
+}
+
+export interface CheckThumbnailResult {
+  total: number;
+  ok: number;
+  missing: number;
+  file_not_found: number;
+  skipped: number;
+  details: CheckThumbnailItemResult[];
+}
+
+export type UpdateThumbnailStatus =
+  | { type: 'generated' }
+  | { type: 'alreadyExists' }
+  | { type: 'skipped'; reason: string }
+  | { type: 'error'; message: string };
+
+export interface UpdateThumbnailItemResult {
+  id: number;
+  uuid: string;
+  title: string;
+  thumbnail_path?: string;
+  status: UpdateThumbnailStatus;
+}
+
+export interface UpdateThumbnailResult {
+  total: number;
+  generated: number;
+  already_exists: number;
+  skipped: number;
+  errors: number;
+  details: UpdateThumbnailItemResult[];
+}
+
+/**
  * データベース接続オプション
  */
 export interface DBOptions {

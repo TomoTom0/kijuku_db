@@ -3,40 +3,46 @@ use crate::error::Result;
 use crate::types::{BulkUpdateItem, Media, MediaInput};
 use rusqlite::Connection;
 
+const DEFAULT_MAX_BATCH_SIZE: usize = 500;
+
 /// 複数のメディアを一括作成
+///
+/// 大量データでのDBロック長期化を防ぐため、DEFAULT_MAX_BATCH_SIZE件ごとに
+/// トランザクションを分割して処理する。
 pub fn bulk_create_media(conn: &Connection, data_list: &[MediaInput]) -> Result<Vec<Media>> {
     if data_list.is_empty() {
         return Ok(Vec::new());
     }
 
-    // トランザクション内で一括処理
-    let tx = conn.unchecked_transaction()?;
-
     let mut results = Vec::new();
-    for data in data_list {
-        let media = create_media(&tx, data)?;
-        results.push(media);
+    for chunk in data_list.chunks(DEFAULT_MAX_BATCH_SIZE) {
+        let tx = conn.unchecked_transaction()?;
+        for data in chunk {
+            let media = create_media(&tx, data)?;
+            results.push(media);
+        }
+        tx.commit()?;
     }
-
-    tx.commit()?;
 
     Ok(results)
 }
 
 /// 複数のメディアを一括削除
+///
+/// 大量データでのDBロック長期化を防ぐため、DEFAULT_MAX_BATCH_SIZE件ごとに
+/// トランザクションを分割して処理する。
 pub fn bulk_delete_media(conn: &Connection, ids: &[i64]) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
     }
 
-    // トランザクション内で一括処理
-    let tx = conn.unchecked_transaction()?;
-
-    for id in ids {
-        delete_media(&tx, *id)?;
+    for chunk in ids.chunks(DEFAULT_MAX_BATCH_SIZE) {
+        let tx = conn.unchecked_transaction()?;
+        for id in chunk {
+            delete_media(&tx, *id)?;
+        }
+        tx.commit()?;
     }
-
-    tx.commit()?;
 
     Ok(())
 }
@@ -44,19 +50,20 @@ pub fn bulk_delete_media(conn: &Connection, ids: &[i64]) -> Result<()> {
 /// 複数のメディアを一括更新（部分更新）
 ///
 /// MediaUpdateInputを使用して、指定されたフィールドのみを更新します。
+/// 大量データでのDBロック長期化を防ぐため、DEFAULT_MAX_BATCH_SIZE件ごとに
+/// トランザクションを分割して処理する。
 pub fn bulk_update_media(conn: &Connection, updates: &[BulkUpdateItem]) -> Result<()> {
     if updates.is_empty() {
         return Ok(());
     }
 
-    // トランザクション内で一括処理
-    let tx = conn.unchecked_transaction()?;
-
-    for item in updates {
-        update_media(&tx, item.id, &item.data)?;
+    for chunk in updates.chunks(DEFAULT_MAX_BATCH_SIZE) {
+        let tx = conn.unchecked_transaction()?;
+        for item in chunk {
+            update_media(&tx, item.id, &item.data)?;
+        }
+        tx.commit()?;
     }
-
-    tx.commit()?;
 
     Ok(())
 }

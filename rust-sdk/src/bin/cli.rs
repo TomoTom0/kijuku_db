@@ -220,6 +220,12 @@ struct RestoreParams {
     selector: Option<BackupSelectorJson>,
 }
 
+/// CLIのグローバルコンテキスト
+struct CliContext {
+    db_path: String,
+    verbose: bool,
+}
+
 /// BackupInfoをJSON Valueに変換
 fn backup_info_to_json(info: &BackupInfo) -> serde_json::Value {
     let scope = match info.scope {
@@ -299,6 +305,10 @@ struct Cli {
     #[arg(long, default_value = "kijuku.db")]
     db: String,
 
+    /// 実行したSQLをstderrに出力する
+    #[arg(long)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -364,8 +374,8 @@ enum Commands {
     },
 }
 
-async fn handle_server(db_path: &str, port: u16, password: Option<String>) {
-    match kijuku_db::KijukuDB::open(db_path) {
+async fn handle_server(ctx: &CliContext, port: u16, password: Option<String>) {
+    match kijuku_db::KijukuDB::open_with_options(&ctx.db_path, DBOptions { verbose: ctx.verbose, ..Default::default() }) {
         Ok(db) => {
             if let Err(e) = db.migrate() {
                 eprintln!("マイグレーションエラー: {}", e);
@@ -385,11 +395,12 @@ async fn handle_server(db_path: &str, port: u16, password: Option<String>) {
     }
 }
 
-fn open_db_with_backup(db_path: &str) -> Option<KijukuDB> {
+fn open_db_with_backup(ctx: &CliContext) -> Option<KijukuDB> {
     match KijukuDB::open_with_options(
-        db_path,
+        &ctx.db_path,
         DBOptions {
             backup: Some(BackupOptions::default()),
+            verbose: ctx.verbose,
             ..Default::default()
         },
     ) {
@@ -401,8 +412,8 @@ fn open_db_with_backup(db_path: &str) -> Option<KijukuDB> {
     }
 }
 
-fn open_and_migrate_db(db_path: &str) -> Option<KijukuDB> {
-    let db = open_db_with_backup(db_path)?;
+fn open_and_migrate_db(ctx: &CliContext) -> Option<KijukuDB> {
+    let db = open_db_with_backup(ctx)?;
     if let Err(e) = db.migrate() {
         eprintln!("マイグレーションに失敗: {}", e);
         return None;
@@ -410,8 +421,8 @@ fn open_and_migrate_db(db_path: &str) -> Option<KijukuDB> {
     Some(db)
 }
 
-fn handle_backup_subcommand(db_path: &str, label: Option<String>) {
-    let db = match open_and_migrate_db(db_path) {
+fn handle_backup_subcommand(ctx: &CliContext, label: Option<String>) {
+    let db = match open_and_migrate_db(ctx) {
         Some(db) => db,
         None => return,
     };
@@ -427,8 +438,8 @@ fn handle_backup_subcommand(db_path: &str, label: Option<String>) {
     }
 }
 
-fn handle_list_backups_subcommand(db_path: &str) {
-    let db = match open_and_migrate_db(db_path) {
+fn handle_list_backups_subcommand(ctx: &CliContext) {
+    let db = match open_and_migrate_db(ctx) {
         Some(db) => db,
         None => return,
     };
@@ -452,8 +463,8 @@ fn handle_list_backups_subcommand(db_path: &str) {
     }
 }
 
-fn handle_restore_subcommand(db_path: &str, nth: Option<usize>) {
-    let mut db = match open_and_migrate_db(db_path) {
+fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>) {
+    let mut db = match open_and_migrate_db(ctx) {
         Some(db) => db,
         None => return,
     };
@@ -467,7 +478,7 @@ fn handle_restore_subcommand(db_path: &str, nth: Option<usize>) {
     }
 }
 
-fn handle_stdin(db_path: &str) {
+fn handle_stdin(ctx: &CliContext) {
     // 標準入力からJSONコマンドを読み取る
     let mut input = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut input) {
@@ -488,9 +499,10 @@ fn handle_stdin(db_path: &str) {
 
     // データベースを開く（バックアップ有効）
     let mut db = match KijukuDB::open_with_options(
-        db_path,
+        &ctx.db_path,
         DBOptions {
             backup: Some(BackupOptions::default()),
+            verbose: ctx.verbose,
             ..Default::default()
         },
     ) {
@@ -517,35 +529,38 @@ fn handle_stdin(db_path: &str) {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let db_path = &cli.db;
+    let ctx = CliContext {
+        db_path: cli.db.clone(),
+        verbose: cli.verbose,
+    };
 
     match &cli.command {
         Some(Commands::Docs { doc_type }) => {
             show_docs(doc_type);
         }
         Some(Commands::Server { port, password }) => {
-            handle_server(db_path, *port, password.clone()).await;
+            handle_server(&ctx, *port, password.clone()).await;
         }
         Some(Commands::UpdateExist { dry_run, filter }) => {
-            handle_update_exist_subcommand(db_path, *dry_run, filter);
+            handle_update_exist_subcommand(&ctx, *dry_run, filter);
         }
         Some(Commands::CheckThumbnail { filter }) => {
-            handle_check_thumbnail_subcommand(db_path, filter);
+            handle_check_thumbnail_subcommand(&ctx, filter);
         }
         Some(Commands::UpdateThumbnail { dry_run, force, filter }) => {
-            handle_update_thumbnail_subcommand(db_path, *dry_run, *force, filter);
+            handle_update_thumbnail_subcommand(&ctx, *dry_run, *force, filter);
         }
         Some(Commands::Backup { label }) => {
-            handle_backup_subcommand(db_path, label.clone());
+            handle_backup_subcommand(&ctx, label.clone());
         }
         Some(Commands::ListBackups) => {
-            handle_list_backups_subcommand(db_path);
+            handle_list_backups_subcommand(&ctx);
         }
         Some(Commands::Restore { nth }) => {
-            handle_restore_subcommand(db_path, *nth);
+            handle_restore_subcommand(&ctx, *nth);
         }
         None => {
-            handle_stdin(db_path);
+            handle_stdin(&ctx);
         }
     }
 }
@@ -976,7 +991,7 @@ fn handle_update_exist(db: &KijukuDB, params: &serde_json::Value) -> CommandResp
     }
 }
 
-fn handle_update_exist_subcommand(db_path: &str, dry_run: bool, filter_json: &str) {
+fn handle_update_exist_subcommand(ctx: &CliContext, dry_run: bool, filter_json: &str) {
     let filter: MediaFilter = match serde_json::from_str(filter_json) {
         Ok(f) => f,
         Err(e) => {
@@ -986,7 +1001,7 @@ fn handle_update_exist_subcommand(db_path: &str, dry_run: bool, filter_json: &st
         }
     };
 
-    let db = match KijukuDB::open(db_path) {
+    let db = match KijukuDB::open_with_options(&ctx.db_path, DBOptions { verbose: ctx.verbose, ..Default::default() }) {
         Ok(db) => db,
         Err(e) => {
             let response = CommandResponse::error(format!("データベースのオープンに失敗: {}", e));
@@ -1042,8 +1057,8 @@ fn handle_update_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> Command
     }
 }
 
-fn open_and_migrate_db_for_json_output(db_path: &str) -> Option<KijukuDB> {
-    let db = match KijukuDB::open(db_path) {
+fn open_and_migrate_db_for_json_output(ctx: &CliContext) -> Option<KijukuDB> {
+    let db = match KijukuDB::open_with_options(&ctx.db_path, DBOptions { verbose: ctx.verbose, ..Default::default() }) {
         Ok(db) => db,
         Err(e) => {
             output_response(&CommandResponse::error(format!("データベースのオープンに失敗: {}", e)));
@@ -1057,7 +1072,7 @@ fn open_and_migrate_db_for_json_output(db_path: &str) -> Option<KijukuDB> {
     Some(db)
 }
 
-fn handle_check_thumbnail_subcommand(db_path: &str, filter_json: &str) {
+fn handle_check_thumbnail_subcommand(ctx: &CliContext, filter_json: &str) {
     let filter: MediaFilter = match serde_json::from_str(filter_json) {
         Ok(f) => f,
         Err(e) => {
@@ -1066,7 +1081,7 @@ fn handle_check_thumbnail_subcommand(db_path: &str, filter_json: &str) {
             return;
         }
     };
-    let db = match open_and_migrate_db_for_json_output(db_path) {
+    let db = match open_and_migrate_db_for_json_output(ctx) {
         Some(db) => db,
         None => return,
     };
@@ -1082,12 +1097,7 @@ fn handle_check_thumbnail_subcommand(db_path: &str, filter_json: &str) {
     }
 }
 
-fn handle_update_thumbnail_subcommand(
-    db_path: &str,
-    dry_run: bool,
-    force: bool,
-    filter_json: &str,
-) {
+fn handle_update_thumbnail_subcommand(ctx: &CliContext, dry_run: bool, force: bool, filter_json: &str) {
     let filter: MediaFilter = match serde_json::from_str(filter_json) {
         Ok(f) => f,
         Err(e) => {
@@ -1096,7 +1106,7 @@ fn handle_update_thumbnail_subcommand(
             return;
         }
     };
-    let db = match open_and_migrate_db_for_json_output(db_path) {
+    let db = match open_and_migrate_db_for_json_output(ctx) {
         Some(db) => db,
         None => return,
     };

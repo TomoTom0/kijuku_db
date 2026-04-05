@@ -104,7 +104,7 @@ impl KijukuDB {
     /// * `options` - データベース接続オプション
     pub fn open_with_options<P: AsRef<Path>>(path: P, options: DBOptions) -> Result<Self> {
         let path_ref = path.as_ref();
-        let conn = if options.readonly {
+        let mut conn = if options.readonly {
             Connection::open_with_flags(
                 path_ref,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -113,6 +113,10 @@ impl KijukuDB {
             Connection::open(path_ref)?
         };
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+
+        if options.verbose {
+            conn.trace(Some(|sql: &str| eprintln!("[SQL] {sql}")));
+        }
 
         // バックアップマネージャーの初期化
         let backup_manager = if let Some(backup_opts) = options.backup.clone() {

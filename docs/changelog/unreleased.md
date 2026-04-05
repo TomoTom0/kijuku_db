@@ -16,6 +16,41 @@
 
 ## Added
 
+### TypeScript SDK に checkThumbnail / updateThumbnail を追加
+
+- `KijukuDB.checkThumbnail(filter?, options?)`: サムネイル状態をチェック（ファイル生成なし）
+- `KijukuDB.updateThumbnail(filter?, options?, thumbnailOptions?)`: ImageMagick でサムネイルを生成・更新
+- `RemoteKijukuDB.checkThumbnail()` / `RemoteKijukuDB.updateThumbnail()`: SSH 経由の対応メソッドを追加
+- 型定義: `ThumbnailOptions`, `CheckThumbnailResult`, `UpdateThumbnailResult` 等を `types.ts` に追加
+
+**ファイル:**
+- `ts-sdk/src/thumbnail.ts`: コアロジック（新規）
+- `ts-sdk/src/index.ts`: `KijukuDB` にメソッド追加
+- `ts-sdk/src/remote.ts`: `RemoteKijukuDB` にメソッド追加
+- `ts-sdk/src/types.ts`: 型定義追加
+
+### --verbose フラグを Rust CLI に追加
+
+- `kijuku-cli --verbose`: 実行した SQL を stderr に出力（デバッグ用）
+- rusqlite の `trace` 機能（feature `"trace"`）を使用
+- 全サブコマンドおよび stdin モードで有効
+
+**ファイル:**
+- `rust-sdk/src/bin/cli.rs`: `--verbose` フラグ追加、全ヘルパーに伝播
+- `rust-sdk/src/lib.rs`: `open_with_options` で `conn.trace()` を設定
+- `rust-sdk/Cargo.toml`: rusqlite feature に `"trace"` を追加
+
+### TypeScript CLI に --verbose フラグを追加
+
+- `kijuku-cli ... --verbose`: TypeScript CLI でも `--verbose` フラグで SQL ログを有効化
+- `parseArgs` をブールフラグ対応に修正（値なしの `--verbose` が正しく動作するよう改善）
+- 環境変数 `KIJUKU_DB_VERBOSE=true` でも引き続き有効
+
+**ファイル:**
+- `ts-sdk/src/cli.ts`: `parseArgs` 修正、`--verbose` フラグの伝播
+
+
+
 ### check-thumbnail / update-thumbnail サブコマンドの追加 (TASK-161)
 
 - `kijuku-cli check-thumbnail [--filter '{}']`: サムネイルの状態をチェック（DB・ファイル整合性確認）
@@ -186,6 +221,16 @@
 
 - CLIコマンド名を`serve`から`server`に変更（TypeScript SDK）
 - サーバーはCtrl+Cでグレースフルシャットダウン可能
+
+### bulkCreateMedia / bulkDeleteMedia / bulkUpdateMedia のバッチ分割処理
+
+- 大量データでの DB ロック長期化・タイムアウト異常終了を防ぐため、内部で 500 件ごとにトランザクションを分割して処理するよう変更
+- 公開 API の変更なし（TS SDK では `maxBatchSize` パラメータを追加、デフォルト 500）
+- **挙動変化**: 501 件以上の場合、先行バッチが commit 済みの状態でエラーが発生しうる（完全な all-or-nothing ではなくなる）
+
+**ファイル:**
+- `ts-sdk/src/bulk.ts`
+- `rust-sdk/src/bulk.rs`
 
 ## Technical Notes
 

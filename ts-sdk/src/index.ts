@@ -22,6 +22,12 @@ import * as attribute from './attribute.js';
 import { BackupManager, BackupSelector } from './backup.js';
 import type { BackupInfo } from './backup.js';
 import * as updateExistModule from './update_exist.js';
+import * as thumbnailModule from './thumbnail.js';
+import type {
+  ThumbnailOptions,
+  CheckThumbnailResult,
+  UpdateThumbnailResult,
+} from './types.js';
 
 export * from './types.js';
 export type { UpdateExistOptions, UpdateExistItemResult, UpdateExistResult } from './update_exist.js';
@@ -348,6 +354,33 @@ export class KijukuDB {
     updateOptions: updateExistModule.UpdateExistOptions = { dry_run: false }
   ): updateExistModule.UpdateExistResult {
     return updateExistModule.updateExist(this.db, filter, options, updateOptions);
+  }
+
+  /**
+   * フィルタで絞り込んだメディアのサムネイル状態をチェックする
+   */
+  checkThumbnail(
+    filter: MediaFilter = {},
+    options?: QueryOptions,
+  ): CheckThumbnailResult {
+    return thumbnailModule.checkThumbnail(this.db, filter, options);
+  }
+
+  /**
+   * フィルタで絞り込んだメディアのサムネイルを生成・更新する
+   */
+  updateThumbnail(
+    filter: MediaFilter = {},
+    options?: QueryOptions,
+    thumbnailOptions: ThumbnailOptions = {},
+  ): UpdateThumbnailResult {
+    const result = thumbnailModule.updateThumbnail(this.db, filter, options, thumbnailOptions);
+    if (result.generated > 0) {
+      this.backupManager?.recordOperation().catch((err) => {
+        console.error('Backup operation failed:', err);
+      });
+    }
+    return result;
   }
 
   /**

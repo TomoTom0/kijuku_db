@@ -373,7 +373,6 @@ db.pragma('journal_mode = WAL');     // WALモードで安全性向上
 
 ```bash
 DATABASE_PATH=/path/to/kijuku.db
-KIJUKU_DB_TIMEOUT=5000
 KIJUKU_DB_VERBOSE=false
 ```
 
