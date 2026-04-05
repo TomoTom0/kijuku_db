@@ -10,7 +10,7 @@ keywords = ["database", "media", "sqlite", "sdk"]
 categories = ["database"]
 
 [dependencies]
-rusqlite = { version = "0.32", features = ["bundled", "chrono", "backup"] }
+rusqlite = { version = "0.32", features = ["bundled", "chrono", "backup", "trace"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }

@@ -2,6 +2,10 @@
 
 大量のデータを効率的に処理する方法を解説します。
 
+> **リモートDBを使う場合は必読**: `RemoteKijukuDB` では1操作ごとにSSH呼び出しが発生します。
+> 個別操作のループは接続数が爆発し、接続がbanされる原因になります。
+> 必ずバルク操作（`bulkCreateMedia` / `bulkUpdateMedia` / `bulkDeleteMedia`）を使ってください。
+
 ## 複数メディアの一括作成
 
 ### bulkCreateMediaの使用
@@ -203,14 +207,13 @@ bulkCreateWithProgress(largeData);
 // シリーズ内のすべてのメディアに言語情報を追加
 const onePiece = db.findMedia({ series: 'ワンピース' });
 
-db.transaction(() => {
-  onePiece.forEach(media => {
-    db.updateMedia(media.id, {
-      language: 'ja',
-      source: 'bookwalker',
-    });
-  });
-});
+// ✅ bulkUpdateMediaを使う（ローカル・リモート共通で推奨）
+db.bulkUpdateMedia(
+  onePiece.map(m => ({
+    id: m.id,
+    data: { language: 'ja', source: 'bookwalker' },
+  }))
+);
 
 console.log(`${onePiece.length}件を更新しました`);
 ```
@@ -221,19 +224,16 @@ console.log(`${onePiece.length}件を更新しました`);
 // 古いパスを新しいパスに置き換える
 const allMedia = db.findMedia({});
 
-db.transaction(() => {
-  let updated = 0;
-  
-  allMedia.forEach(media => {
-    if (media.path && media.path.startsWith('/old/path/')) {
-      const newPath = media.path.replace('/old/path/', '/new/path/');
-      db.updateMedia(media.id, { path: newPath });
-      updated++;
-    }
-  });
-  
-  console.log(`${updated}件のパスを更新しました`);
-});
+const updates = allMedia
+  .filter(m => m.path?.startsWith('/old/path/'))
+  .map(m => ({
+    id: m.id,
+    data: { path: m.path!.replace('/old/path/', '/new/path/') },
+  }));
+
+db.bulkUpdateMedia(updates);
+
+console.log(`${updates.length}件のパスを更新しました`);
 ```
 
 ## 一括削除
@@ -244,11 +244,8 @@ db.transaction(() => {
 // テストデータを削除
 const testMedia = db.findMedia({ source: 'test' });
 
-db.transaction(() => {
-  testMedia.forEach(media => {
-    db.deleteMedia(media.id);
-  });
-});
+// ✅ bulkDeleteMediaを使う（ローカル・リモート共通で推奨）
+db.bulkDeleteMedia(testMedia.map(m => m.id));
 
 console.log(`${testMedia.length}件のテストデータを削除しました`);
 ```

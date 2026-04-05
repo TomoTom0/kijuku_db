@@ -25,7 +25,7 @@ describe('createDatabase', () => {
       createDatabase(dbPath);
 
       expect(KijukuDB).toHaveBeenCalledTimes(1);
-      expect(KijukuDB).toHaveBeenCalledWith(dbPath);
+      expect(KijukuDB).toHaveBeenCalledWith(dbPath, { verbose: false });
       expect(RemoteKijukuDB).not.toHaveBeenCalled();
     });
 
@@ -34,7 +34,7 @@ describe('createDatabase', () => {
       createDatabase(dbPath);
 
       expect(KijukuDB).toHaveBeenCalledTimes(1);
-      expect(KijukuDB).toHaveBeenCalledWith(dbPath);
+      expect(KijukuDB).toHaveBeenCalledWith(dbPath, { verbose: false });
       expect(RemoteKijukuDB).not.toHaveBeenCalled();
     });
 
@@ -43,7 +43,7 @@ describe('createDatabase', () => {
       createDatabase(dbPath);
 
       expect(KijukuDB).toHaveBeenCalledTimes(1);
-      expect(KijukuDB).toHaveBeenCalledWith(dbPath);
+      expect(KijukuDB).toHaveBeenCalledWith(dbPath, { verbose: false });
       expect(RemoteKijukuDB).not.toHaveBeenCalled();
     });
 
@@ -52,7 +52,7 @@ describe('createDatabase', () => {
       createDatabase(dbPath);
 
       expect(KijukuDB).toHaveBeenCalledTimes(1);
-      expect(KijukuDB).toHaveBeenCalledWith(dbPath);
+      expect(KijukuDB).toHaveBeenCalledWith(dbPath, { verbose: false });
       expect(RemoteKijukuDB).not.toHaveBeenCalled();
     });
 
@@ -61,7 +61,7 @@ describe('createDatabase', () => {
       createDatabase(dbPath);
 
       expect(KijukuDB).toHaveBeenCalledTimes(1);
-      expect(KijukuDB).toHaveBeenCalledWith(dbPath);
+      expect(KijukuDB).toHaveBeenCalledWith(dbPath, { verbose: false });
       expect(RemoteKijukuDB).not.toHaveBeenCalled();
     });
 
@@ -70,7 +70,7 @@ describe('createDatabase', () => {
       createDatabase(dbPath);
 
       expect(KijukuDB).toHaveBeenCalledTimes(1);
-      expect(KijukuDB).toHaveBeenCalledWith(dbPath);
+      expect(KijukuDB).toHaveBeenCalledWith(dbPath, { verbose: false });
       expect(RemoteKijukuDB).not.toHaveBeenCalled();
     });
   });
@@ -167,7 +167,7 @@ describe('createDatabase', () => {
       createDatabase(dbPath);
 
       expect(KijukuDB).toHaveBeenCalledTimes(1);
-      expect(KijukuDB).toHaveBeenCalledWith('');
+      expect(KijukuDB).toHaveBeenCalledWith('', { verbose: false });
       expect(RemoteKijukuDB).not.toHaveBeenCalled();
     });
   });

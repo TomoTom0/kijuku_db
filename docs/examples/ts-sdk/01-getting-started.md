@@ -170,7 +170,6 @@ const db = new KijukuDB('./data/myapp.db', {
 
 ```bash
 DATABASE_PATH=./data/myapp.db
-KIJUKU_DB_TIMEOUT=5000
 KIJUKU_DB_VERBOSE=false
 ```
 

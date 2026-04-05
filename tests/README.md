@@ -26,6 +26,7 @@ ts-sdk/test/
     migration.test.ts        - マイグレーション・スキーマバージョン
     search.test.ts           - 検索・フィルタ・ソート・ページネーション
     tag.test.ts              - タグCRUD・メディアへの紐付け・使用統計
+    thumbnail.test.ts        - checkThumbnail・updateThumbnail・resolveThumbnailPath
     transaction.test.ts      - トランザクション
     update-exist.test.ts     - flag_exist の更新ロジック
     workflow.test.ts         - migrate → import → search の操作フロー
@@ -74,6 +75,7 @@ cd rust-sdk && cargo test --test backup_test
 | flag_exist 更新の変更 | `ts-sdk/test/integration/update-exist.test.ts` |
 | 検索・フィルタの変更 | `ts-sdk/test/integration/search.test.ts` |
 | 一括操作の変更 | `ts-sdk/test/integration/bulk.test.ts` |
+| サムネイル機能の変更 | `ts-sdk/test/integration/thumbnail.test.ts` |
 | マイグレーションの変更 | `ts-sdk/test/integration/migration.test.ts` |
 | エラーハンドリングの変更 | `ts-sdk/test/unit/error-handling.test.ts`, `ts-sdk/test/integration/errors.test.ts` |
 | CLIコマンドの変更 | `rust-sdk/tests/cli_integration_test.rs`, `ts-sdk/test/integration/workflow.test.ts` |

@@ -19,6 +19,7 @@ import type {
 } from './types.js';
 import type { UpdateExistOptions, UpdateExistResult } from './update_exist.js';
 import type { BackupInfo, BackupScope, BackupKind } from './backup.js';
+import type { ThumbnailOptions, CheckThumbnailResult, UpdateThumbnailResult } from './types.js';
 
 /**
  * バックアップセレクター
@@ -643,6 +644,43 @@ export class RemoteKijukuDB {
         filter,
         options: options ?? null,
         update_options: updateOptions,
+      },
+    });
+    return this.checkResponse(response);
+  }
+
+  /**
+   * フィルタで絞り込んだメディアのサムネイル状態をチェックする
+   */
+  async checkThumbnail(
+    filter: MediaFilter = {},
+    options?: QueryOptions,
+  ): Promise<CheckThumbnailResult> {
+    const response = await this.executeRemoteCommand({
+      operation: 'checkThumbnail',
+      params: {
+        filter,
+        options: options ?? null,
+        thumbnail_options: {},
+      },
+    });
+    return this.checkResponse(response);
+  }
+
+  /**
+   * フィルタで絞り込んだメディアのサムネイルを生成・更新する
+   */
+  async updateThumbnail(
+    filter: MediaFilter = {},
+    options?: QueryOptions,
+    thumbnailOptions: ThumbnailOptions = {},
+  ): Promise<UpdateThumbnailResult> {
+    const response = await this.executeRemoteCommand({
+      operation: 'updateThumbnail',
+      params: {
+        filter,
+        options: options ?? null,
+        thumbnail_options: thumbnailOptions,
       },
     });
     return this.checkResponse(response);
