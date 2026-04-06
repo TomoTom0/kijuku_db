@@ -308,12 +308,7 @@ pub fn get_distinct_values(
         Ok(values)
     })?;
 
-    let mut result = Vec::new();
-    for row_result in rows {
-        result.push(row_result?);
-    }
-
-    Ok(result)
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// WHERE句を構築（OR条件を含む）
