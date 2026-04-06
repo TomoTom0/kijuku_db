@@ -16,6 +16,25 @@
 
 ## Added
 
+### getDistinctValues: フィールドの重複なし値一覧を取得する機能を追加
+
+- `KijukuDB.getDistinctValues(fields, filter)`: 指定したフィールド群の重複なしの値の組み合わせ一覧を取得
+- `RemoteKijukuDB.getDistinctValues(fields, filter)`: SSH経由の対応メソッドを追加
+- Rust SDK の `KijukuDB::get_distinct_values(fields, filter)` / `RemoteKijukuDB::get_distinct_values(fields, filter)` も同様に追加
+- 単一フィールド（例: `artist` の一覧）・複数フィールドの組み合わせ（例: `artist` × `series` の組み合わせ）に対応
+- `filter: MediaFilter` で絞り込み可能（`find_media` と同じ形式）
+- SQLインジェクション防止のため、フィールド名はホワイトリストで検証（`ALLOWED_DISTINCT_FIELDS` をエクスポート）
+- 戻り値は各フィールドの値を `fields` と同じ順序で格納した配列の配列（TypeScript: `(string | null)[][]`、Rust: `Vec<Vec<Option<String>>>`）
+
+**ファイル:**
+- `rust-sdk/src/search.rs`: `get_distinct_values` 関数追加
+- `rust-sdk/src/lib.rs`: `KijukuDB::get_distinct_values` メソッド追加
+- `rust-sdk/src/remote.rs`: `RemoteKijukuDB::get_distinct_values` メソッド追加
+- `rust-sdk/src/bin/cli.rs`: `getDistinctValues` オペレーション追加
+- `ts-sdk/src/search.ts`: `getDistinctValues` 関数・`ALLOWED_DISTINCT_FIELDS` 追加
+- `ts-sdk/src/index.ts`: `KijukuDB.getDistinctValues` メソッド追加
+- `ts-sdk/src/remote.ts`: `RemoteKijukuDB.getDistinctValues` メソッド追加
+
 ### TypeScript SDK に checkThumbnail / updateThumbnail を追加
 
 - `KijukuDB.checkThumbnail(filter?, options?)`: サムネイル状態をチェック（ファイル生成なし）

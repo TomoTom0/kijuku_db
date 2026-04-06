@@ -391,4 +391,51 @@ describe('Search and Filter', () => {
       expect(results).toHaveLength(2); // 作者Aのみ
     });
   });
+
+  describe('getDistinctValues', () => {
+    test('単一フィールドの重複なし値を取得できる', () => {
+      const rows = db.getDistinctValues(['artist'], {});
+      const artists = rows.map(r => r[0]);
+      expect(artists).toContain('作者A');
+      expect(artists).toContain('作者B');
+      expect(artists).toContain('作者C');
+      // 重複がないこと（作者Aは2件あるが1件のみ返る）
+      const filtered = artists.filter(a => a === '作者A');
+      expect(filtered).toHaveLength(1);
+    });
+
+    test('フィルタで絞り込んだ値を取得できる', () => {
+      const rows = db.getDistinctValues(['artist'], { media_type: 'comic' });
+      const artists = rows.map(r => r[0]);
+      expect(artists).toContain('作者A');
+      expect(artists).toContain('作者B');
+      expect(artists).not.toContain('作者C'); // musicのみ
+    });
+
+    test('複数フィールドの組み合わせを取得できる', () => {
+      const rows = db.getDistinctValues(['media_type', 'artist'], {});
+      expect(rows.length).toBeGreaterThan(0);
+      // 各行に2要素あること
+      rows.forEach(row => expect(row).toHaveLength(2));
+      // comic + 作者A の組み合わせが含まれること
+      const comicAuthorA = rows.find(r => r[0] === 'comic' && r[1] === '作者A');
+      expect(comicAuthorA).toBeDefined();
+    });
+
+    test('昇順ソートされた結果が返る', () => {
+      const rows = db.getDistinctValues(['artist'], {});
+      const artists = rows.map(r => r[0]).filter(Boolean) as string[];
+      const sorted = [...artists].sort();
+      expect(artists).toEqual(sorted);
+    });
+
+    test('空のfieldsを渡すとエラーになる', () => {
+      expect(() => db.getDistinctValues([], {})).toThrow();
+    });
+
+    test('ホワイトリスト外のフィールドを渡すとエラーになる', () => {
+      expect(() => db.getDistinctValues(['id'], {})).toThrow();
+      expect(() => db.getDistinctValues(['created_at'], {})).toThrow();
+    });
+  });
 });
