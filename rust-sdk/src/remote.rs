@@ -320,6 +320,20 @@ impl RemoteKijukuDB {
         self.check_response(response)
     }
 
+    /// 指定したフィールド群の重複なしの値の組み合わせ一覧を取得する
+    pub fn get_distinct_values(
+        &self,
+        fields: &[&str],
+        filter: &MediaFilter,
+    ) -> Result<Vec<Vec<Option<String>>>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getDistinctValues".to_string(),
+            params: serde_json::json!({ "fields": fields, "filter": filter }),
+        })?;
+
+        self.check_response(response)
+    }
+
     /// 複数のメディアを一括作成
     pub fn bulk_create_media(&self, data_list: &[MediaInput]) -> Result<Vec<Media>> {
         let response = self.execute_remote_command(CommandRequest {

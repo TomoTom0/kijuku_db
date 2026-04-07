@@ -45,6 +45,7 @@ export type {
 } from './backup.js';
 export { loadConfig, globalConfigPath, defaultKijukuConfig, defaultBackupConfig } from './config.js';
 export type { KijukuConfig, BackupConfig, RetentionTierConfig } from './config.js';
+export { ALLOWED_DISTINCT_FIELDS } from './search.js';
 export { startServer } from './server/index.js';
 export { AuthManager, generatePassword } from './server/auth.js';
 
@@ -145,6 +146,10 @@ export class KijukuDB {
    */
   findMedia(filter: MediaFilter, options?: QueryOptions): Media[] {
     return search.findMedia(this.db, filter, options);
+  }
+
+  getDistinctValues(fields: string[], filter: MediaFilter): (string | null)[][] {
+    return search.getDistinctValues(this.db, fields, filter);
   }
 
   /**

@@ -236,6 +236,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `or_filters`間: OR結合
 - ネスト可能（`or_filters`の中にさらに`or_filters`）
 
+### 3b. フィールドのユニーク値取得
+
+`get_distinct_values` を使うと、特定フィールドの重複なし値一覧や、複数フィールドの組み合わせ一覧を取得できます。
+
+```rust
+use kijuku_db::{KijukuDB, MediaFilter, ALLOWED_DISTINCT_FIELDS};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = KijukuDB::open("./data/kijuku.db")?;
+
+    // 全artistの一覧（重複なし、昇順）
+    let rows = db.get_distinct_values(&["artist"], &MediaFilter::default())?;
+    for row in &rows {
+        println!("{:?}", row[0]); // Some("Author1") or None
+    }
+
+    // コミックのシリーズ一覧（フィルタあり）
+    use kijuku_db::MediaType;
+    let filter = MediaFilter {
+        media_type: Some(MediaType::Comic),
+        ..Default::default()
+    };
+    let series_rows = db.get_distinct_values(&["series"], &filter)?;
+
+    // artist × series の組み合わせ一覧
+    let combos = db.get_distinct_values(&["artist", "series"], &MediaFilter::default())?;
+    // => [[Some("Author1"), Some("Series1")], [Some("Author1"), None], ...]
+
+    Ok(())
+}
+```
+
+**使用可能なフィールド:** `ALLOWED_DISTINCT_FIELDS` 定数にリストされています。
+
 ### 4. タグの管理
 
 ```rust

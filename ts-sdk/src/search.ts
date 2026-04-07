@@ -4,6 +4,30 @@
 import type Database from 'better-sqlite3';
 import type { Media, MediaFilter, QueryOptions } from './types.js';
 
+/** 取得可能なフィールド名のホワイトリスト（SQLインジェクション防止） */
+export const ALLOWED_DISTINCT_FIELDS: readonly string[] = [
+  'title',
+  'title_id',
+  'artist',
+  'artist_id',
+  'media_type',
+  'series',
+  'volume_text',
+  'volume_title',
+  'magazine',
+  'magazine_id',
+  'language',
+  'source',
+  'external_id',
+  'artist_en',
+  'title_en',
+  'chapters',
+  'extension',
+  'title_pron',
+  'artist_pron',
+  'series_pron',
+];
+
 function addLikeFilter(
   whereClauses: string[],
   params: Record<string, unknown>,
@@ -295,4 +319,68 @@ export function findMedia(
   const rows = stmt.all(allParams);
 
   return rows.map(rowToMedia);
+}
+
+/**
+ * 指定したフィールド群の重複なしの値の組み合わせ一覧を取得する
+ *
+ * @param db - データベース接続
+ * @param fields - 対象フィールド名の配列（ホワイトリストで検証）
+ * @param filter - 絞り込み条件
+ * @returns 各行が fields と同じ順序のフィールド値（NULL含む）の組み合わせ一覧（昇順）
+ */
+export function getDistinctValues(
+  db: Database.Database,
+  fields: string[],
+  filter: MediaFilter
+): (string | null)[][] {
+  if (fields.length === 0) {
+    throw new Error('fieldsは1つ以上指定してください');
+  }
+  for (const field of fields) {
+    if (!ALLOWED_DISTINCT_FIELDS.includes(field)) {
+      throw new Error(`無効なフィールド: ${field}。使用可能: ${ALLOWED_DISTINCT_FIELDS.join(', ')}`);
+    }
+  }
+
+  const counter: ParamCounter = { value: 0 };
+  const allParams: Record<string, unknown> = {};
+
+  const mainConditions = buildFilterConditions(filter, counter);
+  let needsTagJoin = mainConditions.needsTagJoin;
+  Object.assign(allParams, mainConditions.params);
+
+  const orConditions: string[] = [];
+  if (filter.or_filters) {
+    for (const orFilter of filter.or_filters) {
+      const conditions = buildFilterConditions(orFilter, counter);
+      if (conditions.needsTagJoin) {
+        needsTagJoin = true;
+      }
+      Object.assign(allParams, conditions.params);
+      if (conditions.condition) {
+        orConditions.push(conditions.condition);
+      }
+    }
+  }
+
+  const filterWhere = buildWhereClause(mainConditions.condition, orConditions);
+
+  const fromClause = needsTagJoin
+    ? 'FROM media m INNER JOIN media_tags mt ON m.id = mt.media_id'
+    : 'FROM media m';
+
+  const selectCols = fields.map((f) => `m.${f}`).join(', ');
+  const orderCols = fields.map((f) => `m.${f} ASC`).join(', ');
+
+  const sql = `
+    SELECT DISTINCT ${selectCols}
+    ${fromClause}
+    ${filterWhere}
+    ORDER BY ${orderCols}
+  `.trim();
+
+  const stmt = db.prepare(sql);
+  const rows = stmt.all(allParams) as Array<Record<string, unknown>>;
+  return rows.map((row) => fields.map((f) => (row[f] !== null && row[f] !== undefined ? String(row[f]) : null)));
 }

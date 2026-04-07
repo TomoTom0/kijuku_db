@@ -608,3 +608,75 @@ fn test_cli_bulk_create() {
     assert_eq!(response["success"], true);
     assert_eq!(response["data"].as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn test_cli_get_distinct_values_single_field() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({ "operation": "migrate", "params": {} }));
+
+    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "作品1", "media_type": "comic", "artist": "Author1" } } }));
+    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "作品2", "media_type": "comic", "artist": "Author2" } } }));
+    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "作品3", "media_type": "video", "artist": "Author1" } } }));
+
+    let response = execute_cli_command(db_path, json!({
+        "operation": "getDistinctValues",
+        "params": {
+            "fields": ["artist"],
+            "filter": {}
+        }
+    }));
+
+    assert_eq!(response["success"], true);
+    let rows = response["data"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0][0], "Author1");
+    assert_eq!(rows[1][0], "Author2");
+}
+
+#[test]
+fn test_cli_get_distinct_values_with_filter() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({ "operation": "migrate", "params": {} }));
+
+    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "コミック1", "media_type": "comic", "artist": "AuthorA" } } }));
+    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "コミック2", "media_type": "comic", "artist": "AuthorB" } } }));
+    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "動画1", "media_type": "video", "artist": "AuthorC" } } }));
+
+    let response = execute_cli_command(db_path, json!({
+        "operation": "getDistinctValues",
+        "params": {
+            "fields": ["artist"],
+            "filter": { "media_type": "comic" }
+        }
+    }));
+
+    assert_eq!(response["success"], true);
+    let rows = response["data"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    let artists: Vec<&str> = rows.iter().map(|r| r[0].as_str().unwrap()).collect();
+    assert!(artists.contains(&"AuthorA"));
+    assert!(artists.contains(&"AuthorB"));
+    assert!(!artists.contains(&"AuthorC"));
+}
+
+#[test]
+fn test_cli_get_distinct_values_invalid_field() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({ "operation": "migrate", "params": {} }));
+
+    let response = execute_cli_command(db_path, json!({
+        "operation": "getDistinctValues",
+        "params": {
+            "fields": ["id"],
+            "filter": {}
+        }
+    }));
+
+    assert_eq!(response["success"], false);
+}

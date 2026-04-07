@@ -412,6 +412,47 @@ const complex = db.findMedia({
 
 ---
 
+#### `getDistinctValues(fields: string[], filter: MediaFilter): (string | null)[][]`
+
+指定したフィールド群の重複なしの値の組み合わせ一覧を取得します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `fields` | `string[]` | ✓ | 対象フィールド名の配列（ホワイトリストで検証） |
+| `filter` | `MediaFilter` | ✓ | 絞り込み条件（条件なしの場合は `{}` を渡す） |
+
+**使用可能なフィールド（`ALLOWED_DISTINCT_FIELDS`）:**
+
+`title`, `title_id`, `artist`, `artist_id`, `media_type`, `series`, `volume_text`, `volume_title`, `magazine`, `magazine_id`, `language`, `source`, `external_id`, `artist_en`, `title_en`, `chapters`, `extension`, `title_pron`, `artist_pron`, `series_pron`
+
+**戻り値:** `(string | null)[][]` - 各要素は `fields` と同じ順序のフィールド値。NULLの組み合わせも含まれる。昇順ソート済み。
+
+**使用例:**
+
+```typescript
+import { ALLOWED_DISTINCT_FIELDS } from 'kijuku-db';
+
+// 全artistの一覧（重複なし）
+const artists = db.getDistinctValues(['artist'], {});
+// => [['Author1'], ['Author2'], [null]]  ← NULLも含まれる
+
+// コミックのシリーズ一覧（フィルタあり）
+const series = db.getDistinctValues(['series'], { media_type: 'comic' });
+
+// artist × series の組み合わせ一覧
+const combinations = db.getDistinctValues(['artist', 'series'], {});
+// => [['Author1', 'Series1'], ['Author1', 'Series2'], ['Author2', 'Series1'], ...]
+```
+
+**注意:**
+- `fields` が空配列の場合はエラー
+- ホワイトリスト外のフィールドを指定するとエラー
+- NULLを除きたい場合はアプリケーション側でフィルタリングする
+
+---
+
 #### `bulkCreateMedia(dataList: MediaInput[]): Media[]`
 
 複数のメディアを一括作成します。
