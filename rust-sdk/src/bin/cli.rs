@@ -80,6 +80,12 @@ struct FindMediaParams {
     options: Option<QueryOptions>,
 }
 
+#[derive(Debug, Deserialize)]
+struct GetDistinctValuesParams {
+    fields: Vec<String>,
+    filter: MediaFilter,
+}
+
 /// 一括作成のパラメータ
 #[derive(Debug, Deserialize)]
 struct BulkCreateMediaParams {
@@ -620,6 +626,7 @@ fn execute_command(db: &mut KijukuDB, request: &CommandRequest) -> CommandRespon
         "updateMedia" => handle_update_media(db, &request.params),
         "deleteMedia" => handle_delete_media(db, &request.params),
         "findMedia" => handle_find_media(db, &request.params),
+        "getDistinctValues" => handle_get_distinct_values(db, &request.params),
         "bulkCreateMedia" => handle_bulk_create_media(db, &request.params),
         "bulkDeleteMedia" => handle_bulk_delete_media(db, &request.params),
         "bulkUpdateMedia" => handle_bulk_update_media(db, &request.params),
@@ -692,10 +699,10 @@ fn handle_create_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResp
     };
 
     match db.create_media(&params.data) {
-        Ok(media) => {
-            let data = serde_json::to_value(media).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(media) => match serde_json::to_value(media) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         Err(e) => CommandResponse::error(format!("メディア作成エラー: {}", e)),
     }
 }
@@ -707,10 +714,10 @@ fn handle_get_media(db: &KijukuDB, params: &serde_json::Value) -> CommandRespons
     };
 
     match db.get_media(params.id) {
-        Some(media) => {
-            let data = serde_json::to_value(media).unwrap();
-            CommandResponse::success(data)
-        }
+        Some(media) => match serde_json::to_value(media) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         None => CommandResponse::error(format!("メディアが見つかりません (id: {})", params.id)),
     }
 }
@@ -746,11 +753,27 @@ fn handle_find_media(db: &KijukuDB, params: &serde_json::Value) -> CommandRespon
     };
 
     match db.find_media(&params.filter, params.options.as_ref()) {
-        Ok(media_list) => {
-            let data = serde_json::to_value(media_list).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(media_list) => match serde_json::to_value(media_list) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         Err(e) => CommandResponse::error(format!("メディア検索エラー: {}", e)),
+    }
+}
+
+fn handle_get_distinct_values(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: GetDistinctValuesParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+
+    let fields: Vec<&str> = params.fields.iter().map(|s| s.as_str()).collect();
+    match db.get_distinct_values(&fields, &params.filter) {
+        Ok(values) => match serde_json::to_value(values) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
+        Err(e) => CommandResponse::error(format!("distinct値取得エラー: {}", e)),
     }
 }
 
@@ -761,10 +784,10 @@ fn handle_bulk_create_media(db: &KijukuDB, params: &serde_json::Value) -> Comman
     };
 
     match db.bulk_create_media(&params.data_list) {
-        Ok(media_list) => {
-            let data = serde_json::to_value(media_list).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(media_list) => match serde_json::to_value(media_list) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         Err(e) => CommandResponse::error(format!("一括作成エラー: {}", e)),
     }
 }
@@ -800,10 +823,10 @@ fn handle_create_tag(db: &KijukuDB, params: &serde_json::Value) -> CommandRespon
     };
 
     match db.create_tag(&params.name) {
-        Ok(tag) => {
-            let data = serde_json::to_value(tag).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(tag) => match serde_json::to_value(tag) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         Err(e) => CommandResponse::error(format!("タグ作成エラー: {}", e)),
     }
 }
@@ -815,20 +838,20 @@ fn handle_get_tag_by_name(db: &KijukuDB, params: &serde_json::Value) -> CommandR
     };
 
     match db.get_tag_by_name(&params.name) {
-        Some(tag) => {
-            let data = serde_json::to_value(tag).unwrap();
-            CommandResponse::success(data)
-        }
+        Some(tag) => match serde_json::to_value(tag) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         None => CommandResponse::error(format!("タグが見つかりません (name: {})", params.name)),
     }
 }
 
 fn handle_get_all_tags(db: &KijukuDB) -> CommandResponse {
     match db.get_all_tags() {
-        Ok(tags) => {
-            let data = serde_json::to_value(tags).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(tags) => match serde_json::to_value(tags) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         Err(e) => CommandResponse::error(format!("タグ取得エラー: {}", e)),
     }
 }
@@ -864,10 +887,10 @@ fn handle_get_media_tags(db: &KijukuDB, params: &serde_json::Value) -> CommandRe
     };
 
     match db.get_media_tags(params.media_id) {
-        Ok(tags) => {
-            let data = serde_json::to_value(tags).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(tags) => match serde_json::to_value(tags) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         Err(e) => CommandResponse::error(format!("メディアタグ取得エラー: {}", e)),
     }
 }
@@ -922,10 +945,10 @@ fn handle_get_media_attribute(db: &KijukuDB, params: &serde_json::Value) -> Comm
     };
 
     match db.get_media_attribute(params.media_id, &params.key) {
-        Ok(Some(attr)) => {
-            let data = serde_json::to_value(attr).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(Some(attr)) => match serde_json::to_value(attr) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         Ok(None) => CommandResponse::error(format!(
             "属性が見つかりません (media_id: {}, key: {})",
             params.media_id, params.key
@@ -941,10 +964,10 @@ fn handle_get_media_attributes(db: &KijukuDB, params: &serde_json::Value) -> Com
     };
 
     match db.get_media_attributes(params.media_id) {
-        Ok(attrs) => {
-            let data = serde_json::to_value(attrs).unwrap();
-            CommandResponse::success(data)
-        }
+        Ok(attrs) => match serde_json::to_value(attrs) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
         Err(e) => CommandResponse::error(format!("属性取得エラー: {}", e)),
     }
 }
