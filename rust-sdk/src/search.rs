@@ -302,8 +302,7 @@ pub fn get_distinct_values(
         Ok(values)
     })?;
 
-    let result: rusqlite::Result<Vec<_>> = rows.collect();
-    Ok(result?)
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// WHERE句を構築（OR条件を含む）
