@@ -449,6 +449,14 @@ export class RemoteKijukuDB {
     return this.checkResponse(response);
   }
 
+  async getDistinctValues(fields: string[], filter: MediaFilter): Promise<(string | null)[][]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'getDistinctValues',
+      params: { fields, filter },
+    });
+    return this.checkResponse(response);
+  }
+
   /**
    * 複数のメディアを一括作成
    */

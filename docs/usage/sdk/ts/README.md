@@ -153,6 +153,28 @@ const nested = db.findMedia({
 - `or_filters`間: OR結合
 - ネスト可能
 
+### 3b. フィールドのユニーク値取得
+
+`getDistinctValues` を使うと、特定フィールドの重複なし値一覧や、複数フィールドの組み合わせ一覧を取得できます。
+
+```typescript
+import { ALLOWED_DISTINCT_FIELDS } from 'kijuku-db';
+
+// 全artistの一覧（重複なし、昇順）
+const rows = db.getDistinctValues(['artist'], {});
+const artists = rows.map(r => r[0]); // [null, 'Author1', 'Author2', ...]
+
+// コミックのシリーズ一覧（フィルタあり）
+const seriesRows = db.getDistinctValues(['series'], { media_type: 'comic' });
+const seriesList = seriesRows.flatMap(r => r[0] ? [r[0]] : []);
+
+// artist × series の組み合わせ一覧
+const combinations = db.getDistinctValues(['artist', 'series'], {});
+// => [['Author1', 'Series1'], ['Author1', 'Series2'], ['Author2', null], ...]
+```
+
+**使用可能なフィールド:** `ALLOWED_DISTINCT_FIELDS` をエクスポートしています。
+
 ### 4. タグの管理
 
 ```typescript

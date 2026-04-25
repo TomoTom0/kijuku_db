@@ -1,7 +1,31 @@
 use crate::crud::row_to_media;
-use crate::error::Result;
+use crate::error::{KijukuError, Result};
 use crate::types::{Media, MediaFilter, QueryOptions};
 use rusqlite::Connection;
+
+/// 取得可能なフィールド名のホワイトリスト（SQLインジェクション防止）
+pub const ALLOWED_DISTINCT_FIELDS: &[&str] = &[
+    "title",
+    "title_id",
+    "artist",
+    "artist_id",
+    "media_type",
+    "series",
+    "volume_text",
+    "volume_title",
+    "magazine",
+    "magazine_id",
+    "language",
+    "source",
+    "external_id",
+    "artist_en",
+    "title_en",
+    "chapters",
+    "extension",
+    "title_pron",
+    "artist_pron",
+    "series_pron",
+];
 
 fn add_like_filter(
     where_clauses: &mut Vec<String>,
@@ -206,6 +230,90 @@ pub fn find_media(
     }
 
     Ok(media_list)
+}
+
+/// 指定したフィールドの重複なしの値一覧を取得する
+///
+/// 各フィールドはホワイトリストで検証されるため、SQLインジェクションは発生しない。
+/// 戻り値の各要素は `fields` と同じ順序のフィールド値。
+pub fn get_distinct_values(
+    conn: &Connection,
+    fields: &[&str],
+    filter: &MediaFilter,
+) -> Result<Vec<Vec<Option<String>>>> {
+    if fields.is_empty() {
+        return Err(KijukuError::Validation("fieldsは1つ以上指定してください".to_string()));
+    }
+    for field in fields {
+        if !ALLOWED_DISTINCT_FIELDS.contains(field) {
+            return Err(KijukuError::Validation(format!(
+                "無効なフィールド: {}。使用可能: {}",
+                field,
+                ALLOWED_DISTINCT_FIELDS.join(", ")
+            )));
+        }
+    }
+
+    let main_conditions = build_filter_conditions(filter);
+    let mut needs_tag_join = main_conditions.needs_tag_join;
+    let mut all_params = main_conditions.params;
+
+    let mut or_conditions: Vec<String> = Vec::new();
+    if let Some(ref or_filters) = filter.or_filters {
+        for or_filter in or_filters {
+            let conditions = build_filter_conditions(or_filter);
+            if conditions.needs_tag_join {
+                needs_tag_join = true;
+            }
+            all_params.extend(conditions.params);
+            if let Some(cond) = conditions.condition {
+                or_conditions.push(cond);
+            }
+        }
+    }
+
+    let filter_where = build_where_clause(&main_conditions.condition, &or_conditions);
+
+    let from_clause = if needs_tag_join {
+        "FROM media m INNER JOIN media_tags mt ON m.id = mt.media_id"
+    } else {
+        "FROM media m"
+    };
+
+    let select_cols: Vec<String> = fields.iter().map(|f| format!("m.{}", f)).collect();
+    let order_cols: Vec<String> = fields.iter().map(|f| format!("m.{} ASC", f)).collect();
+
+    let where_clause = if filter_where.is_empty() {
+        String::new()
+    } else {
+        filter_where
+    };
+
+    let sql = format!(
+        "SELECT DISTINCT {} {} {} ORDER BY {}",
+        select_cols.join(", "),
+        from_clause,
+        where_clause,
+        order_cols.join(", ")
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let params_ref: Vec<&dyn rusqlite::ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
+    let field_count = fields.len();
+    let rows = stmt.query_map(params_ref.as_slice(), move |row| {
+        let mut values = Vec::with_capacity(field_count);
+        for i in 0..field_count {
+            values.push(row.get::<_, Option<String>>(i)?);
+        }
+        Ok(values)
+    })?;
+
+    let mut result = Vec::new();
+    for row_result in rows {
+        result.push(row_result?);
+    }
+
+    Ok(result)
 }
 
 /// WHERE句を構築（OR条件を含む）
@@ -661,5 +769,150 @@ mod tests {
         assert!(titles.contains(&"作品A"));
         assert!(titles.contains(&"作品B"));
         assert!(titles.contains(&"作品C"));
+    }
+
+    #[test]
+    fn test_get_distinct_values_single_field() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        for artist in &["Author1", "Author2", "Author1"] {
+            create_media(&conn, &MediaInput {
+                title: format!("作品_{}", artist),
+                media_type: MediaType::Comic,
+                artist: Some(artist.to_string()),
+                ..Default::default()
+            }).unwrap();
+        }
+
+        let filter = MediaFilter::default();
+        let rows = get_distinct_values(&conn, &["artist"], &filter).unwrap();
+        assert_eq!(rows, vec![
+            vec![Some("Author1".to_string())],
+            vec![Some("Author2".to_string())],
+        ]);
+    }
+
+    #[test]
+    fn test_get_distinct_values_multiple_fields() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "作品A".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author1".to_string()),
+            series: Some("Series1".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品B".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author1".to_string()),
+            series: Some("Series2".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品C".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author2".to_string()),
+            series: Some("Series1".to_string()),
+            ..Default::default()
+        }).unwrap();
+        // artist+seriesが重複
+        create_media(&conn, &MediaInput {
+            title: "作品D".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author1".to_string()),
+            series: Some("Series1".to_string()),
+            ..Default::default()
+        }).unwrap();
+
+        let filter = MediaFilter::default();
+        let rows = get_distinct_values(&conn, &["artist", "series"], &filter).unwrap();
+        // 重複なし・昇順ソート
+        assert_eq!(rows.len(), 3);
+        assert!(rows.contains(&vec![Some("Author1".to_string()), Some("Series1".to_string())]));
+        assert!(rows.contains(&vec![Some("Author1".to_string()), Some("Series2".to_string())]));
+        assert!(rows.contains(&vec![Some("Author2".to_string()), Some("Series1".to_string())]));
+    }
+
+    #[test]
+    fn test_get_distinct_values_with_filter() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "コミック1".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("AuthorA".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "コミック2".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("AuthorB".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "動画1".to_string(),
+            media_type: MediaType::Video,
+            artist: Some("AuthorC".to_string()),
+            ..Default::default()
+        }).unwrap();
+
+        let filter = MediaFilter {
+            media_type: Some(MediaType::Comic),
+            ..Default::default()
+        };
+        let rows = get_distinct_values(&conn, &["artist"], &filter).unwrap();
+        let artists: Vec<_> = rows.iter().map(|r| r[0].as_deref()).collect();
+        assert!(artists.contains(&Some("AuthorA")));
+        assert!(artists.contains(&Some("AuthorB")));
+        assert!(!artists.contains(&Some("AuthorC")));
+    }
+
+    #[test]
+    fn test_get_distinct_values_includes_null() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "作品1".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author1".to_string()),
+            series: Some("Series1".to_string()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品2".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Author1".to_string()),
+            series: None,
+            ..Default::default()
+        }).unwrap();
+
+        let filter = MediaFilter::default();
+        let rows = get_distinct_values(&conn, &["artist", "series"], &filter).unwrap();
+        // NULLの組み合わせも含まれる
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&vec![Some("Author1".to_string()), None]));
+        assert!(rows.contains(&vec![Some("Author1".to_string()), Some("Series1".to_string())]));
+    }
+
+    #[test]
+    fn test_get_distinct_values_invalid_field() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let filter = MediaFilter::default();
+        let result = get_distinct_values(&conn, &["id"], &filter);
+        assert!(result.is_err());
+
+        let result = get_distinct_values(&conn, &["DROP TABLE media; --"], &filter);
+        assert!(result.is_err());
+
+        let result = get_distinct_values(&conn, &[], &filter);
+        assert!(result.is_err());
     }
 }

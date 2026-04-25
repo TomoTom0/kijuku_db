@@ -80,6 +80,12 @@ struct FindMediaParams {
     options: Option<QueryOptions>,
 }
 
+#[derive(Debug, Deserialize)]
+struct GetDistinctValuesParams {
+    fields: Vec<String>,
+    filter: MediaFilter,
+}
+
 /// 一括作成のパラメータ
 #[derive(Debug, Deserialize)]
 struct BulkCreateMediaParams {
@@ -620,6 +626,7 @@ fn execute_command(db: &mut KijukuDB, request: &CommandRequest) -> CommandRespon
         "updateMedia" => handle_update_media(db, &request.params),
         "deleteMedia" => handle_delete_media(db, &request.params),
         "findMedia" => handle_find_media(db, &request.params),
+        "getDistinctValues" => handle_get_distinct_values(db, &request.params),
         "bulkCreateMedia" => handle_bulk_create_media(db, &request.params),
         "bulkDeleteMedia" => handle_bulk_delete_media(db, &request.params),
         "bulkUpdateMedia" => handle_bulk_update_media(db, &request.params),
@@ -751,6 +758,22 @@ fn handle_find_media(db: &KijukuDB, params: &serde_json::Value) -> CommandRespon
             CommandResponse::success(data)
         }
         Err(e) => CommandResponse::error(format!("メディア検索エラー: {}", e)),
+    }
+}
+
+fn handle_get_distinct_values(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: GetDistinctValuesParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+
+    let fields: Vec<&str> = params.fields.iter().map(|s| s.as_str()).collect();
+    match db.get_distinct_values(&fields, &params.filter) {
+        Ok(values) => {
+            let data = serde_json::to_value(values).unwrap();
+            CommandResponse::success(data)
+        }
+        Err(e) => CommandResponse::error(format!("distinct値取得エラー: {}", e)),
     }
 }
 

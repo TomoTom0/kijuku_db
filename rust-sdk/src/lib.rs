@@ -56,6 +56,7 @@ pub use config::{load_config, BackupConfig, KijukuConfig};
 pub use error::{KijukuError, Result};
 pub use migration::TableColumnInfo;
 pub use remote::{RemoteConfig, RemoteKijukuDB};
+pub use search::ALLOWED_DISTINCT_FIELDS;
 pub use server::auth::{AuthManager, generate_password};
 pub use server::{ServerOptions, start_server};
 pub use types::*;
@@ -203,6 +204,17 @@ impl KijukuDB {
         options: Option<&QueryOptions>,
     ) -> Result<Vec<Media>> {
         search::find_media(&self.conn, filter, options)
+    }
+
+    /// 指定したフィールド群の重複なしの値の組み合わせ一覧を取得する
+    ///
+    /// 戻り値の各要素は `fields` と同じ順序のフィールド値（NULL含む）。
+    pub fn get_distinct_values(
+        &self,
+        fields: &[&str],
+        filter: &MediaFilter,
+    ) -> Result<Vec<Vec<Option<String>>>> {
+        search::get_distinct_values(&self.conn, fields, filter)
     }
 
     /// フィルタで絞り込んだメディアのサムネイル状態をチェックする
