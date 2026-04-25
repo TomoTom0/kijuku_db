@@ -769,10 +769,10 @@ fn handle_get_distinct_values(db: &KijukuDB, params: &serde_json::Value) -> Comm
 
     let fields: Vec<&str> = params.fields.iter().map(|s| s.as_str()).collect();
     match db.get_distinct_values(&fields, &params.filter) {
-        Ok(values) => match serde_json::to_value(values) {
-            Ok(data) => CommandResponse::success(data),
-            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
-        },
+        Ok(values) => {
+            let data = serde_json::to_value(values).unwrap();
+            CommandResponse::success(data)
+        }
         Err(e) => CommandResponse::error(format!("distinct値取得エラー: {}", e)),
     }
 }
