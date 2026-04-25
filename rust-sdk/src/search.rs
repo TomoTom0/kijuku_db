@@ -283,17 +283,11 @@ pub fn get_distinct_values(
     let select_cols: Vec<String> = fields.iter().map(|f| format!("m.{}", f)).collect();
     let order_cols: Vec<String> = fields.iter().map(|f| format!("m.{} ASC", f)).collect();
 
-    let where_clause = if filter_where.is_empty() {
-        String::new()
-    } else {
-        filter_where
-    };
-
     let sql = format!(
         "SELECT DISTINCT {} {} {} ORDER BY {}",
         select_cols.join(", "),
         from_clause,
-        where_clause,
+        filter_where,
         order_cols.join(", ")
     );
 
@@ -308,12 +302,8 @@ pub fn get_distinct_values(
         Ok(values)
     })?;
 
-    let mut result = Vec::new();
-    for row_result in rows {
-        result.push(row_result?);
-    }
-
-    Ok(result)
+    let result: rusqlite::Result<Vec<_>> = rows.collect();
+    Ok(result?)
 }
 
 /// WHERE句を構築（OR条件を含む）
