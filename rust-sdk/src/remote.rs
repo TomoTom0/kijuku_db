@@ -1,4 +1,4 @@
-use crate::{BulkUpdateItem, KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats};
+use crate::{BulkUpdateItem, CheckThumbnailResult, KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats, ThumbnailOptions, UpdateThumbnailResult};
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
 use ssh2_config::{ParseRule, SshConfig};
@@ -514,6 +514,35 @@ impl RemoteKijukuDB {
         let response = self.execute_remote_command(CommandRequest {
             operation: "deleteAllMediaAttributes".to_string(),
             params: serde_json::json!({ "media_id": media_id }),
+        })?;
+
+        self.check_response(response)
+    }
+
+    /// サムネイルの状態をチェック
+    pub fn check_thumbnail(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+    ) -> Result<CheckThumbnailResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "checkThumbnail".to_string(),
+            params: serde_json::json!({ "filter": filter, "options": options, "thumbnail_options": {} }),
+        })?;
+
+        self.check_response(response)
+    }
+
+    /// サムネイルを更新
+    pub fn update_thumbnail(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+        thumbnail_options: &ThumbnailOptions,
+    ) -> Result<UpdateThumbnailResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "updateThumbnail".to_string(),
+            params: serde_json::json!({ "filter": filter, "options": options, "thumbnail_options": thumbnail_options }),
         })?;
 
         self.check_response(response)
