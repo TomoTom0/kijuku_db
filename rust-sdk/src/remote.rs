@@ -1,4 +1,4 @@
-use crate::{BulkUpdateItem, KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats};
+use crate::{BackupInfo, BulkUpdateItem, CheckThumbnailResult, KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats, ThumbnailOptions, UpdateThumbnailResult};
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
 use ssh2_config::{ParseRule, SshConfig};
@@ -514,6 +514,116 @@ impl RemoteKijukuDB {
         let response = self.execute_remote_command(CommandRequest {
             operation: "deleteAllMediaAttributes".to_string(),
             params: serde_json::json!({ "media_id": media_id }),
+        })?;
+
+        self.check_response(response)
+    }
+
+    /// 手動バックアップを実行
+    pub fn backup(&self, label: Option<&str>) -> Result<Option<String>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "backup".to_string(),
+            params: serde_json::json!({ "label": label }),
+        })?;
+
+        #[derive(Deserialize)]
+        struct BackupResponse {
+            path: Option<String>,
+        }
+
+        let data: BackupResponse = self.check_response(response)?;
+        Ok(data.path)
+    }
+
+    /// バックアップ一覧を取得
+    pub fn list_backups(&self) -> Result<Vec<BackupInfo>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "listBackups".to_string(),
+            params: serde_json::json!({}),
+        })?;
+
+        #[derive(Deserialize)]
+        struct BackupInfoRaw {
+            id: String,
+            name: String,
+            path: String,
+            created_at: u64,
+            scope: String,
+            kind: serde_json::Value,
+            label: Option<String>,
+        }
+
+        let items: Vec<BackupInfoRaw> = self.check_response(response)?;
+        items
+            .into_iter()
+            .map(|item| {
+                use crate::backup::{BackupKind, BackupScope};
+                let scope = match item.scope.as_str() {
+                    "auto" => BackupScope::Auto,
+                    "manual" => BackupScope::Manual,
+                    "tmp" => BackupScope::Tmp,
+                    _ => BackupScope::Auto,
+                };
+                let kind = if item.kind["type"].as_str() == Some("diff") {
+                    BackupKind::Diff {
+                        base_id: item.kind["baseId"].as_str().unwrap_or_default().to_string(),
+                    }
+                } else {
+                    BackupKind::Full
+                };
+                Ok(BackupInfo {
+                    id: item.id,
+                    name: item.name,
+                    path: std::path::PathBuf::from(item.path),
+                    created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(item.created_at),
+                    scope,
+                    kind,
+                    label: item.label,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+    }
+
+    /// バックアップを復元
+    pub fn restore(&self, selector: &serde_json::Value) -> Result<String> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "restore".to_string(),
+            params: serde_json::json!({ "selector": selector }),
+        })?;
+
+        #[derive(Deserialize)]
+        struct RestoreResponse {
+            path: String,
+        }
+
+        let data: RestoreResponse = self.check_response(response)?;
+        Ok(data.path)
+    }
+
+    /// サムネイルの状態をチェック
+    pub fn check_thumbnail(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+    ) -> Result<CheckThumbnailResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "checkThumbnail".to_string(),
+            params: serde_json::json!({ "filter": filter, "options": options, "thumbnail_options": {} }),
+        })?;
+
+        self.check_response(response)
+    }
+
+    /// サムネイルを更新
+    pub fn update_thumbnail(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+        thumbnail_options: &ThumbnailOptions,
+    ) -> Result<UpdateThumbnailResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "updateThumbnail".to_string(),
+            params: serde_json::json!({ "filter": filter, "options": options, "thumbnail_options": thumbnail_options }),
         })?;
 
         self.check_response(response)

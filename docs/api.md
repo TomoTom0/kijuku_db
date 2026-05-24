@@ -1,6 +1,7 @@
 # kijuku-db API仕様書
 
-このドキュメントでは、kijuku-db TypeScript SDKの詳細なAPI仕様を説明します。
+このドキュメントでは、kijuku-dbのTypeScript SDKおよびRust SDKの詳細なAPI仕様を説明します。
+TypeScript SDKを基準に記載し、Rust SDKの相違点は[Rust SDK](#rust-sdk)セクションにまとめています。
 
 ## 目次
 
@@ -9,9 +10,18 @@
   - [マイグレーション](#マイグレーション)
   - [メディア操作](#メディア操作)
   - [タグ操作](#タグ操作)
-  - [バックアップ操作](#バックアップ操作)
+  - [属性操作](#属性操作)
   - [トランザクション](#トランザクション)
+  - [バックアップ操作](#バックアップ操作)
+  - [バックアップ読み取り操作](#バックアップ読み取り操作)
+  - [ファイル存在チェック](#ファイル存在チェック)
+  - [サムネイル操作](#サムネイル操作)
   - [その他](#その他)
+- [RemoteKijukuDB](#remotekijukud)
+  - [コンストラクタ](#remotekijukudコンストラクタ)
+  - [対応メソッド一覧](#remotekijukud対応メソッド一覧)
+  - [バックアップ操作](#remotekijukudバックアップ操作)
+- [Rust SDK](#rust-sdk)
 - [Web GUIサーバー](#web-guiサーバー)
 - [型定義](#型定義)
 - [エラーハンドリング](#エラーハンドリング)
@@ -137,6 +147,7 @@ console.log(`Schema version: ${version}`);
 |-----------|-----|------|------|
 | `title` | `string` | ✓ | タイトル |
 | `media_type` | `'comic' \| 'video' \| 'music'` | ✓ | メディアタイプ |
+| `uuid` | `string` | | UUID（省略時は自動生成） |
 | `title_id` | `string` | | タイトルID（外部システム連携用） |
 | `path` | `string` | | ファイルパス（UNIQUE制約） |
 | `thumbnail_path` | `string` | | サムネイル画像のパス |
@@ -709,6 +720,162 @@ tags.forEach((tag) => console.log(`- ${tag.name}`));
 
 ---
 
+#### `getTagUsageStats(): TagUsageStats[]`
+
+全タグの使用状況（各タグが何件のメディアに紐付いているか）を取得します。
+
+**パラメータ:** なし
+
+**戻り値:** `TagUsageStats[]` - タグ使用状況の配列
+
+**TagUsageStats:**
+
+| プロパティ | 型 | 説明 |
+|-----------|-----|------|
+| `tag_id` | `number` | タグID |
+| `tag_name` | `string` | タグ名 |
+| `count` | `number` | 紐付けられているメディア件数 |
+
+**使用例:**
+
+```typescript
+const stats = db.getTagUsageStats();
+stats.forEach((s) => {
+  console.log(`${s.tag_name}: ${s.count}件`);
+});
+```
+
+---
+
+#### `findUnusedTags(): Tag[]`
+
+どのメディアにも紐付けられていないタグを検索します。
+
+**パラメータ:** なし
+
+**戻り値:** `Tag[]` - 未使用タグの配列
+
+**使用例:**
+
+```typescript
+const unused = db.findUnusedTags();
+console.log(`未使用タグ: ${unused.length}件`);
+unused.forEach((tag) => console.log(`- ${tag.name}`));
+```
+
+---
+
+### 属性操作
+
+メディアの拡張属性（EAVモデル）を管理します。スキーマに定義されていない任意のキー・バリューをメディアに付与できます。
+
+#### `setMediaAttribute(mediaId: number, key: string, value: string | null, valueType?: string): void`
+
+メディアに属性を設定します。同じキーが存在する場合は上書きされます。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `mediaId` | `number` | ✓ | メディアID |
+| `key` | `string` | ✓ | 属性キー |
+| `value` | `string \| null` | ✓ | 属性値（`null`で値なし） |
+| `valueType` | `'string' \| 'integer' \| 'boolean'` | | 値の型（デフォルト: `'string'`） |
+
+**使用例:**
+
+```typescript
+db.setMediaAttribute(1, 'rating', '5');
+db.setMediaAttribute(1, 'is_read', 'true', 'boolean');
+db.setMediaAttribute(1, 'page_count_checked', '200', 'integer');
+```
+
+---
+
+#### `getMediaAttribute(mediaId: number, key: string): MediaAttribute | null`
+
+メディアの特定の属性を取得します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `mediaId` | `number` | ✓ | メディアID |
+| `key` | `string` | ✓ | 属性キー |
+
+**戻り値:** `MediaAttribute | null` - 属性情報。存在しない場合は`null`
+
+**使用例:**
+
+```typescript
+const attr = db.getMediaAttribute(1, 'rating');
+if (attr) {
+  console.log(`${attr.key} = ${attr.value} (${attr.value_type})`);
+}
+```
+
+---
+
+#### `getMediaAttributes(mediaId: number): MediaAttribute[]`
+
+メディアの全属性を取得します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `mediaId` | `number` | ✓ | メディアID |
+
+**戻り値:** `MediaAttribute[]` - 属性の配列
+
+**使用例:**
+
+```typescript
+const attrs = db.getMediaAttributes(1);
+attrs.forEach((attr) => {
+  console.log(`${attr.key}: ${attr.value} [${attr.value_type}]`);
+});
+```
+
+---
+
+#### `deleteMediaAttribute(mediaId: number, key: string): void`
+
+メディアの特定の属性を削除します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `mediaId` | `number` | ✓ | メディアID |
+| `key` | `string` | ✓ | 属性キー |
+
+**使用例:**
+
+```typescript
+db.deleteMediaAttribute(1, 'rating');
+```
+
+---
+
+#### `deleteAllMediaAttributes(mediaId: number): void`
+
+メディアの全属性を一括削除します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `mediaId` | `number` | ✓ | メディアID |
+
+**使用例:**
+
+```typescript
+db.deleteAllMediaAttributes(1);
+```
+
+---
+
 ### トランザクション
 
 #### `transaction<T>(fn: () => T): T`
@@ -786,21 +953,33 @@ if (backupPath) {
 
 ---
 
-#### `listBackups(): Array<{ name: string; path: string; createdAt: Date }>`
+#### `listBackups(): BackupInfo[]`
 
 バックアップファイルの一覧を取得します。
 
 **パラメータ:** なし
 
-**戻り値:** `Array<{ name: string; path: string; createdAt: Date }>` - バックアップ情報の配列（作成日時の降順）
+**戻り値:** `BackupInfo[]` - バックアップ情報の配列（作成日時の降順）
+
+**BackupInfo:**
+
+| プロパティ | 型 | 説明 |
+|-----------|-----|------|
+| `id` | `string` | バックアップID |
+| `name` | `string` | バックアップファイル名 |
+| `path` | `string` | バックアップファイルのパス |
+| `createdAt` | `Date` | 作成日時 |
+| `scope` | `BackupScope` | バックアップスコープ（`'auto'` / `'manual'` / `'tmp'`） |
+| `kind` | `BackupKind` | バックアップ種別（`'full'` / `'diff'`） |
+| `label` | `string \| undefined` | ラベル（backupWithLabelで指定時） |
 
 **使用例:**
 
 ```typescript
 const backups = db.listBackups();
 console.log(`バックアップファイル数: ${backups.length}`);
-backups.forEach(backup => {
-  console.log(`${backup.name} - ${backup.createdAt.toISOString()} (${backup.path})`);
+backups.forEach((backup) => {
+  console.log(`${backup.name} [${backup.scope}/${backup.kind}] - ${backup.createdAt.toISOString()}`);
 });
 ```
 
@@ -958,6 +1137,132 @@ console.log(`生成予定: ${result.generated}件`);
 
 ---
 
+### バックアップ読み取り操作
+
+バックアップファイルから読み取り専用でデータを取得します。リストアせずに過去のデータを確認する用途に使用します。
+
+#### `getMediaFromBackup(id: number, selector?: BackupSelector): Media | null`
+
+バックアップからメディアをIDで取得します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `id` | `number` | ✓ | メディアID |
+| `selector` | `BackupSelector` | | バックアップ選択条件（省略時: 最新） |
+
+**戻り値:** `Media | null` - メディア情報
+
+**使用例:**
+
+```typescript
+const media = db.getMediaFromBackup(1);
+const mediaFromOld = db.getMediaFromBackup(1, BackupSelector.nth(2));
+```
+
+---
+
+#### `findMediaFromBackup(filter: MediaFilter, options?: QueryOptions, selector?: BackupSelector): Media[]`
+
+バックアップから条件に合うメディアを検索します。
+
+**パラメータ:** `findMedia`と同じ（`selector`が追加）
+
+**戻り値:** `Media[]`
+
+**使用例:**
+
+```typescript
+const media = db.findMediaFromBackup({ media_type: 'comic' });
+```
+
+---
+
+#### `getTagByNameFromBackup(name: string, selector?: BackupSelector): Tag | null`
+
+バックアップからタグを名前で取得します。
+
+**戻り値:** `Tag | null`
+
+---
+
+#### `getAllTagsFromBackup(selector?: BackupSelector): Tag[]`
+
+バックアップから全タグを取得します。
+
+**戻り値:** `Tag[]`
+
+---
+
+#### `getMediaTagsFromBackup(mediaId: number, selector?: BackupSelector): Tag[]`
+
+バックアップからメディアに紐付くタグを取得します。
+
+**戻り値:** `Tag[]`
+
+---
+
+#### `getMediaAttributeFromBackup(mediaId: number, key: string, selector?: BackupSelector): MediaAttribute | null`
+
+バックアップからメディアの特定の属性を取得します。
+
+**戻り値:** `MediaAttribute | null`
+
+---
+
+#### `getMediaAttributesFromBackup(mediaId: number, selector?: BackupSelector): MediaAttribute[]`
+
+バックアップからメディアの全属性を取得します。
+
+**戻り値:** `MediaAttribute[]`
+
+---
+
+### ファイル存在チェック
+
+#### `updateExist(filter: MediaFilter, options?: QueryOptions, updateOptions?: UpdateExistOptions): UpdateExistResult`
+
+メディアの`path`を確認し、ファイルが存在するかどうかに基づいて`flag_exist`を一括更新します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `filter` | `MediaFilter` | ✓ | 対象メディアの絞り込み条件 |
+| `options` | `QueryOptions` | | ページネーション等のオプション |
+| `updateOptions` | `UpdateExistOptions` | | 更新オプション |
+
+**UpdateExistOptions:**
+
+| プロパティ | 型 | デフォルト | 説明 |
+|-----------|-----|-----------|------|
+| `dry_run` | `boolean` | `false` | DBを更新せず結果のみを返す |
+
+**戻り値:** `UpdateExistResult`
+
+| プロパティ | 型 | 説明 |
+|-----------|-----|------|
+| `total` | `number` | チェック対象の総数 |
+| `updated` | `number` | 更新された件数 |
+| `updated_ids` | `number[] \| null` | 更新されたメディアIDの配列 |
+| `updated_ids_file` | `string \| null` | 更新ID一覧のファイルパス |
+| `detail_file` | `string` | 詳細結果のファイルパス |
+
+**使用例:**
+
+```typescript
+// ドライラン（結果のみ確認）
+const result = db.updateExist({}, undefined, { dry_run: true });
+console.log(`更新対象: ${result.updated}件`);
+
+// 実行
+const result = db.updateExist({ media_type: 'comic' });
+console.log(`${result.updated}/${result.total}件を更新`);
+```
+
+---
+
 ### その他
 
 #### `close(): void`
@@ -1001,11 +1306,88 @@ db.close();
 
 ---
 
+#### `getTableInfo(tableName: string): TableColumnInfo[]`
+
+指定テーブルのカラム情報を取得します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `tableName` | `string` | ✓ | テーブル名 |
+
+**戻り値:** `TableColumnInfo[]` - カラム情報の配列
+
+**TableColumnInfo:**
+
+| プロパティ | 型 | 説明 |
+|-----------|-----|------|
+| `cid` | `number` | カラムID |
+| `name` | `string` | カラム名 |
+| `type` | `string` | データ型 |
+| `notnull` | `boolean` | NOT NULL制約 |
+| `default_value` | `string \| null` | デフォルト値 |
+| `pk` | `number` | 主キー（0: 非PK, 1以上: PKの順序） |
+
+**使用例:**
+
+```typescript
+const columns = db.getTableInfo('media');
+columns.forEach((col) => {
+  console.log(`${col.name} (${col.type})${col.notnull ? ' NOT NULL' : ''}`);
+});
+```
+
+---
+
 ## RemoteKijukuDB
 
-SSH経由でリモートDBを操作するクラス。`KijukuDB`と同等のAPIを非同期で提供します。
+SSH経由でリモートサーバーのDBを操作するクラス。ローカルの`KijukuDB`と同等のAPIを非同期（`Promise`）で提供します。
 
-### バックアップ操作
+### RemoteKijukuDBコンストラクタ
+
+#### `new RemoteKijukuDB(config: RemoteConfig)`
+
+**RemoteConfig:**
+
+| プロパティ | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| `sshHost` | `string` | ✓ | SSH接続先ホスト（.ssh/configのHost名） |
+| `port` | `number` | | SSHポート（省略時はSSH設定から読み取り） |
+| `dbPath` | `string` | | リモートのDBファイルパス（デフォルト: `~/.local/share/kijuku/kijuku.db`） |
+| `binaryPath` | `string` | | リモートのkijuku-cliパス（デフォルト: `~/.local/bin/kijuku-cli`） |
+
+**使用例:**
+
+```typescript
+import { RemoteKijukuDB } from 'kijuku-db';
+
+const remoteDb = new RemoteKijukuDB({
+  sshHost: 'example.com',
+  dbPath: '/path/to/kijuku.db',
+});
+```
+
+### RemoteKijukuDB対応メソッド一覧
+
+以下のメソッドは`KijukuDB`と同じシグネチャですが、戻り値が`Promise`で包まれます。
+
+| カテゴリ | メソッド | 備考 |
+|---------|---------|------|
+| **マイグレーション** | `migrate()`, `getSchemaVersion()`, `getTables()`, `getTableInfo()` | |
+| **メディアCRUD** | `createMedia()`, `getMedia()`, `updateMedia()`, `deleteMedia()` | |
+| **メディア検索** | `findMedia()`, `getDistinctValues()` | |
+| **バルク操作** | `bulkCreateMedia()`, `bulkDeleteMedia()`, `bulkUpdateMedia()` | |
+| **タグ操作** | `createTag()`, `getTagByName()`, `getAllTags()`, `addTagToMedia()`, `removeTagFromMedia()`, `getMediaTags()`, `getTagUsageStats()`, `findUnusedTags()` | |
+| **属性操作** | `setMediaAttribute()`, `getMediaAttribute()`, `getMediaAttributes()`, `deleteMediaAttribute()`, `deleteAllMediaAttributes()` | |
+| **サムネイル** | `checkThumbnail()`, `updateThumbnail()` | |
+| **ファイル存在** | `updateExist()` | |
+
+**相違点:**
+- 全メソッドが`Promise`を返す（例: `getMedia(id): Promise<Media | null>`）
+- `close()`は不要（使用後に自動的に切断される）
+
+### RemoteKijukuDBバックアップ操作
 
 #### `backup(label?: string, timeoutMs?: number): Promise<string>`
 
@@ -1077,6 +1459,83 @@ const path2 = await remoteDb.restore({ type: 'latest' });
 // 2番目に新しいバックアップから復元
 const path3 = await remoteDb.restore({ type: 'nth', n: 1 });
 ```
+
+---
+
+## Rust SDK
+
+Rust SDKはTypeScript SDKと同等のAPIを提供します。主な相違点:
+
+### 初期化
+
+```rust
+use kijuku_db::{KijukuDB, DBOptions};
+
+// 通常
+let db = KijukuDB::open("./data/kijuku.db")?;
+
+// オプション指定
+let db = KijukuDB::open_with_options("./data/kijuku.db", DBOptions::default())?;
+
+// インメモリ
+let db = KijukuDB::open_in_memory()?;
+```
+
+### メソッド対応表
+
+Rust SDKのメソッドはsnake_caseで、戻り値が`Result<T>`で包まれます:
+
+| TypeScript | Rust | 備考 |
+|-----------|------|------|
+| `new KijukuDB(path)` | `KijukuDB::open(path)` | コンストラクタ → ファクトリメソッド |
+| `createMedia(data)` | `create_media(&self, input: &MediaInput)` | |
+| `getMedia(id)` | `get_media(&self, id: i64) -> Option<Media>` | |
+| `updateMedia(id, data)` | `update_media(&self, id: i64, input: &MediaUpdateInput)` | `Partial<MediaInput>` → `MediaUpdateInput` |
+| `deleteMedia(id)` | `delete_media(&self, id: i64)` | |
+| `findMedia(filter, opts)` | `find_media(&self, filter: &MediaFilter, options: Option<&QueryOptions>)` | |
+| `getDistinctValues(fields, filter)` | `get_distinct_values(&self, fields: &[&str], filter: &MediaFilter)` | |
+| `bulkCreateMedia(list)` | `bulk_create_media(&self, data_list: &[MediaInput])` | |
+| `bulkDeleteMedia(ids)` | `bulk_delete_media(&self, ids: &[i64])` | |
+| `bulkUpdateMedia(updates)` | `bulk_update_media(&self, updates: &[BulkUpdateItem])` | |
+| `createTag(name)` | `create_tag(&self, name: &str)` | |
+| `getTagByName(name)` | `get_tag_by_name(&self, name: &str) -> Option<Tag>` | |
+| `getAllTags()` | `get_all_tags(&self)` | |
+| `addTagToMedia(mid, tid)` | `add_tag_to_media(&self, media_id: i64, tag_id: i64)` | |
+| `removeTagFromMedia(mid, tid)` | `remove_tag_from_media(&self, media_id: i64, tag_id: i64)` | |
+| `getMediaTags(mid)` | `get_media_tags(&self, media_id: i64)` | |
+| `getTagUsageStats()` | `get_tag_usage_stats(&self)` | |
+| `findUnusedTags()` | `find_unused_tags(&self)` | |
+| `setMediaAttribute(mid, k, v, vt)` | `set_media_attribute(&self, media_id: i64, key: &str, value: Option<&str>, value_type: Option<AttributeValueType>)` | |
+| `getMediaAttribute(mid, k)` | `get_media_attribute(&self, media_id: i64, key: &str)` | |
+| `getMediaAttributes(mid)` | `get_media_attributes(&self, media_id: i64)` | |
+| `deleteMediaAttribute(mid, k)` | `delete_media_attribute(&self, media_id: i64, key: &str)` | |
+| `deleteAllMediaAttributes(mid)` | `delete_all_media_attributes(&self, media_id: i64)` | |
+| `migrate()` | `migrate(&self)` | |
+| `getSchemaVersion()` | `get_schema_version(&self) -> Result<i64>` | |
+| `getTables()` | `get_tables(&self)` | |
+| `getTableInfo(table)` | `get_table_info(&self, table_name: &str)` | |
+| `isForeignKeysEnabled()` | `is_foreign_keys_enabled(&self)` | |
+| `checkThumbnail(filter, opts)` | `check_thumbnail(&self, filter: &MediaFilter, options: Option<&QueryOptions>)` | |
+| `updateThumbnail(filter, opts, to)` | `update_thumbnail(&self, filter: &MediaFilter, options: Option<&QueryOptions>, thumbnail_options: &ThumbnailOptions)` | |
+| `updateExist(filter, opts, uo)` | `update_exist(&self, filter: &MediaFilter, options: Option<&QueryOptions>, update_options: &UpdateExistOptions)` | |
+| `backup()` | `backup(&self) -> Result<Option<String>>` | |
+| `backupWithLabel(label)` | `backup_with_label(&self, label: &str)` | |
+| `restore(selector)` | `restore(&mut self, selector: &BackupSelector) -> Result<PathBuf>` | `&mut self` |
+| `listBackups()` | `list_backups(&self) -> Result<Vec<BackupInfo>>` | |
+| `getBackupManager()` | `get_backup_manager(&self) -> Option<&BackupManager>` | |
+| `getMediaFromBackup(id, sel)` | `get_media_from_backup(&self, id: i64, selector: &BackupSelector)` | |
+| `findMediaFromBackup(f, o, s)` | `find_media_from_backup(&self, filter: &MediaFilter, options: Option<&QueryOptions>, selector: &BackupSelector)` | |
+| `getTagByNameFromBackup(n, s)` | `get_tag_by_name_from_backup(&self, name: &str, selector: &BackupSelector)` | |
+| `getAllTagsFromBackup(sel)` | `get_all_tags_from_backup(&self, selector: &BackupSelector)` | |
+| `getMediaTagsFromBackup(mid, s)` | `get_media_tags_from_backup(&self, media_id: i64, selector: &BackupSelector)` | |
+| `getMediaAttributeFromBackup(mid, k, s)` | `get_media_attribute_from_backup(&self, media_id: i64, key: &str, selector: &BackupSelector)` | |
+| `getMediaAttributesFromBackup(mid, s)` | `get_media_attributes_from_backup(&self, media_id: i64, selector: &BackupSelector)` | |
+| `close()` | `close(self)` | `self`を消費 |
+| `transaction(fn)` | `transaction<F, T>(&self, f: F) -> Result<T>` | `FnOnce(&Self) -> Result<T>` |
+
+### Rust RemoteKijukuDB
+
+Rust SDKにも`RemoteKijukuDB`が存在し、同じAPIをSSH経由で提供します。詳細はRemoteKijukuDBセクションを参照してください。
 
 ---
 
@@ -1259,6 +1718,7 @@ type MediaType = 'comic' | 'video' | 'music';
 ```typescript
 interface Media {
   id: number;
+  uuid: string;
   title: string;
   title_id?: string;
   path?: string;
@@ -1302,6 +1762,7 @@ interface Media {
 interface MediaInput {
   title: string;
   media_type: MediaType;
+  uuid?: string;
   // ... その他のオプションフィールド
 }
 ```
@@ -1434,6 +1895,228 @@ const db = new KijukuDB('./data/kijuku.db', {
   }
 });
 ```
+
+---
+
+### TagUsageStats
+
+```typescript
+interface TagUsageStats {
+  tag_id: number;
+  tag_name: string;
+  count: number;
+}
+```
+
+タグごとの使用状況。
+
+---
+
+### MediaAttribute
+
+```typescript
+interface MediaAttribute {
+  media_id: number;
+  key: string;
+  value?: string;
+  value_type: 'string' | 'integer' | 'boolean';
+}
+```
+
+メディアの拡張属性（EAVモデル）。
+
+---
+
+### BackupInfo
+
+```typescript
+interface BackupInfo {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: Date;
+  scope: BackupScope;
+  kind: BackupKind;
+  label?: string;
+}
+```
+
+バックアップファイルのメタデータ。
+
+---
+
+### BackupScope
+
+```typescript
+type BackupScope = 'auto' | 'manual' | 'tmp';
+```
+
+- `auto`: 自動バックアップ
+- `manual`: 手動バックアップ
+- `tmp`: 一時バックアップ（リストア時の退避等）
+
+---
+
+### BackupKind
+
+```typescript
+type BackupKind = 'full' | 'diff';
+```
+
+- `full`: 完全バックアップ
+- `diff`: 差分バックアップ
+
+---
+
+### BackupSelector
+
+バックアップ選択のためのユーティリティクラス。
+
+```typescript
+class BackupSelector {
+  static latest(): BackupSelector;
+  static nth(n: number): BackupSelector;
+  static withLabel(label: string): BackupSelector;
+}
+```
+
+**使用例:**
+
+```typescript
+import { BackupSelector } from 'kijuku-db';
+
+db.restore(BackupSelector.latest());
+db.restore(BackupSelector.nth(1));          // 2番目に新しい
+db.restore(BackupSelector.withLabel('before_import'));
+```
+
+---
+
+### RemoteBackupSelector
+
+```typescript
+type RemoteBackupSelector =
+  | { type: 'latest' }
+  | { type: 'nth'; n: number };
+```
+
+リモートバックアップの選択条件。
+
+---
+
+### ThumbnailOptions
+
+```typescript
+interface ThumbnailOptions {
+  dry_run?: boolean;   // DBを更新せず結果を出力のみ
+  force?: boolean;     // 既存サムネイルを強制再生成
+}
+```
+
+サムネイル生成オプション。
+
+---
+
+### CheckThumbnailResult
+
+```typescript
+interface CheckThumbnailResult {
+  total: number;
+  ok: number;
+  missing: number;
+  file_not_found: number;
+  skipped: number;
+  details: CheckThumbnailItemResult[];
+}
+
+interface CheckThumbnailItemResult {
+  id: number;
+  title: string;
+  path?: string;
+  thumbnail_path?: string;
+  status: 'ok' | 'missing' | 'file_not_found' | 'skipped';
+}
+```
+
+---
+
+### UpdateThumbnailResult
+
+```typescript
+interface UpdateThumbnailResult {
+  total: number;
+  generated: number;
+  already_exists: number;
+  skipped: number;
+  errors: number;
+  details: UpdateThumbnailItemResult[];
+}
+
+interface UpdateThumbnailItemResult {
+  id: number;
+  title: string;
+  path?: string;
+  thumbnail_path?: string;
+  status: 'generated' | 'already_exists' | 'skipped' | 'error';
+  error?: string;
+}
+```
+
+---
+
+### UpdateExistOptions
+
+```typescript
+interface UpdateExistOptions {
+  dry_run?: boolean;   // DBを更新せず結果のみを返す
+}
+```
+
+---
+
+### UpdateExistResult
+
+```typescript
+interface UpdateExistResult {
+  total: number;
+  updated: number;
+  updated_ids: number[] | null;
+  updated_ids_file: string | null;
+  detail_file: string;
+}
+```
+
+---
+
+### TableColumnInfo
+
+```typescript
+interface TableColumnInfo {
+  cid: number;
+  name: string;
+  type: string;
+  notnull: boolean;
+  default_value: string | null;
+  pk: number;
+}
+```
+
+テーブルカラムのメタデータ。
+
+---
+
+### RemoteConfig
+
+```typescript
+interface RemoteConfig {
+  sshHost: string;
+  port?: number;
+  dbPath?: string;
+  binaryPath?: string;
+}
+```
+
+SSH経由のリモートDB接続設定。
 
 ---
 

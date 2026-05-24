@@ -91,8 +91,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // データベース接続を作成
     let db = KijukuDB::open("./data/kijuku.db")?;
 
+    // インメモリDB（テスト用途）
+    let mem_db = KijukuDB::open_in_memory()?;
+
     // スキーマを初期化（初回のみ）
     db.migrate()?;
+
+    // スキーマバージョンの確認
+    let version = db.get_schema_version()?;
+    println!("Schema version: {}", version);
+
+    // テーブル一覧の取得
+    let tables = db.get_tables()?;
+    println!("テーブル: {:?}", tables);
+
+    // テーブル定義の確認
+    let columns = db.get_table_info("media")?;
+    for col in &columns {
+        println!("{} ({})", col.name, col.type_);
+    }
+
+    // 明示的に接続を閉じる（省略可、スコープを抜けると自動的に閉じる）
+    db.close();
 
     Ok(())
 }
@@ -305,7 +325,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // タグの使用数統計を取得
     let stats = db.get_tag_usage_stats()?;
     for s in stats {
-        println!("{}: {}件", s.name, s.count);
+        println!("{}: {}件", s.tag_name, s.count);
     }
 
     // 未使用タグを取得
@@ -451,10 +471,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "合計: {}件, OK: {}件, 未設定: {}件, ファイルなし: {}件, スキップ: {}件",
         check.total, check.ok, check.missing, check.file_not_found, check.skipped
     );
-    // 詳細はdetail_fileから取得
-    let detail_json = std::fs::read_to_string(&check.detail_file)?;
-    let items: Vec<kijuku_db::CheckThumbnailItemResult> = serde_json::from_str(&detail_json)?;
-    for item in items {
+    // 詳細はdetailsフィールドから直接取得
+    for item in &check.details {
         println!("[{}] {}: {:?}", item.id, item.title, item.status);
     }
 
@@ -516,6 +534,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### バルク更新・削除
+
+```rust
+use kijuku_db::{KijukuDB, BulkUpdateItem, MediaUpdateInput};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = KijukuDB::open("./data/kijuku.db")?;
+
+    // バルク更新
+    db.bulk_update_media(&[
+        BulkUpdateItem {
+            id: 1,
+            data: MediaUpdateInput {
+                artist: Some(Some("新しい作者".to_string())),
+                ..Default::default()
+            },
+        },
+        BulkUpdateItem {
+            id: 2,
+            data: MediaUpdateInput {
+                flag_exist: Some(false),
+                ..Default::default()
+            },
+        },
+    ])?;
+
+    // バルク削除
+    db.bulk_delete_media(&[1, 2, 3])?;
+
+    Ok(())
+}
+```
+
 ### バックアップ
 
 ```rust
@@ -541,10 +592,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("バックアップ作成: {}", path);
     }
 
+    // ラベル付き手動バックアップ
+    if let Some(path) = db.backup_with_label("before_import")? {
+        println!("ラベル付きバックアップ作成: {}", path);
+    }
+
     // バックアップ一覧を取得
     let backups = db.list_backups()?;
-    for b in backups {
-        println!("{} ({:?})", b.name, b.created_at);
+    for b in &backups {
+        println!("{} [{:?}] ({:?})", b.name, b.scope, b.created_at);
+    }
+
+    // バックアップからリストア
+    let mut db = db; // restore は &mut self を要求
+    let restored = db.restore(&BackupSelector::latest())?;
+    println!("リストア完了: {:?}", restored);
+
+    // BackupManagerに直接アクセス（高度な用途）
+    if let Some(manager) = db.get_backup_manager() {
+        let info = manager.list_backups();
+        println!("バックアップ数: {}", info.len());
     }
 
     // 最新バックアップからメディアを取得（読み取り専用）
@@ -564,6 +631,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+### RemoteKijukuDB（SSH経由のリモート操作）
+
+リモートサーバーのDBをSSH経由で操作できます：
+
+```rust
+use kijuku_db::{RemoteKijukuDB, RemoteConfig, MediaFilter, MediaType};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let remote_db = RemoteKijukuDB::new(RemoteConfig {
+        ssh_host: "example.com".to_string(),
+        port: Some(22),
+        username: "user".to_string(),
+        db_path: Some("/path/to/kijuku.db".to_string()),
+        private_key_path: Some(std::path::PathBuf::from("~/.ssh/id_rsa")),
+        binary_path: None, // 自動検出
+    });
+
+    // KijukuDBと同等のAPI（全て非同期）
+    remote_db.migrate()?;
+    let media = remote_db.create_media(&MediaInput {
+        title: "テスト".to_string(),
+        media_type: MediaType::Comic,
+        ..Default::default()
+    })?;
+    let results = remote_db.find_media(&MediaFilter::default(), None)?;
+
+    // バックアップ操作
+    let backups = remote_db.list_backups()?;
+    let backup_path = remote_db.backup(Some("label".to_string()), None)?;
+
+    // リモートのDB情報
+    let tables = remote_db.get_tables()?;
+    let columns = remote_db.get_table_info("media")?;
+
+    Ok(())
+}
+```
+
+**RemoteConfig:**
+
+| フィールド | 型 | 必須 | 説明 |
+|-----------|-----|------|------|
+| `ssh_host` | `String` | ✓ | SSH接続先ホスト |
+| `port` | `Option<u16>` | | SSHポート（デフォルト: 22） |
+| `username` | `String` | ✓ | SSHユーザー名 |
+| `private_key_path` | `Option<PathBuf>` | | 秘密鍵ファイルパス |
+| `db_path` | `Option<String>` | | リモートのDBファイルパス |
+| `binary_path` | `Option<String>` | | リモートのkijuku-cliパス |
+
+**対応メソッド:** KijukuDBと同等の全メソッドが利用可能です（バックアップ読み取り含む）。
+
+---
 
 ### Web GUIサーバー（CLIのみ）
 
@@ -693,6 +813,7 @@ pub enum SortOrder {
 // メディア情報
 pub struct Media {
     pub id: i64,
+    pub uuid: String,
     pub title: String,
     pub title_id: Option<String>,
     pub path: Option<String>,
@@ -729,6 +850,7 @@ pub struct Media {
 pub struct MediaInput {
     pub title: String,
     pub media_type: MediaType,
+    pub uuid: Option<String>,
     pub title_id: Option<String>,
     pub path: Option<String>,
     pub thumbnail_path: Option<String>,
@@ -798,6 +920,96 @@ pub struct Tag {
     pub id: i64,
     pub name: String,
 }
+
+// タグ使用統計
+pub struct TagUsageStats {
+    pub tag_id: i64,
+    pub tag_name: String,
+    pub count: i64,
+}
+
+// メディア属性（EAVモデル）
+pub struct MediaAttribute {
+    pub media_id: i64,
+    pub key: String,
+    pub value: Option<String>,
+    pub value_type: AttributeValueType,
+}
+
+// 属性値の型
+pub enum AttributeValueType {
+    String,
+    Integer,
+    Boolean,
+}
+
+// バルク更新アイテム
+pub struct BulkUpdateItem {
+    pub id: i64,
+    pub data: MediaUpdateInput,
+}
+
+// メディア部分更新用入力（Rust SDK固有）
+// 全フィールドがOptionで、null許容フィールドはOption<Option<String>>
+pub struct MediaUpdateInput {
+    pub uuid: Option<Option<String>>,
+    pub title: Option<String>,
+    pub media_type: Option<MediaType>,
+    // ... 他のフィールドも同様
+    pub flag_exist: Option<bool>,
+}
+
+// バックアップ情報
+pub struct BackupInfo {
+    pub id: String,
+    pub name: String,
+    pub path: PathBuf,
+    pub created_at: SystemTime,
+    pub scope: BackupScope,
+    pub kind: BackupKind,
+    pub label: Option<String>,
+}
+
+pub enum BackupScope { Auto, Manual, Tmp }
+pub enum BackupKind { Full, Diff }
+
+// サムネイル結果
+pub struct CheckThumbnailResult {
+    pub total: usize,
+    pub ok: usize,
+    pub missing: usize,
+    pub file_not_found: usize,
+    pub skipped: usize,
+    pub details: Vec<CheckThumbnailItemResult>,
+}
+
+pub struct UpdateThumbnailResult {
+    pub total: usize,
+    pub generated: usize,
+    pub already_exists: usize,
+    pub skipped: usize,
+    pub errors: usize,
+    pub details: Vec<UpdateThumbnailItemResult>,
+}
+
+// ファイル存在チェック
+pub struct UpdateExistResult {
+    pub total: usize,
+    pub updated: usize,
+    pub updated_ids: Option<Vec<i64>>,
+    pub updated_ids_file: Option<String>,
+    pub detail_file: String,
+}
+
+// テーブルカラム情報
+pub struct TableColumnInfo {
+    pub cid: i32,
+    pub name: String,
+    pub type_: String,
+    pub notnull: bool,
+    pub default_value: Option<String>,
+    pub pk: i32,
+}
 ```
 
 ## テスト
@@ -812,7 +1024,7 @@ mod tests {
 
     #[test]
     fn test_create_media() -> Result<(), Box<dyn std::error::Error>> {
-        let db = KijukuDB::open(":memory:")?;
+        let db = KijukuDB::open_in_memory()?;
         db.migrate()?;
 
         let media = db.create_media(&MediaInput {
@@ -860,10 +1072,11 @@ cargo build --target x86_64-pc-windows-gnu --release
 
 ## 関連ドキュメント
 
-- [API仕様書](../../../api.md) - TypeScript版ですが、概念は共通
+- [API仕様書](../../../api.md) - TS/Rust両SDKの全API仕様
 - [パフォーマンスガイド](../../../PERFORMANCE.md) - ベンチマークと最適化
 
 ## 注意事項
 
-- Rust SDKはまだTypeScript SDKほど機能が充実していません
+- Rust SDKはTypeScript SDKと同等のAPIを提供しています
+- RemoteKijukuDB（SSH経由のリモート操作）も利用可能です
 - Web GUIサーバーはCLIツールとしてのみ利用可能

@@ -40,6 +40,68 @@ TypeScript SDKの `RemoteKijukuDB` はこのモードを使用してSSH経由で
 echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.db
 ```
 
+**stdin操作一覧（34種類）:**
+
+| カテゴリ | 操作名 | 説明 | 主なパラメータ |
+|---------|--------|------|--------------|
+| **DB操作** | `migrate` | マイグレーション実行 | なし |
+| | `getSchemaVersion` | スキーマバージョン取得 | なし |
+| | `getTables` | テーブル一覧取得 | なし |
+| | `getTableInfo` | テーブル定義取得 | `table_name` |
+| **メディアCRUD** | `createMedia` | メディア作成 | `data: MediaInput` |
+| | `getMedia` | メディア取得 | `id` |
+| | `updateMedia` | メディア更新 | `id`, `data` |
+| | `deleteMedia` | メディア削除 | `id` |
+| **メディア検索** | `findMedia` | メディア検索 | `filter`, `options?` |
+| | `getDistinctValues` | ユニーク値取得 | `fields`, `filter` |
+| **バルク操作** | `bulkCreateMedia` | 一括作成 | `data_list: MediaInput[]` |
+| | `bulkUpdateMedia` | 一括更新 | `updates: BulkUpdateItem[]` |
+| | `bulkDeleteMedia` | 一括削除 | `ids: number[]` |
+| **タグ操作** | `createTag` | タグ作成 | `name` |
+| | `getTagByName` | タグ名で取得 | `name` |
+| | `getAllTags` | 全タグ取得 | なし |
+| | `addTagToMedia` | タグ追加 | `media_id`, `tag_id` |
+| | `removeTagFromMedia` | タグ削除 | `media_id`, `tag_id` |
+| | `getMediaTags` | メディアのタグ取得 | `media_id` |
+| | `getTagUsageStats` | タグ使用統計 | なし |
+| | `findUnusedTags` | 未使用タグ検索 | なし |
+| **属性操作** | `setMediaAttribute` | 属性設定 | `media_id`, `key`, `value`, `value_type?` |
+| | `getMediaAttribute` | 属性取得 | `media_id`, `key` |
+| | `getMediaAttributes` | 全属性取得 | `media_id` |
+| | `deleteMediaAttribute` | 属性削除 | `media_id`, `key` |
+| | `deleteAllMediaAttributes` | 全属性削除 | `media_id` |
+| **ファイル操作** | `updateExist` | flag_exist更新 | `filter?`, `options?`, `update_options?` |
+| | `checkThumbnail` | サムネイル状態確認 | `filter?`, `options?` |
+| | `updateThumbnail` | サムネイル生成 | `filter?`, `options?`, `thumbnail_options?` |
+| **バックアップ** | `backup` | バックアップ作成 | `label?` |
+| | `listBackups` | バックアップ一覧 | なし |
+| | `restore` | バックアップ復元 | `selector?` |
+
+**使用例:**
+
+```bash
+# メディア作成
+echo '{"operation":"createMedia","params":{"data":{"title":"テスト","media_type":"comic"}}}' | kijuku-cli --db ./data/kijuku.db
+
+# メディア検索（QueryOptions付き）
+echo '{"operation":"findMedia","params":{"filter":{"media_type":"comic"},"options":{"sortKeys":[{"field":"title","order":"ASC"}],"limit":10}}}' | kijuku-cli --db ./data/kijuku.db
+
+# タグ作成
+echo '{"operation":"createTag","params":{"name":"お気に入り"}}' | kijuku-cli --db ./data/kijuku.db
+
+# 属性設定
+echo '{"operation":"setMediaAttribute","params":{"media_id":1,"key":"rating","value":"5"}}' | kijuku-cli --db ./data/kijuku.db
+
+# バックアップ一覧
+echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.db
+```
+
+**QueryOptions対応:** `findMedia`, `updateExist`, `checkThumbnail`, `updateThumbnail`では`options`パラメータで`QueryOptions`（`sortKeys`, `limit`, `offset`）を渡して対象を絞り込めます。
+
+---
+
+### backup
+
 ### backup
 
 バックアップを作成します。作成されたバックアップファイルのパスを出力します。
@@ -167,9 +229,11 @@ kijuku-cli --db ./data/kijuku.db server --port 8080 --password mypassword
 ```bash
 # SDK選択ガイド（デフォルト）
 kijuku-cli docs
+kijuku-cli docs sdk       # 同上
 
 # TypeScript SDKガイド
 kijuku-cli docs ts
+kijuku-cli docs typescript  # 同上
 
 # Rust SDKガイド
 kijuku-cli docs rust
