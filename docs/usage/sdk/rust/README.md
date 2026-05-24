@@ -641,12 +641,12 @@ use kijuku_db::{RemoteKijukuDB, RemoteConfig, MediaFilter, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let remote_db = RemoteKijukuDB::new(RemoteConfig {
-        host: "example.com".to_string(),
+        ssh_host: "example.com".to_string(),
         port: Some(22),
-        user: "user".to_string(),
-        db_path: "/path/to/kijuku.db".to_string(),
-        identity_file: Some("~/.ssh/id_rsa".to_string()),
-        cli_path: None, // 自動検出
+        username: "user".to_string(),
+        db_path: Some("/path/to/kijuku.db".to_string()),
+        private_key_path: Some(std::path::PathBuf::from("~/.ssh/id_rsa")),
+        binary_path: None, // 自動検出
     });
 
     // KijukuDBと同等のAPI（全て非同期）
@@ -674,12 +674,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | フィールド | 型 | 必須 | 説明 |
 |-----------|-----|------|------|
-| `host` | `String` | ✓ | SSH接続先ホスト |
+| `ssh_host` | `String` | ✓ | SSH接続先ホスト |
 | `port` | `Option<u16>` | | SSHポート（デフォルト: 22） |
-| `user` | `String` | ✓ | SSHユーザー名 |
-| `db_path` | `String` | ✓ | リモートのDBファイルパス |
-| `identity_file` | `Option<String>` | | 秘密鍵ファイルパス |
-| `cli_path` | `Option<String>` | | リモートのkijuku-cliパス |
+| `username` | `String` | ✓ | SSHユーザー名 |
+| `private_key_path` | `Option<PathBuf>` | | 秘密鍵ファイルパス |
+| `db_path` | `Option<String>` | | リモートのDBファイルパス |
+| `binary_path` | `Option<String>` | | リモートのkijuku-cliパス |
 
 **対応メソッド:** KijukuDBと同等の全メソッドが利用可能です（バックアップ読み取り含む）。
 

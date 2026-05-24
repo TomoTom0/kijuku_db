@@ -1352,12 +1352,10 @@ SSH経由でリモートサーバーのDBを操作するクラス。ローカル
 
 | プロパティ | 型 | 必須 | 説明 |
 |-----------|-----|------|------|
-| `host` | `string` | ✓ | SSH接続先ホスト |
-| `port` | `number` | | SSHポート（デフォルト: `22`） |
-| `user` | `string` | ✓ | SSHユーザー名 |
-| `dbPath` | `string` | ✓ | リモートのDBファイルパス |
-| `identityFile` | `string` | | 秘密鍵ファイルパス |
-| `cliPath` | `string` | | リモートのkijuku-cliパス（デフォルト: 自動検出） |
+| `sshHost` | `string` | ✓ | SSH接続先ホスト（.ssh/configのHost名） |
+| `port` | `number` | | SSHポート（省略時はSSH設定から読み取り） |
+| `dbPath` | `string` | | リモートのDBファイルパス（デフォルト: `~/.local/share/kijuku/kijuku.db`） |
+| `binaryPath` | `string` | | リモートのkijuku-cliパス（デフォルト: `~/.local/bin/kijuku-cli`） |
 
 **使用例:**
 
@@ -1365,8 +1363,7 @@ SSH経由でリモートサーバーのDBを操作するクラス。ローカル
 import { RemoteKijukuDB } from 'kijuku-db';
 
 const remoteDb = new RemoteKijukuDB({
-  host: 'example.com',
-  user: 'user',
+  sshHost: 'example.com',
   dbPath: '/path/to/kijuku.db',
 });
 ```
@@ -2112,12 +2109,10 @@ interface TableColumnInfo {
 
 ```typescript
 interface RemoteConfig {
-  host: string;
+  sshHost: string;
   port?: number;
-  user: string;
-  dbPath: string;
-  identityFile?: string;
-  cliPath?: string;
+  dbPath?: string;
+  binaryPath?: string;
 }
 ```
 
