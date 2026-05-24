@@ -35,6 +35,15 @@
 - `ts-sdk/src/index.ts`: `KijukuDB.getDistinctValues` メソッド追加
 - `ts-sdk/src/remote.ts`: `RemoteKijukuDB.getDistinctValues` メソッド追加
 
+### Rust SDK: RemoteKijukuDBにcheck_thumbnail/update_thumbnailを追加 (TASK-186)
+
+- `RemoteKijukuDB::check_thumbnail()` / `RemoteKijukuDB::update_thumbnail()` を追加（SSH経由でサムネイル操作可能に）
+- `ThumbnailOptions` の `dry_run` / `force` フィールドに `#[serde(default)]` を追加（省略時のデシリアライズエラーを防止）
+
+**ファイル:**
+- `rust-sdk/src/remote.rs`: `check_thumbnail` / `update_thumbnail` メソッド追加
+- `rust-sdk/src/thumbnail.rs`: `ThumbnailOptions` フィールドに `#[serde(default)]` 追加
+
 ### TypeScript SDK に checkThumbnail / updateThumbnail を追加
 
 - `KijukuDB.checkThumbnail(filter?, options?)`: サムネイル状態をチェック（ファイル生成なし）

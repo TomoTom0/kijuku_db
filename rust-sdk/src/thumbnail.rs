@@ -38,8 +38,10 @@ pub fn resolve_thumbnail_path(path_str: &str, uuid: &str) -> Option<String> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThumbnailOptions {
     /// trueの場合、DBを更新せず結果を出力のみ（update-thumbnailのみ有効）
+    #[serde(default)]
     pub dry_run: bool,
     /// trueの場合、既にサムネイルが存在しても再生成する（update-thumbnailのみ有効）
+    #[serde(default)]
     pub force: bool,
 }
 

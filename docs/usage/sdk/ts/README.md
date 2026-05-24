@@ -203,7 +203,7 @@ console.log('タグ:', tags.map(t => t.name).join(', '));
 
 // タグの使用数統計を取得
 const stats = db.getTagUsageStats();
-stats.forEach(s => console.log(`${s.name}: ${s.count}件`));
+stats.forEach(s => console.log(`${s.tag_name}: ${s.count}件`));
 
 // 未使用タグを取得
 const unused = db.findUnusedTags();
@@ -231,6 +231,28 @@ db.transaction(() => {
 ```typescript
 // 使用後は接続を閉じる
 db.close();
+```
+
+### 7. データベース情報の取得
+
+```typescript
+// スキーマバージョン
+const version = db.getSchemaVersion();
+console.log(`Schema version: ${version}`);
+
+// テーブル一覧
+const tables = db.getTables();
+console.log('テーブル:', tables);
+
+// テーブル定義の確認
+const columns = db.getTableInfo('media');
+columns.forEach(col => {
+  console.log(`${col.name} (${col.type})${col.notnull ? ' NOT NULL' : ''}`);
+});
+
+// 外部キー制約の確認
+const fkEnabled = db.isForeignKeysEnabled();
+console.log(`外部キー制約: ${fkEnabled ? '有効' : '無効'}`);
 ```
 
 ## 高度な機能
@@ -369,14 +391,33 @@ db.migrate();
 
 ```typescript
 await db.backup();
-console.log(`バックアップを作成しました`);
+console.log('バックアップを作成しました');
+
+// ラベル付きバックアップ
+const path = await db.backupWithLabel('before_import');
+if (path) {
+  console.log(`バックアップ作成: ${path}`);
+}
 ```
 
 バックアップ一覧を取得：
 
 ```typescript
 const backups = db.listBackups();
-backups.forEach(b => console.log(`${b.name} (${b.createdAt.toISOString()})`));
+backups.forEach(b => console.log(`${b.name} [${b.scope}] (${b.createdAt.toISOString()})`));
+
+// バックアップからリストア
+import { BackupSelector } from 'kijuku-db';
+const restoredPath = db.restore();  // 最新
+const restoredPath2 = db.restore(BackupSelector.nth(1));  // 2番目に新しい
+const restoredPath3 = db.restore(BackupSelector.withLabel('before_import'));
+
+// BackupManagerに直接アクセス（高度な用途）
+const manager = db.getBackupManager();
+if (manager) {
+  const info = manager.listBackups();
+  console.log(`バックアップ数: ${info.length}`);
+}
 ```
 
 バックアップからデータを読み取る（読み取り専用）：
@@ -500,6 +541,62 @@ const oldMedia = await remoteDb.findMedia({ source: 'deprecated' });
 await remoteDb.bulkDeleteMedia(oldMedia.map(m => m.id));
 ```
 
+#### リモートDBでサポートされる全メソッド
+
+RemoteKijukuDBはKijukuDBと同等の全メソッドを`Promise`で提供します：
+
+- メディアCRUD / 検索 / バルク操作
+- タグ操作 / 属性操作
+- `updateExist()` / `checkThumbnail()` / `updateThumbnail()`
+- `getSchemaVersion()` / `getTables()` / `getTableInfo()`
+
+### TOML設定ファイル（config）
+
+バックアップ設定等をTOMLファイルで管理できます：
+
+```typescript
+import { loadConfig, globalConfigPath } from 'kijuku-db';
+
+// 設定を読み込み（dbPath基準でconfig.tomlを検索）
+const config = loadConfig('./data/kijuku.db');
+console.log('バックアップ設定:', config.backup);
+
+// グローバル設定パス
+console.log('グローバル設定:', globalConfigPath());
+```
+
+設定ファイルの優先順位:
+1. `{dbPathと同じディレクトリ}/config.toml`
+2. `~/.config/kijuku/config.toml`（グローバル）
+
+### カスタムエラークラス
+
+SDKは型安全なエラークラスを提供しています：
+
+```typescript
+import {
+  KijukuDBError,
+  DatabaseError,
+  ValidationError,
+  NotFoundError,
+  ConflictError,
+} from 'kijuku-db';
+
+try {
+  db.createMedia({ title: 'テスト', media_type: 'comic', path: '/duplicate' });
+} catch (error) {
+  if (error instanceof ConflictError) {
+    console.error('データが重複しています');
+  } else if (error instanceof ValidationError) {
+    console.error('バリデーションエラー:', error.message);
+  } else if (error instanceof DatabaseError) {
+    console.error('データベースエラー:', error.message);
+  }
+}
+```
+
+---
+
 ### Web GUIサーバー（特殊ケース）
 
 **通常はCLIツールを使用してください：**
@@ -524,15 +621,35 @@ kijuku-dbは完全な型定義を提供しています：
 
 ```typescript
 import type {
+  // コア型
   Media,
   MediaInput,
   MediaFilter,
   QueryOptions,
+  SortKey,
+  BulkUpdateItem,
   Tag,
+  TagUsageStats,
   MediaAttribute,
+  DBOptions,
+  // バックアップ型
+  BackupInfo,
+  BackupScope,
+  BackupKind,
+  BackupOptions,
+  // サムネイル型
+  ThumbnailOptions,
+  CheckThumbnailResult,
+  UpdateThumbnailResult,
+  // ファイル存在チェック型
   UpdateExistOptions,
   UpdateExistResult,
   UpdateExistItemResult,
+  // DB情報型
+  TableColumnInfo,
+  // リモート型
+  RemoteConfig,
+  RemoteBackupSelector,
 } from 'kijuku-db';
 
 // 型安全な関数
@@ -564,11 +681,6 @@ DATABASE_PATH=./data/kijuku.db
 
 # クエリログ出力の有効化
 KIJUKU_DB_VERBOSE=true
-
-# リモートDB設定
-REMOTE_SSH_HOST=myserver
-REMOTE_DB_PATH=~/.local/share/kijuku/kijuku.db
-REMOTE_BINARY_PATH=~/.local/bin/kijuku-cli
 ```
 
 `.env`ファイルを使用する場合は、`dotenv`パッケージと組み合わせて使用してください：
@@ -579,6 +691,8 @@ import { KijukuDB } from 'kijuku-db';
 
 const db = new KijukuDB(process.env.DATABASE_PATH || './data/kijuku.db');
 ```
+
+> **注意:** リモートDB設定は環境変数ではなく`RemoteConfig`オブジェクトで指定します。
 
 ## パフォーマンス最適化
 
