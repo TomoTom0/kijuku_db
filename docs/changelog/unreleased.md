@@ -16,6 +16,17 @@
 
 ## Added
 
+### update-thumbnail の Video 対応（ffmpeg によるサムネイル抽出）
+
+- `update-thumbnail` が `media_type: video` のメディアに対応（従来は Comic のみ）
+- ffmpeg で動画の1秒地点からフレームを抽出し、サムネイルとして `{parent}/cover/{uuid}.jpg` に保存
+- `media_type: music` はサムネイル対象外としてスキップ
+- `media.path` に拡張子が含まれない場合、`{path}.{ext}` または `{uuid}.*` 形式で実際のファイルパスを自動解決
+
+**ファイル:**
+- `rust-sdk/src/thumbnail.rs`: `resolve_media_file_path` 追加、`update_media_thumbnail` の media_type 分岐
+- `ts-sdk/src/thumbnail.ts`: `resolveMediaFilePath` 追加、`updateMediaThumbnail` の media_type 分岐
+
 ### getDistinctValues: フィールドの重複なし値一覧を取得する機能を追加
 
 - `KijukuDB.getDistinctValues(fields, filter)`: 指定したフィールド群の重複なしの値の組み合わせ一覧を取得

@@ -167,7 +167,13 @@ kijuku-cli --db ./data/kijuku.db check-thumbnail --filter '{"media_type":"comic"
 
 ### update-thumbnail
 
-サムネイルを生成・更新します。`{pathのlast content親}/cover/{uuid}.jpg` に ImageMagick `convert` で高さ180px固定のサムネイルを作成し、DBの `thumbnail_path` を更新します。
+サムネイルを生成・更新します。メディアタイプに応じて自動的に処理を切り替えます。
+
+| media_type | 処理 |
+|-----------|------|
+| `comic` | ImageMagick `convert` で `{path}/001.{ext}` を高さ180pxにリサイズ |
+| `video` | ffmpeg で動画の1秒地点からフレームを抽出 |
+| `music` | スキップ（サムネイル対象外） |
 
 ```bash
 # 全メディアを対象に実行
@@ -181,12 +187,14 @@ kijuku-cli --db ./data/kijuku.db update-thumbnail --force
 
 # フィルタを指定して対象を絞り込む
 kijuku-cli --db ./data/kijuku.db update-thumbnail --filter '{"media_type":"comic"}'
+kijuku-cli --db ./data/kijuku.db update-thumbnail --filter '{"media_type":"video"}'
 ```
 
 **スキップ条件（以下のいずれかに該当する場合はスキップ）:**
 - `path` が未設定
 - `path` に `content` コンポーネントが含まれない
-- `{path}/001.{ext}` が存在しない
+- Comic: `{path}/001.{ext}` が存在しない
+- Video: 動画ファイルが存在しない（`path` に拡張子がない場合は `{uuid}.*` から自動解決を試行）
 
 **サムネイルパスの決定規則:**
 `path` に含まれる最後の `content` コンポーネントを探し、その親ディレクトリに `cover/{uuid}.jpg` を配置します。

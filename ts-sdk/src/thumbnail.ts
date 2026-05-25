@@ -105,6 +105,32 @@ export function checkThumbnail(
   return { total: mediaList.length, ok, missing, file_not_found, skipped, details };
 }
 
+/**
+ * video/musicの実際のファイルパスを解決する
+ *
+ * pathにextが含まれていればそのまま、含まれていなければ
+ * {path}.{ext} または {uuid}.* 形式で代替を探す。
+ */
+function resolveMediaFilePath(pathStr: string, ext: string, uuid: string): string | undefined {
+  if (fs.existsSync(pathStr)) return pathStr;
+  const withExt = `${pathStr}.${ext}`;
+  if (fs.existsSync(withExt)) return withExt;
+  const parent = path.dirname(pathStr);
+  try {
+    for (const entry of fs.readdirSync(parent)) {
+      const dotPos = entry.lastIndexOf('.');
+      if (dotPos > 0) {
+        const stem = entry.substring(0, dotPos);
+        const fileExt = entry.substring(dotPos + 1);
+        if (stem === uuid && fileExt.length > 0) {
+          return path.join(parent, entry);
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return undefined;
+}
+
 function updateMediaThumbnail(
   db: Database.Database,
   media: Media,
@@ -127,10 +153,25 @@ function updateMediaThumbnail(
     return build({ type: 'skipped', reason: 'pathにcontentが含まれていない' });
   }
 
-  const ext = media.extension ?? 'jpg';
-  const firstPage = path.join(media.path, `001.${ext}`);
-  if (!fs.existsSync(firstPage)) {
-    return build({ type: 'skipped', reason: `001.${ext} が存在しない` });
+  // media_typeに応じたソースファイルのチェック
+  switch (media.media_type) {
+    case 'comic': {
+      const ext = media.extension ?? 'jpg';
+      const firstPage = path.join(media.path, `001.${ext}`);
+      if (!fs.existsSync(firstPage)) {
+        return build({ type: 'skipped', reason: `001.${ext} が存在しない` });
+      }
+      break;
+    }
+    case 'video': {
+      const ext = media.extension ?? 'mp4';
+      if (!resolveMediaFilePath(media.path, ext, media.uuid)) {
+        return build({ type: 'skipped', reason: '動画ファイルが存在しない' });
+      }
+      break;
+    }
+    case 'music':
+      return build({ type: 'skipped', reason: 'musicはサムネイル対象外' });
   }
 
   if (!options.force) {
@@ -151,13 +192,35 @@ function updateMediaThumbnail(
     return build({ type: 'error', message: `cover/ディレクトリの作成に失敗: ${message}` });
   }
 
-  const result = spawnSync('convert', [firstPage, '-resize', 'x180', '-quality', '85', expectedPath]);
-  if (result.error) {
-    return build({ type: 'error', message: `convertの実行に失敗: ${result.error.message}` });
+  // media_typeに応じたサムネイル生成
+  let cmdResult: ReturnType<typeof spawnSync>;
+  switch (media.media_type) {
+    case 'comic': {
+      const ext = media.extension ?? 'jpg';
+      const firstPage = path.join(media.path, `001.${ext}`);
+      cmdResult = spawnSync('convert', [firstPage, '-resize', 'x180', '-quality', '85', expectedPath]);
+      break;
+    }
+    case 'video': {
+      const ext = media.extension ?? 'mp4';
+      const resolved = resolveMediaFilePath(media.path, ext, media.uuid)!;
+      cmdResult = spawnSync('ffmpeg', [
+        '-ss', '00:00:01', '-i', resolved,
+        '-vframes', '1', '-q:v', '2', '-y', expectedPath,
+      ]);
+      break;
+    }
+    case 'music':
+      return build({ type: 'skipped', reason: 'musicはサムネイル対象外' });
   }
-  if (result.status !== 0) {
-    const stderr = result.stderr?.toString().trim() ?? '';
-    return build({ type: 'error', message: `convert失敗: ${stderr}` });
+
+  const cmdName = media.media_type === 'video' ? 'ffmpeg' : 'convert';
+  if (cmdResult!.error) {
+    return build({ type: 'error', message: `${cmdName}の実行に失敗: ${cmdResult!.error.message}` });
+  }
+  if (cmdResult!.status !== 0) {
+    const stderr = cmdResult!.stderr?.toString().trim() ?? '';
+    return build({ type: 'error', message: `${cmdName}失敗: ${stderr}` });
   }
 
   try {
