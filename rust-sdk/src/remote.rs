@@ -70,12 +70,14 @@ impl RemoteKijukuDB {
 
         // SSH configが存在しない場合はデフォルト値を使用
         if !ssh_config_path.exists() {
-            let username = self.config.username.clone().ok_or_else(|| {
-                KijukuError::Other(format!(
-                    "SSH user for '{}' is not specified and no ~/.ssh/config found",
-                    self.config.ssh_host
-                ))
-            })?;
+            let username = self.config.username.clone()
+                .or_else(|| env::var("USER").ok())
+                .ok_or_else(|| {
+                    KijukuError::Other(format!(
+                        "SSH user for '{}' is not specified and no ~/.ssh/config found",
+                        self.config.ssh_host
+                    ))
+                })?;
             return Ok((
                 self.config.ssh_host.clone(),
                 self.config.port.unwrap_or(22),
@@ -98,12 +100,15 @@ impl RemoteKijukuDB {
         // 各フィールドを取得（明示的な設定が優先）
         let hostname = params.host_name.unwrap_or_else(|| self.config.ssh_host.clone());
         let port = self.config.port.or(params.port).unwrap_or(22);
-        let username = self.config.username.clone().or(params.user).ok_or_else(|| {
-            KijukuError::Other(format!(
-                "SSH user for '{}' is not specified. Set it in RemoteConfig or ~/.ssh/config",
-                self.config.ssh_host
-            ))
-        })?;
+        let username = self.config.username.clone()
+            .or(params.user)
+            .or_else(|| env::var("USER").ok())
+            .ok_or_else(|| {
+                KijukuError::Other(format!(
+                    "SSH user for '{}' is not specified. Set it in RemoteConfig, ~/.ssh/config or USER env var",
+                    self.config.ssh_host
+                ))
+            })?;
         let identity_file = self.config.private_key_path.clone().or_else(|| {
             params.identity_file.and_then(|files| {
                 files.first().map(|path| {

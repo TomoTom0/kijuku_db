@@ -288,7 +288,7 @@ fn update_media_thumbnail(
     };
 
     // media_typeに応じたソースファイルのチェック
-    match media.media_type {
+    let resolved_video_path = match media.media_type {
         MediaType::Comic => {
             let ext = media.extension.as_deref().unwrap_or("jpg");
             let first_page = Path::new(&path_str).join(format!("001.{}", ext));
@@ -301,17 +301,21 @@ fn update_media_thumbnail(
                     None,
                 ));
             }
+            None
         }
         MediaType::Video => {
             let ext = media.extension.as_deref().unwrap_or("mp4");
-            if resolve_media_file_path(&path_str, ext, &media.uuid).is_none() {
-                return Ok(build_item_result(
-                    media,
-                    UpdateThumbnailStatus::Skipped {
-                        reason: "動画ファイルが存在しない".to_string(),
-                    },
-                    None,
-                ));
+            match resolve_media_file_path(&path_str, ext, &media.uuid) {
+                Some(p) => Some(p),
+                None => {
+                    return Ok(build_item_result(
+                        media,
+                        UpdateThumbnailStatus::Skipped {
+                            reason: "動画ファイルが存在しない".to_string(),
+                        },
+                        None,
+                    ));
+                }
             }
         }
         MediaType::Music => {
@@ -323,7 +327,7 @@ fn update_media_thumbnail(
                 None,
             ));
         }
-    }
+    };
 
     // forceでない場合、既存サムネイルが正常であればスキップ
     if !options.force {
@@ -385,8 +389,7 @@ fn update_media_thumbnail(
                 .output()
         }
         MediaType::Video => {
-            let ext = media.extension.as_deref().unwrap_or("mp4");
-            let resolved = resolve_media_file_path(&path_str, ext, &media.uuid).unwrap();
+            let resolved = resolved_video_path.as_deref().unwrap();
             std::process::Command::new("ffmpeg")
                 .args(["-ss", VIDEO_THUMBNAIL_TIMESTAMP])
                 .arg("-i")

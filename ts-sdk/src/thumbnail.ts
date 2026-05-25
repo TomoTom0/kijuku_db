@@ -154,6 +154,7 @@ function updateMediaThumbnail(
   }
 
   // media_typeに応じたソースファイルのチェック
+  let resolvedVideoPath: string | undefined;
   switch (media.media_type) {
     case 'comic': {
       const ext = media.extension ?? 'jpg';
@@ -165,9 +166,11 @@ function updateMediaThumbnail(
     }
     case 'video': {
       const ext = media.extension ?? 'mp4';
-      if (!resolveMediaFilePath(media.path, ext, media.uuid)) {
+      const resolved = resolveMediaFilePath(media.path, ext, media.uuid);
+      if (!resolved) {
         return build({ type: 'skipped', reason: '動画ファイルが存在しない' });
       }
+      resolvedVideoPath = resolved;
       break;
     }
     case 'music':
@@ -202,10 +205,8 @@ function updateMediaThumbnail(
       break;
     }
     case 'video': {
-      const ext = media.extension ?? 'mp4';
-      const resolved = resolveMediaFilePath(media.path, ext, media.uuid)!;
       cmdResult = spawnSync('ffmpeg', [
-        '-ss', '00:00:01', '-i', resolved,
+        '-ss', '00:00:01', '-i', resolvedVideoPath,
         '-vframes', '1', '-q:v', '2', '-y', expectedPath,
       ]);
       break;
