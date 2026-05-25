@@ -70,14 +70,12 @@ impl RemoteKijukuDB {
 
         // SSH configが存在しない場合はデフォルト値を使用
         if !ssh_config_path.exists() {
-            let username = self.config.username.clone()
-                .or_else(|| env::var("USER").ok())
-                .ok_or_else(|| {
-                    KijukuError::Other(format!(
-                        "SSH user for '{}' is not specified and no ~/.ssh/config found",
-                        self.config.ssh_host
-                    ))
-                })?;
+            let username = self.config.username.clone().ok_or_else(|| {
+                KijukuError::Other(format!(
+                    "SSH user for '{}' is not specified and no ~/.ssh/config found",
+                    self.config.ssh_host
+                ))
+            })?;
             return Ok((
                 self.config.ssh_host.clone(),
                 self.config.port.unwrap_or(22),
