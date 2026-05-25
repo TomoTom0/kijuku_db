@@ -1046,8 +1046,37 @@ fn apply_diff_to_file(base_path: &Path, diff_path: &Path, output_path: &Path) ->
 
     // 一時ファイルに書き込み、完了後にアトミックにリネーム
     let temp_path = output_path.with_extension("db.tmp");
+
+    let write_result = write_diff_to_temp(
+        base_path,
+        &mut diff_file,
+        &temp_path,
+        page_size,
+        total_pages,
+        changed_count,
+        base_page_count,
+    );
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+        return write_result;
+    }
+
+    fs::rename(&temp_path, output_path)?;
+    Ok(())
+}
+
+fn write_diff_to_temp(
+    base_path: &Path,
+    diff_file: &mut File,
+    temp_path: &Path,
+    page_size: usize,
+    total_pages: usize,
+    changed_count: usize,
+    base_page_count: usize,
+) -> Result<()> {
     let mut base_file = File::open(base_path)?;
-    let mut out = File::create(&temp_path)?;
+    let mut out = File::create(temp_path)?;
     let mut base_buf = vec![0u8; page_size];
     let mut patch_buf = vec![0u8; page_size];
     let zero_buf = vec![0u8; page_size];
@@ -1095,7 +1124,7 @@ fn apply_diff_to_file(base_path: &Path, diff_path: &Path, output_path: &Path) ->
     }
 
     out.sync_all()?;
-    fs::rename(&temp_path, output_path)?;
+    drop(out);
     Ok(())
 }
 
