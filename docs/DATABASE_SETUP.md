@@ -29,8 +29,18 @@ db.close();
 ```typescript
 const db = new KijukuDB('db/my-media.db');
 const version = db.getSchemaVersion();
-console.log(`Current schema version: ${version}`);
+console.log(`Current schema version: ${version}`); // 現在: 5
 ```
+
+#### マイグレーション履歴
+
+| Version | 変更内容 |
+|---------|---------|
+| 1 | 初期スキーマ |
+| 2 | `volume_number` カラム削除 |
+| 3 | `volume_number` カラム再追加（volume_textから自動計算） |
+| 4 | `uuid` カラム追加（NOT NULL、自動生成） |
+| 5 | `media_tags`・`media_attributes` の外部キーに `ON DELETE CASCADE` 追加（media削除時の自動カスケード削除） |
 
 ## 2. データインポート
 
@@ -130,7 +140,6 @@ for (const media of allMedia) {
   const newPath = `${basePath}/${media.id}`;
 
   db.updateMedia(media.id, {
-    ...media,
     path: newPath,
     thumbnail_path: `${newPath}/thumb.jpg`,
   });
@@ -202,7 +211,7 @@ db.createMedia({
 // volume_numberでソート可能
 const results = db.findMedia(
   { media_type: 'comic' },
-  { orderBy: 'volume_number', order: 'ASC' }
+  { sortKeys: [{ field: 'volume_number', order: 'ASC' }] }
 );
 ```
 

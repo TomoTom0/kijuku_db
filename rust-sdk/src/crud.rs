@@ -1,5 +1,5 @@
 use crate::error::{KijukuError, Result};
-use crate::types::{Media, MediaInput, MediaType};
+use crate::types::{Media, MediaInput, MediaType, MediaUpdateInput};
 use rusqlite::{params, Connection, Row};
 
 /// volume_textからvolume_numberを計算
@@ -14,49 +14,50 @@ fn calculate_volume_number(volume_text: Option<&str>) -> Option<i32> {
 /// SQLiteの行データをMediaオブジェクトに変換
 pub(crate) fn row_to_media(row: &Row) -> rusqlite::Result<Media> {
     Ok(Media {
-        id: row.get(0)?,
-        title: row.get(1)?,
-        title_id: row.get(2)?,
-        path: row.get(3)?,
+        id: row.get("id")?,
+        uuid: row.get("uuid")?,
+        title: row.get("title")?,
+        title_id: row.get("title_id")?,
+        path: row.get("path")?,
         media_type: {
-            let type_str: String = row.get(4)?;
+            let type_str: String = row.get("media_type")?;
             MediaType::from_str(&type_str).ok_or_else(|| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    4,
+                    0, // 列名アクセスのため動的インデックス取得は不要; プレースホルダーとして0を使用
                     rusqlite::types::Type::Text,
                     Box::new(KijukuError::Parse(format!("Invalid media_type: {}", type_str))),
                 )
             })?
         },
-        thumbnail_path: row.get(5)?,
-        artist: row.get(6)?,
-        artist_id: row.get(7)?,
-        description: row.get(8)?,
-        file_size: row.get(9)?,
-        duration_sec: row.get(10)?,
-        page_count: row.get(11)?,
-        series: row.get(12)?,
-        volume_number: row.get(13)?,
-        volume_text: row.get(14)?,
-        volume_title: row.get(15)?,
-        magazine: row.get(16)?,
-        magazine_id: row.get(17)?,
-        language: row.get(18)?,
-        source: row.get(19)?,
-        external_id: row.get(20)?,
-        artist_en: row.get(21)?,
-        title_en: row.get(22)?,
-        chapters: row.get(23)?,
-        extension: row.get(24)?,
+        thumbnail_path: row.get("thumbnail_path")?,
+        artist: row.get("artist")?,
+        artist_id: row.get("artist_id")?,
+        description: row.get("description")?,
+        file_size: row.get("file_size")?,
+        duration_sec: row.get("duration_sec")?,
+        page_count: row.get("page_count")?,
+        series: row.get("series")?,
+        volume_number: row.get("volume_number")?,
+        volume_text: row.get("volume_text")?,
+        volume_title: row.get("volume_title")?,
+        magazine: row.get("magazine")?,
+        magazine_id: row.get("magazine_id")?,
+        language: row.get("language")?,
+        source: row.get("source")?,
+        external_id: row.get("external_id")?,
+        artist_en: row.get("artist_en")?,
+        title_en: row.get("title_en")?,
+        chapters: row.get("chapters")?,
+        extension: row.get("extension")?,
         flag_exist: {
-            let flag: i64 = row.get(25)?;
+            let flag: i64 = row.get("flag_exist")?;
             flag != 0
         },
-        created_at: row.get(26)?,
-        updated_at: row.get(27)?,
-        title_pron: row.get(28)?,
-        artist_pron: row.get(29)?,
-        series_pron: row.get(30)?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+        title_pron: row.get("title_pron")?,
+        artist_pron: row.get("artist_pron")?,
+        series_pron: row.get("series_pron")?,
     })
 }
 
@@ -71,9 +72,12 @@ pub fn create_media(conn: &Connection, input: &MediaInput) -> Result<Media> {
     // volume_textからvolume_numberを自動計算
     let volume_number = calculate_volume_number(input.volume_text.as_deref());
 
+    // UUID: 手動指定があればそれを使用、なければv4を自動生成
+    let uuid = input.uuid.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
     conn.execute(
         "INSERT INTO media (
-            title, title_id, path, media_type, thumbnail_path,
+            uuid, title, title_id, path, media_type, thumbnail_path,
             artist, artist_id, description, file_size, duration_sec,
             page_count, series, volume_number, volume_text, volume_title,
             magazine, magazine_id, language, source, external_id,
@@ -82,9 +86,10 @@ pub fn create_media(conn: &Connection, input: &MediaInput) -> Result<Media> {
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
         )",
         params![
+            uuid,
             input.title,
             input.title_id,
             input.path,
@@ -126,8 +131,11 @@ pub fn get_media(conn: &Connection, id: i64) -> Option<Media> {
         .ok()
 }
 
-/// メディアを更新
-pub fn update_media(conn: &Connection, id: i64, input: &MediaInput) -> Result<()> {
+/// メディアを更新（部分更新）
+///
+/// 指定されたフィールドのみ更新します。
+/// 更新するフィールドが1つも指定されていない場合は何もしません。
+pub fn update_media(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Result<()> {
     // メディアが存在するか確認
     if get_media(conn, id).is_none() {
         return Err(KijukuError::NotFound(format!(
@@ -137,142 +145,176 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaInput) -> Result<()
     }
 
     // 動的にUPDATE文を構築（指定されたフィールドのみ更新）
-    let mut update_fields = vec!["title = ?1".to_string()];
-    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(input.title.clone())];
-    let mut param_idx = 2;
+    let mut update_fields: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut param_idx = 1;
 
-    if let Some(ref val) = input.title_id {
+    // UUID更新（NOT NULL制約あり: Some(None)はエラー）
+    if let Some(ref opt_val) = input.uuid {
+        match opt_val {
+            Some(val) => {
+                update_fields.push(format!("uuid = ?{}", param_idx));
+                params.push(Box::new(val.clone()));
+                param_idx += 1;
+            }
+            None => {
+                return Err(KijukuError::Validation(
+                    "UUID cannot be set to null.".to_string(),
+                ));
+            }
+        }
+    }
+
+    // NOT NULLフィールド: titleとmedia_type
+    if let Some(ref val) = input.title {
+        update_fields.push(format!("title = ?{}", param_idx));
+        params.push(Box::new(val.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref val) = input.media_type {
+        update_fields.push(format!("media_type = ?{}", param_idx));
+        params.push(Box::new(val.as_str().to_string()));
+        param_idx += 1;
+    }
+
+    // NULLableフィールド: Option<Option<T>>パターン
+    // Some(Some(val)) -> 値を設定, Some(None) -> NULLを設定, None -> 更新しない
+    if let Some(ref opt_val) = input.title_id {
         update_fields.push(format!("title_id = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.path {
+    if let Some(ref opt_val) = input.path {
         update_fields.push(format!("path = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    update_fields.push(format!("media_type = ?{}", param_idx));
-    params.push(Box::new(input.media_type.as_str().to_string()));
-    param_idx += 1;
-    
-    if let Some(ref val) = input.thumbnail_path {
+    if let Some(ref opt_val) = input.thumbnail_path {
         update_fields.push(format!("thumbnail_path = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.artist {
+    if let Some(ref opt_val) = input.artist {
         update_fields.push(format!("artist = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.artist_id {
+    if let Some(ref opt_val) = input.artist_id {
         update_fields.push(format!("artist_id = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.description {
+    if let Some(ref opt_val) = input.description {
         update_fields.push(format!("description = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(val) = input.file_size {
+    if let Some(ref opt_val) = input.file_size {
         update_fields.push(format!("file_size = ?{}", param_idx));
-        params.push(Box::new(val));
+        params.push(Box::new(*opt_val));
         param_idx += 1;
     }
-    if let Some(val) = input.duration_sec {
+    if let Some(ref opt_val) = input.duration_sec {
         update_fields.push(format!("duration_sec = ?{}", param_idx));
-        params.push(Box::new(val));
+        params.push(Box::new(*opt_val));
         param_idx += 1;
     }
-    if let Some(val) = input.page_count {
+    if let Some(ref opt_val) = input.page_count {
         update_fields.push(format!("page_count = ?{}", param_idx));
-        params.push(Box::new(val));
+        params.push(Box::new(*opt_val));
         param_idx += 1;
     }
-    if let Some(ref val) = input.series {
+    if let Some(ref opt_val) = input.series {
         update_fields.push(format!("series = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.volume_text {
-        let volume_number = calculate_volume_number(Some(val.as_str()));
+    if let Some(ref opt_val) = input.volume_text {
+        // volume_textが更新される場合、volume_numberも再計算
+        let volume_number = opt_val.as_ref().and_then(|v| calculate_volume_number(Some(v.as_str())));
         update_fields.push(format!("volume_text = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
         update_fields.push(format!("volume_number = ?{}", param_idx));
         params.push(Box::new(volume_number));
         param_idx += 1;
     }
-    if let Some(ref val) = input.volume_title {
+    if let Some(ref opt_val) = input.volume_title {
         update_fields.push(format!("volume_title = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.magazine {
+    if let Some(ref opt_val) = input.magazine {
         update_fields.push(format!("magazine = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.magazine_id {
+    if let Some(ref opt_val) = input.magazine_id {
         update_fields.push(format!("magazine_id = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.language {
+    if let Some(ref opt_val) = input.language {
         update_fields.push(format!("language = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.source {
+    if let Some(ref opt_val) = input.source {
         update_fields.push(format!("source = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.external_id {
+    if let Some(ref opt_val) = input.external_id {
         update_fields.push(format!("external_id = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.artist_en {
+    if let Some(ref opt_val) = input.artist_en {
         update_fields.push(format!("artist_en = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.title_en {
+    if let Some(ref opt_val) = input.title_en {
         update_fields.push(format!("title_en = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.chapters {
+    if let Some(ref opt_val) = input.chapters {
         update_fields.push(format!("chapters = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.extension {
+    if let Some(ref opt_val) = input.extension {
         update_fields.push(format!("extension = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
+    // NOT NULLフィールド: flag_exist
     if let Some(val) = input.flag_exist {
         update_fields.push(format!("flag_exist = ?{}", param_idx));
         params.push(Box::new(val));
         param_idx += 1;
     }
-    if let Some(ref val) = input.title_pron {
+    // NULLableフィールド: pron系
+    if let Some(ref opt_val) = input.title_pron {
         update_fields.push(format!("title_pron = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.artist_pron {
+    if let Some(ref opt_val) = input.artist_pron {
         update_fields.push(format!("artist_pron = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
     }
-    if let Some(ref val) = input.series_pron {
+    if let Some(ref opt_val) = input.series_pron {
         update_fields.push(format!("series_pron = ?{}", param_idx));
-        params.push(Box::new(val.clone()));
+        params.push(Box::new(opt_val.clone()));
         param_idx += 1;
+    }
+
+    // 更新するフィールドがない場合は何もしない（TypeScript SDKとの動作統一）
+    if update_fields.is_empty() {
+        return Ok(());
     }
 
     let sql = format!(
@@ -336,23 +378,83 @@ mod tests {
         let input = MediaInput {
             title: "元のタイトル".to_string(),
             media_type: MediaType::Comic,
+            artist: Some("元の作者".to_string()),
             ..Default::default()
         };
 
         let media = create_media(&conn, &input).unwrap();
 
-        let update_input = MediaInput {
-            title: "更新されたタイトル".to_string(),
-            media_type: MediaType::Comic,
-            description: Some("説明追加".to_string()),
+        // descriptionのみ更新（titleやartistは変更されない）
+        // Option<Option<T>>: Some(Some(val)) で値を設定
+        let update_input = crate::types::MediaUpdateInput {
+            description: Some(Some("説明追加".to_string())),
             ..Default::default()
         };
 
         update_media(&conn, media.id, &update_input).unwrap();
 
         let updated = get_media(&conn, media.id).unwrap();
-        assert_eq!(updated.title, "更新されたタイトル");
+        // titleは元のまま
+        assert_eq!(updated.title, "元のタイトル");
+        // artistも元のまま
+        assert_eq!(updated.artist, Some("元の作者".to_string()));
+        // descriptionのみ更新された
         assert_eq!(updated.description, Some("説明追加".to_string()));
+    }
+
+    #[test]
+    fn test_update_media_partial() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "テストタイトル".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("作者A".to_string()),
+            series: Some("シリーズA".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+
+        // titleのみ更新
+        let update_input = crate::types::MediaUpdateInput {
+            title: Some("新しいタイトル".to_string()),
+            ..Default::default()
+        };
+
+        update_media(&conn, media.id, &update_input).unwrap();
+
+        let updated = get_media(&conn, media.id).unwrap();
+        assert_eq!(updated.title, "新しいタイトル");
+        // 他のフィールドは変更されていない
+        assert_eq!(updated.artist, Some("作者A".to_string()));
+        assert_eq!(updated.series, Some("シリーズA".to_string()));
+        assert_eq!(updated.media_type, MediaType::Comic);
+    }
+
+    #[test]
+    fn test_update_media_empty_input() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+
+        // 空の更新はエラーにならず、何もしない（TypeScript SDKとの動作統一）
+        let update_input = crate::types::MediaUpdateInput::default();
+        let result = update_media(&conn, media.id, &update_input);
+        assert!(result.is_ok());
+
+        // メディアの内容が変更されていないことを確認
+        let fetched = get_media(&conn, media.id).unwrap();
+        assert_eq!(fetched.title, "テスト");
+        assert_eq!(fetched.media_type, MediaType::Comic);
     }
 
     #[test]
@@ -379,6 +481,277 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         let result = delete_media(&conn, 9999);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_volume_number_auto_calculation_integer() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // 整数のvolume_textはvolume_numberに変換される
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some("5".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, Some(5));
+        assert_eq!(media.volume_text, Some("5".to_string()));
+    }
+
+    #[test]
+    fn test_volume_number_auto_calculation_non_integer() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // 非整数のvolume_textはvolume_numberがNone
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some("1.5".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, None);
+        assert_eq!(media.volume_text, Some("1.5".to_string()));
+    }
+
+    #[test]
+    fn test_volume_number_auto_calculation_text() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // テキストのvolume_textはvolume_numberがNone
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some("上巻".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, None);
+        assert_eq!(media.volume_text, Some("上巻".to_string()));
+    }
+
+    #[test]
+    fn test_volume_number_auto_calculation_with_whitespace() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // 前後にスペースがある整数はトリムされてvolume_numberに変換
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some(" 10 ".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, Some(10));
+    }
+
+    #[test]
+    fn test_volume_number_update_recalculation() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some("1".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, Some(1));
+
+        // volume_textを更新するとvolume_numberも再計算される
+        // Option<Option<T>>: Some(Some(val)) で値を設定
+        let update_input = crate::types::MediaUpdateInput {
+            volume_text: Some(Some("2".to_string())),
+            ..Default::default()
+        };
+        update_media(&conn, media.id, &update_input).unwrap();
+
+        let updated = get_media(&conn, media.id).unwrap();
+        assert_eq!(updated.volume_number, Some(2));
+        assert_eq!(updated.volume_text, Some("2".to_string()));
+    }
+
+    #[test]
+    fn test_update_media_set_null() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // artistとdescriptionを持つメディアを作成
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("作者名".to_string()),
+            description: Some("説明文".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.artist, Some("作者名".to_string()));
+        assert_eq!(media.description, Some("説明文".to_string()));
+
+        // artistをNULLに設定（Some(None)）、descriptionは更新しない（None）
+        let update_input = crate::types::MediaUpdateInput {
+            artist: Some(None),  // NULLに設定
+            // description: None - 更新しない
+            ..Default::default()
+        };
+        update_media(&conn, media.id, &update_input).unwrap();
+
+        let updated = get_media(&conn, media.id).unwrap();
+        // artistがNULLになった
+        assert_eq!(updated.artist, None);
+        // descriptionは元のまま
+        assert_eq!(updated.description, Some("説明文".to_string()));
+    }
+
+    #[test]
+    fn test_update_media_volume_text_to_null() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "テスト".to_string(),
+            media_type: MediaType::Comic,
+            volume_text: Some("5".to_string()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.volume_number, Some(5));
+        assert_eq!(media.volume_text, Some("5".to_string()));
+
+        // volume_textをNULLに設定するとvolume_numberもNULLになる
+        let update_input = crate::types::MediaUpdateInput {
+            volume_text: Some(None),  // NULLに設定
+            ..Default::default()
+        };
+        update_media(&conn, media.id, &update_input).unwrap();
+
+        let updated = get_media(&conn, media.id).unwrap();
+        assert_eq!(updated.volume_number, None);
+        assert_eq!(updated.volume_text, None);
+    }
+
+    #[test]
+    fn test_duplicate_path_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let path = "/path/to/media.cbz";
+
+        // 1つ目のメディアを作成
+        let input1 = MediaInput {
+            title: "メディア1".to_string(),
+            media_type: MediaType::Comic,
+            path: Some(path.to_string()),
+            ..Default::default()
+        };
+        create_media(&conn, &input1).unwrap();
+
+        // 同じpathで2つ目のメディアを作成しようとするとエラー
+        let input2 = MediaInput {
+            title: "メディア2".to_string(),
+            media_type: MediaType::Comic,
+            path: Some(path.to_string()),
+            ..Default::default()
+        };
+        let result = create_media(&conn, &input2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_media_with_manual_uuid() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let manual_uuid = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        let input = MediaInput {
+            title: "UUIDテスト".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(manual_uuid.clone()),
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        assert_eq!(media.uuid, manual_uuid);
+    }
+
+    #[test]
+    fn test_create_media_auto_uuid() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "自動UUID".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        };
+
+        let media = create_media(&conn, &input).unwrap();
+        // 自動生成されたUUIDがUUID v4形式であることを確認
+        assert_eq!(media.uuid.len(), 36);
+        assert_eq!(media.uuid.chars().filter(|&c| c == '-').count(), 4);
+    }
+
+    #[test]
+    fn test_update_media_uuid() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let input = MediaInput {
+            title: "UUID更新テスト".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        };
+        let media = create_media(&conn, &input).unwrap();
+        let original_uuid = media.uuid.clone();
+
+        let new_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string();
+        let update_input = crate::types::MediaUpdateInput {
+            uuid: Some(Some(new_uuid.clone())),
+            ..Default::default()
+        };
+        update_media(&conn, media.id, &update_input).unwrap();
+
+        let updated = get_media(&conn, media.id).unwrap();
+        assert_eq!(updated.uuid, new_uuid);
+        assert_ne!(updated.uuid, original_uuid);
+    }
+
+    #[test]
+    fn test_duplicate_uuid_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let uuid = "550e8400-e29b-41d4-a716-446655440000".to_string();
+
+        let input1 = MediaInput {
+            title: "メディア1".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(uuid.clone()),
+            ..Default::default()
+        };
+        create_media(&conn, &input1).unwrap();
+
+        let input2 = MediaInput {
+            title: "メディア2".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(uuid.clone()),
+            ..Default::default()
+        };
+        let result = create_media(&conn, &input2);
         assert!(result.is_err());
     }
 }

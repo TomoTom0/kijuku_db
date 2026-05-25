@@ -1,5 +1,5 @@
 -- kijuku_db スキーマ定義
--- Version: 3
+-- Version: 5
 
 -- 外部キー制約を有効化
 PRAGMA foreign_keys = ON;
@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS tags (
 -- メディア情報テーブル
 CREATE TABLE IF NOT EXISTS media (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  uuid TEXT NOT NULL UNIQUE,
   title TEXT NOT NULL,
   title_id TEXT,
   path TEXT UNIQUE,
@@ -56,7 +57,7 @@ CREATE TABLE IF NOT EXISTS media_tags (
   media_id INTEGER NOT NULL,
   tag_id INTEGER NOT NULL,
   PRIMARY KEY (media_id, tag_id),
-  FOREIGN KEY (media_id) REFERENCES media(id),
+  FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE,
   FOREIGN KEY (tag_id) REFERENCES tags(id)
 );
 
@@ -67,7 +68,7 @@ CREATE TABLE IF NOT EXISTS media_attributes (
   value TEXT,
   value_type TEXT,
   PRIMARY KEY (media_id, key),
-  FOREIGN KEY (media_id) REFERENCES media(id)
+  FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE
 );
 
 -- インデックス: ID検索用（完全一致）
@@ -102,3 +103,5 @@ END;
 INSERT OR IGNORE INTO schema_version (version) VALUES (1);
 INSERT OR IGNORE INTO schema_version (version) VALUES (2);
 INSERT OR IGNORE INTO schema_version (version) VALUES (3);
+INSERT OR IGNORE INTO schema_version (version) VALUES (4);
+INSERT OR IGNORE INTO schema_version (version) VALUES (5);

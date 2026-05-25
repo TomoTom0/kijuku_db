@@ -1,6 +1,7 @@
 /**
  * マイグレーション機能
  */
+import { randomUUID } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -22,7 +23,7 @@ function getSchemaPath(): string {
  */
 export function migrate(db: Database.Database): void {
   const currentVersion = getSchemaVersion(db);
-  const targetVersion = 3;
+  const targetVersion = 5;
 
   if (currentVersion === 0) {
     // 初回マイグレーション: schema.sqlを実行
@@ -73,6 +74,130 @@ function applyMigration(db: Database.Database, version: number): void {
         INSERT OR IGNORE INTO schema_version (version) VALUES (3);
       `);
       break;
+    case 4: {
+      // uuid列をNOT NULL制約付きで追加するため、テーブルを再作成する
+
+      // 1. 一時的にuuid列をNULLableで追加
+      db.exec('ALTER TABLE media ADD COLUMN uuid TEXT;');
+
+      // 2. 既存データにUUID v4を生成して設定（トランザクションでパフォーマンス改善）
+      const ids = (db.prepare('SELECT id FROM media').all() as { id: number }[]);
+      const updateStmt = db.prepare('UPDATE media SET uuid = ? WHERE id = ?');
+      const updateMany = db.transaction((items: { id: number }[]) => {
+        for (const item of items) {
+          updateStmt.run(randomUUID(), item.id);
+        }
+      });
+      updateMany(ids);
+
+      // 3. テーブルを再作成してNOT NULL制約を付与（SQLiteではALTER TABLEでNOT NULL追加不可）
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+
+        CREATE TABLE media_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          uuid TEXT NOT NULL UNIQUE,
+          title TEXT NOT NULL,
+          title_id TEXT,
+          path TEXT UNIQUE,
+          media_type TEXT NOT NULL CHECK(media_type IN ('comic', 'video', 'music')),
+          thumbnail_path TEXT,
+          artist TEXT,
+          artist_id TEXT,
+          description TEXT,
+          file_size INTEGER,
+          duration_sec INTEGER,
+          page_count INTEGER,
+          series TEXT,
+          volume_number INTEGER,
+          volume_text TEXT,
+          volume_title TEXT,
+          magazine TEXT,
+          magazine_id TEXT,
+          language TEXT,
+          source TEXT,
+          external_id TEXT,
+          artist_en TEXT,
+          title_en TEXT,
+          chapters TEXT,
+          extension TEXT,
+          flag_exist INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          title_pron TEXT,
+          artist_pron TEXT,
+          series_pron TEXT
+        );
+
+        INSERT INTO media_new SELECT
+          id, uuid, title, title_id, path, media_type, thumbnail_path,
+          artist, artist_id, description, file_size, duration_sec,
+          page_count, series, volume_number, volume_text, volume_title,
+          magazine, magazine_id, language, source, external_id,
+          artist_en, title_en, chapters, extension, flag_exist,
+          created_at, updated_at, title_pron, artist_pron, series_pron
+        FROM media;
+
+        DROP TABLE media;
+        ALTER TABLE media_new RENAME TO media;
+
+        CREATE INDEX IF NOT EXISTS idx_media_title_id ON media(title_id);
+        CREATE INDEX IF NOT EXISTS idx_media_artist_id ON media(artist_id);
+        CREATE INDEX IF NOT EXISTS idx_media_media_type ON media(media_type);
+        CREATE INDEX IF NOT EXISTS idx_media_series ON media(series);
+        CREATE INDEX IF NOT EXISTS idx_media_source ON media(source);
+        CREATE INDEX IF NOT EXISTS idx_media_type_created ON media(media_type, created_at DESC);
+
+        CREATE TRIGGER IF NOT EXISTS update_media_timestamp
+        AFTER UPDATE ON media
+        FOR EACH ROW
+        BEGIN
+          UPDATE media SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+        END;
+
+        PRAGMA foreign_keys = ON;
+      `);
+
+      db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (4);');
+      break;
+    }
+    case 5: {
+      // media_tags と media_attributes の外部キーに ON DELETE CASCADE を追加するためテーブルを再作成
+      db.exec(`
+        PRAGMA foreign_keys = OFF;
+
+        -- media_tags を再作成（ON DELETE CASCADE 追加）
+        CREATE TABLE media_tags_new (
+          media_id INTEGER NOT NULL,
+          tag_id INTEGER NOT NULL,
+          PRIMARY KEY (media_id, tag_id),
+          FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE,
+          FOREIGN KEY (tag_id) REFERENCES tags(id)
+        );
+        INSERT INTO media_tags_new SELECT media_id, tag_id FROM media_tags;
+        DROP TABLE media_tags;
+        ALTER TABLE media_tags_new RENAME TO media_tags;
+        CREATE INDEX IF NOT EXISTS idx_media_tags_tag_id ON media_tags(tag_id);
+        CREATE INDEX IF NOT EXISTS idx_media_tags_media_id ON media_tags(media_id);
+
+        -- media_attributes を再作成（ON DELETE CASCADE 追加）
+        CREATE TABLE media_attributes_new (
+          media_id INTEGER NOT NULL,
+          key TEXT NOT NULL,
+          value TEXT,
+          value_type TEXT,
+          PRIMARY KEY (media_id, key),
+          FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE
+        );
+        INSERT INTO media_attributes_new SELECT media_id, key, value, value_type FROM media_attributes;
+        DROP TABLE media_attributes;
+        ALTER TABLE media_attributes_new RENAME TO media_attributes;
+
+        PRAGMA foreign_keys = ON;
+      `);
+      db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (5);');
+      break;
+    }
     default:
       throw new Error(`Unknown migration version: ${version}`);
   }

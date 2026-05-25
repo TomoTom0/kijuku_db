@@ -24,7 +24,7 @@
 
 - トランザクションを使用すると、1,000件以上のデータ挿入で500倍以上の速度改善
 - 10,000件のデータでは通常の挿入で約2分かかるが、トランザクション使用で0.07秒に短縮
-- `bulkCreateMedia`関数は内部でトランザクションを使用し、安全かつ高速な一括挿入を実現
+- `bulkCreateMedia`関数は内部で500件ごとにトランザクションを分割して処理し、長時間のDBロック占有を防ぎながら高速な一括挿入を実現
 
 ### 検索クエリ
 
@@ -79,12 +79,11 @@ for (const item of items) {
 db.bulkCreateMedia(items);
 
 // または手動でトランザクションを使用
-const insertMany = db.transaction((items) => {
+db.transaction(() => {
   for (const item of items) {
     db.createMedia(item);
   }
 });
-insertMany(items);
 ```
 
 ### 2. インデックスの活用
@@ -104,7 +103,7 @@ insertMany(items);
 大量のデータを扱う場合は、LIMIT/OFFSETを使用してページネーションを実装してください。
 
 ```typescript
-const results = findMedia(db, {}, { limit: 100, offset: 0 });
+const results = db.findMedia({}, { limit: 100, offset: 0 });
 ```
 
 ### 4. 適切なフィルタ条件の使用

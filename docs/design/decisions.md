@@ -329,11 +329,16 @@ interface MediaFilter {
   series?: string;
   source?: string;
   tag_ids?: number[];
+  or_filters?: MediaFilter[];  // OR条件（ネスト可能）
+}
+
+interface SortKey {
+  field: string;  // 'created_at', 'title', etc.
+  order?: 'ASC' | 'DESC';
 }
 
 interface QueryOptions {
-  orderBy?: string;  // 'created_at', 'title', etc.
-  order?: 'ASC' | 'DESC';
+  sortKeys?: SortKey[];  // 複数指定で多段ソート
   limit?: number;
   offset?: number;
 }
@@ -368,7 +373,6 @@ db.pragma('journal_mode = WAL');     // WALモードで安全性向上
 
 ```bash
 DATABASE_PATH=/path/to/kijuku.db
-KIJUKU_DB_TIMEOUT=5000
 KIJUKU_DB_VERBOSE=false
 ```
 

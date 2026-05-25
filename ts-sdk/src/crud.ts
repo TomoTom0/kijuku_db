@@ -1,6 +1,7 @@
 /**
  * CRUD操作の実装
  */
+import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { Media, MediaInput } from './types.js';
 import {
@@ -58,16 +59,19 @@ export function createMedia(db: Database.Database, data: MediaInput): Media {
   // volume_textから volume_number を自動計算
   const volumeNumber = calculateVolumeNumber(data.volume_text);
 
+  // UUID: 手動指定があればそれを使用、なければv4を自動生成
+  const uuid = data.uuid ?? randomUUID();
+
   const stmt = db.prepare(`
     INSERT INTO media (
-      title, title_id, path, media_type, thumbnail_path,
+      uuid, title, title_id, path, media_type, thumbnail_path,
       artist, artist_id, description, file_size, duration_sec,
       page_count, series, volume_number, volume_text, volume_title,
       magazine, magazine_id, language, source, external_id,
       artist_en, title_en, chapters, extension, flag_exist,
       title_pron, artist_pron, series_pron
     ) VALUES (
-      @title, @title_id, @path, @media_type, @thumbnail_path,
+      @uuid, @title, @title_id, @path, @media_type, @thumbnail_path,
       @artist, @artist_id, @description, @file_size, @duration_sec,
       @page_count, @series, @volume_number, @volume_text, @volume_title,
       @magazine, @magazine_id, @language, @source, @external_id,
@@ -77,6 +81,7 @@ export function createMedia(db: Database.Database, data: MediaInput): Media {
   `);
 
   const result = stmt.run({
+    uuid,
     title: data.title,
     title_id: data.title_id ?? null,
     path: data.path ?? null,
@@ -153,6 +158,10 @@ export function updateMedia(
     const fields: string[] = [];
     const values: Record<string, any> = { id };
 
+  if (data.uuid != null) {
+    fields.push('uuid = @uuid');
+    values.uuid = data.uuid;
+  }
   if (data.title !== undefined) {
     fields.push('title = @title');
     values.title = data.title;

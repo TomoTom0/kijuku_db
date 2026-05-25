@@ -1,9 +1,9 @@
 pub mod auth;
 
-use crate::{KijukuDB, MediaFilter, MediaType, QueryOptions, SortOrder};
+use crate::{KijukuDB, MediaFilter, MediaType, QueryOptions, SortKey, SortOrder};
 pub use auth::{generate_password, AuthManager};
 use axum::{
-    extract::{Path, Query, State},
+    extract::{FromRequestParts, Path, Query, State},
     http::{header, StatusCode},
     middleware,
     response::{Html, IntoResponse, Json, Response},
@@ -87,10 +87,7 @@ pub async fn start_server(db: KijukuDB, options: ServerOptions) {
     let protected_routes = Router::new()
         .route("/api/media", get(get_media_list))
         .route("/api/media/:id", get(get_media_detail))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ));
+        .layer(middleware::from_fn(auth_middleware));
 
     let app = Router::new()
         .route("/", get(serve_index))
@@ -124,11 +121,23 @@ async fn shutdown_signal() {
 }
 
 async fn auth_middleware(
-    State(state): State<Arc<ServerState>>,
-    jar: CookieJar,
     request: axum::extract::Request,
     next: middleware::Next,
 ) -> Result<axum::response::Response, StatusCode> {
+    let (mut parts, body) = request.into_parts();
+
+    // ExtensionからStateを取得（クローンして借用を解除）
+    let state = parts
+        .extensions
+        .get::<Arc<ServerState>>()
+        .cloned()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // CookieJarを取得（Infallibleなのでunwrap()が安全）
+    let jar = CookieJar::from_request_parts(&mut parts, &()).await.unwrap();
+
+    let request = axum::http::Request::from_parts(parts, body);
+
     let session_id = jar
         .get("session_id")
         .map(|cookie| cookie.value().to_string());
@@ -227,13 +236,17 @@ async fn get_media_list(
         ..Default::default()
     };
 
+    let sort_keys = if let Some(ref order_by) = params.order_by {
+        let order = match params.order.as_deref() {
+            Some("DESC") => SortOrder::Desc,
+            _ => SortOrder::Asc,
+        };
+        vec![SortKey { field: order_by.clone(), order }]
+    } else {
+        vec![]
+    };
     let options = QueryOptions {
-        order_by: params.order_by.clone(),
-        order: params.order.as_ref().and_then(|s| match s.as_str() {
-            "ASC" => Some(SortOrder::Asc),
-            "DESC" => Some(SortOrder::Desc),
-            _ => None,
-        }),
+        sort_keys,
         limit: params.limit.map(|v| v as i64),
         offset: params.offset.map(|v| v as i64),
     };

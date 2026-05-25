@@ -38,6 +38,7 @@ impl MediaType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Media {
     pub id: i64,
+    pub uuid: String,
     pub title: String,
     pub title_id: Option<String>,
     pub path: Option<String>,
@@ -78,6 +79,8 @@ pub struct Media {
 pub struct MediaInput {
     pub title: String,
     pub media_type: MediaType,
+    /// UUIDを手動指定する場合はここに設定。省略時は自動生成。
+    pub uuid: Option<String>,
     pub title_id: Option<String>,
     pub path: Option<String>,
     pub thumbnail_path: Option<String>,
@@ -118,6 +121,21 @@ pub struct MediaFilter {
     pub series: Option<String>,
     pub source: Option<String>,
     pub tag_ids: Option<Vec<i64>>,
+    pub flag_exist: Option<bool>,
+    pub language: Option<String>,
+    pub magazine: Option<String>,
+    pub magazine_id: Option<String>,
+    pub extension: Option<String>,
+    pub external_id: Option<String>,
+    pub volume_title: Option<String>,
+    pub title_en: Option<String>,
+    pub artist_en: Option<String>,
+    /// IDのIN句フィルタ（複数IDを一括フェッチする場合に使用）
+    pub id_in: Option<Vec<i64>>,
+    /// OR条件で結合する追加フィルタ
+    /// 各フィルタ内の条件はAND結合、or_filters間はOR結合される
+    #[serde(default)]
+    pub or_filters: Option<Vec<MediaFilter>>,
 }
 
 /// ソート順序
@@ -137,11 +155,134 @@ impl SortOrder {
     }
 }
 
+/// メディア更新時の入力型（部分更新用）
+///
+/// フィールドの更新セマンティクス:
+/// - `None`: フィールドを更新しない
+/// - `Some(None)`: フィールドをNULLに設定する
+/// - `Some(Some(value))`: フィールドを新しい値で更新する
+///
+/// 注意: title, media_type, flag_existはNOT NULL制約があるためOption<T>のまま
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MediaUpdateInput {
+    /// UUID - Noneで更新しない、Some(Some(v))で更新（空文字列は不可）
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub uuid: Option<Option<String>>,
+    /// タイトル（NOT NULL）- Noneで更新しない、Someで更新
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// メディアタイプ（NOT NULL）- Noneで更新しない、Someで更新
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<MediaType>,
+    /// タイトルID - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub title_id: Option<Option<String>>,
+    /// パス - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub path: Option<Option<String>>,
+    /// サムネイルパス - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub thumbnail_path: Option<Option<String>>,
+    /// アーティスト - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub artist: Option<Option<String>>,
+    /// アーティストID - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub artist_id: Option<Option<String>>,
+    /// 説明 - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub description: Option<Option<String>>,
+    /// ファイルサイズ - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub file_size: Option<Option<i64>>,
+    /// 再生時間（秒） - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub duration_sec: Option<Option<i32>>,
+    /// ページ数 - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub page_count: Option<Option<i32>>,
+    /// シリーズ - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub series: Option<Option<String>>,
+    /// ボリュームテキスト - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub volume_text: Option<Option<String>>,
+    /// ボリュームタイトル - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub volume_title: Option<Option<String>>,
+    /// 雑誌 - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub magazine: Option<Option<String>>,
+    /// 雑誌ID - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub magazine_id: Option<Option<String>>,
+    /// 言語 - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub language: Option<Option<String>>,
+    /// ソース - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub source: Option<Option<String>>,
+    /// 外部ID - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub external_id: Option<Option<String>>,
+    /// 英語アーティスト名 - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub artist_en: Option<Option<String>>,
+    /// 英語タイトル - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub title_en: Option<Option<String>>,
+    /// チャプター - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub chapters: Option<Option<String>>,
+    /// 拡張子 - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub extension: Option<Option<String>>,
+    /// 存在フラグ（NOT NULL）- Noneで更新しない、Someで更新
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flag_exist: Option<bool>,
+    /// タイトル読み - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub title_pron: Option<Option<String>>,
+    /// アーティスト読み - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub artist_pron: Option<Option<String>>,
+    /// シリーズ読み - Noneで更新しない、Some(None)でNULL、Some(Some(v))で更新
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_nullable_field")]
+    pub series_pron: Option<Option<String>>,
+}
+
+/// Option<Option<T>>のデシリアライズヘルパー
+/// JSONでnullを明示的に指定した場合はSome(None)、
+/// フィールドが存在しない場合はNoneになる
+fn deserialize_nullable_field<'de, T, D>(deserializer: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    // フィールドが存在する場合、Option<T>としてデシリアライズ
+    // null -> Some(None), 値あり -> Some(Some(値))
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// 一括更新時の個別アイテム
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkUpdateItem {
+    pub id: i64,
+    pub data: MediaUpdateInput,
+}
+
+/// ソートキー（フィールドと方向）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SortKey {
+    pub field: String,
+    pub order: SortOrder,
+}
+
 /// クエリオプション（ソート、ページネーション）
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct QueryOptions {
-    pub order_by: Option<String>,
-    pub order: Option<SortOrder>,
+    #[serde(default)]
+    pub sort_keys: Vec<SortKey>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
@@ -151,6 +292,14 @@ pub struct QueryOptions {
 pub struct Tag {
     pub id: i64,
     pub name: String,
+}
+
+/// タグ使用統計情報
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagUsageStats {
+    pub tag_id: i64,
+    pub tag_name: String,
+    pub count: i64,
 }
 
 /// データベース接続オプション
@@ -264,8 +413,7 @@ mod tests {
     fn test_query_options_default() {
         // QueryOptionsのデフォルト値を確認
         let options = QueryOptions::default();
-        assert!(options.order_by.is_none());
-        assert!(options.order.is_none());
+        assert!(options.sort_keys.is_empty());
         assert!(options.limit.is_none());
         assert!(options.offset.is_none());
     }

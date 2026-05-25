@@ -92,8 +92,7 @@ export function startServer(db: KijukuDB, options: ServerOptions = {}): void {
     const media = db.findMedia(filter, {
       limit,
       offset,
-      orderBy: query.orderBy ?? 'id',
-      order: (query.order ?? 'DESC') === 'DESC' ? 'DESC' : 'ASC',
+      sortKeys: [{ field: query.orderBy ?? 'id', order: (query.order ?? 'DESC') === 'DESC' ? 'DESC' : 'ASC' }],
     });
 
     return c.json({ media, count: media.length, total });

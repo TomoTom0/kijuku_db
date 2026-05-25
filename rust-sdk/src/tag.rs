@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::types::Tag;
+use crate::types::{Tag, TagUsageStats};
 use rusqlite::{params, Connection};
 
 /// タグを作成
@@ -68,6 +68,51 @@ pub fn get_media_tags(conn: &Connection, media_id: i64) -> Result<Vec<Tag>> {
 
     let tags = stmt
         .query_map(params![media_id], |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<Tag>, _>>()?;
+
+    Ok(tags)
+}
+
+/// タグの使用数統計を取得
+pub fn get_tag_usage_stats(conn: &Connection) -> Result<Vec<TagUsageStats>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.name, COUNT(mt.media_id) as count
+         FROM tags t
+         LEFT JOIN media_tags mt ON t.id = mt.tag_id
+         GROUP BY t.id, t.name
+         ORDER BY count DESC, t.name ASC",
+    )?;
+
+    let stats = stmt
+        .query_map([], |row| {
+            Ok(TagUsageStats {
+                tag_id: row.get(0)?,
+                tag_name: row.get(1)?,
+                count: row.get(2)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<TagUsageStats>, _>>()?;
+
+    Ok(stats)
+}
+
+/// 未使用のタグを取得
+pub fn find_unused_tags(conn: &Connection) -> Result<Vec<Tag>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.name
+         FROM tags t
+         LEFT JOIN media_tags mt ON t.id = mt.tag_id
+         WHERE mt.media_id IS NULL
+         ORDER BY t.name",
+    )?;
+
+    let tags = stmt
+        .query_map([], |row| {
             Ok(Tag {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -155,5 +200,146 @@ mod tests {
 
         let media_tags = get_media_tags(&conn, media.id).unwrap();
         assert_eq!(media_tags.len(), 0);
+    }
+
+    #[test]
+    fn test_duplicate_tag_name_error() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // 1つ目のタグを作成
+        create_tag(&conn, "重複タグ").unwrap();
+
+        // 同じ名前で2つ目のタグを作成しようとするとエラー
+        let result = create_tag(&conn, "重複タグ");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_duplicate_tag_to_media_ignored() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let media = create_media(
+            &conn,
+            &MediaInput {
+                title: "テスト".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let tag = create_tag(&conn, "テストタグ").unwrap();
+
+        // 1回目の追加
+        add_tag_to_media(&conn, media.id, tag.id).unwrap();
+
+        // 2回目の追加（INSERT OR IGNOREなのでエラーにならない）
+        add_tag_to_media(&conn, media.id, tag.id).unwrap();
+
+        // タグは1つだけ
+        let media_tags = get_media_tags(&conn, media.id).unwrap();
+        assert_eq!(media_tags.len(), 1);
+    }
+
+    #[test]
+    fn test_get_all_tags_sorted_by_name() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // 順番をバラバラに作成
+        create_tag(&conn, "タグC").unwrap();
+        create_tag(&conn, "タグA").unwrap();
+        create_tag(&conn, "タグB").unwrap();
+
+        let tags = get_all_tags(&conn).unwrap();
+        assert_eq!(tags.len(), 3);
+        // 名前順にソートされている
+        assert_eq!(tags[0].name, "タグA");
+        assert_eq!(tags[1].name, "タグB");
+        assert_eq!(tags[2].name, "タグC");
+    }
+
+    #[test]
+    fn test_get_tag_usage_stats() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // メディアを作成
+        let media1 = create_media(&conn, &MediaInput {
+            title: "作品1".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }).unwrap();
+
+        let media2 = create_media(&conn, &MediaInput {
+            title: "作品2".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }).unwrap();
+
+        let media3 = create_media(&conn, &MediaInput {
+            title: "作品3".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }).unwrap();
+
+        // タグを作成
+        let tag1 = create_tag(&conn, "人気").unwrap();
+        let tag2 = create_tag(&conn, "新作").unwrap();
+        let _tag3 = create_tag(&conn, "未使用").unwrap();
+
+        // タグを付与
+        add_tag_to_media(&conn, media1.id, tag1.id).unwrap(); // 人気: 1
+        add_tag_to_media(&conn, media2.id, tag1.id).unwrap(); // 人気: 2
+        add_tag_to_media(&conn, media3.id, tag1.id).unwrap(); // 人気: 3
+        add_tag_to_media(&conn, media1.id, tag2.id).unwrap(); // 新作: 1
+        // tag3は未使用
+
+        // 統計を取得
+        let stats = super::get_tag_usage_stats(&conn).unwrap();
+
+        assert_eq!(stats.len(), 3);
+
+        // カウント順にソート（降順）
+        assert_eq!(stats[0].tag_name, "人気");
+        assert_eq!(stats[0].count, 3);
+
+        assert_eq!(stats[1].tag_name, "新作");
+        assert_eq!(stats[1].count, 1);
+
+        assert_eq!(stats[2].tag_name, "未使用");
+        assert_eq!(stats[2].count, 0);
+    }
+
+    #[test]
+    fn test_find_unused_tags() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        // メディアを作成
+        let media = create_media(&conn, &MediaInput {
+            title: "作品1".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }).unwrap();
+
+        // タグを作成
+        let tag_used = create_tag(&conn, "使用中").unwrap();
+        let tag_unused1 = create_tag(&conn, "未使用1").unwrap();
+        let tag_unused2 = create_tag(&conn, "未使用2").unwrap();
+
+        // 1つだけ使用
+        add_tag_to_media(&conn, media.id, tag_used.id).unwrap();
+
+        // 未使用タグを取得
+        let unused = super::find_unused_tags(&conn).unwrap();
+
+        assert_eq!(unused.len(), 2);
+        assert_eq!(unused[0].name, "未使用1");
+        assert_eq!(unused[0].id, tag_unused1.id);
+        assert_eq!(unused[1].name, "未使用2");
+        assert_eq!(unused[1].id, tag_unused2.id);
     }
 }

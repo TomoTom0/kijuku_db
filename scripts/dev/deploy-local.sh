@@ -7,7 +7,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUST_SDK_DIR="$PROJECT_ROOT/rust-sdk"
 BINARY_NAME="kijuku-cli"
-LOCAL_BIN_DIR="$HOME/.local/bin"
 
 # .envファイルの読み込み
 ENV_FILE="$PROJECT_ROOT/.env"
@@ -21,13 +20,22 @@ echo "Rustバイナリをビルド中..."
 cd "$RUST_SDK_DIR"
 cargo build --release
 
-echo "ローカルにデプロイ中..."
-mkdir -p "$LOCAL_BIN_DIR"
-cp "$RUST_SDK_DIR/target/release/$BINARY_NAME" "$LOCAL_BIN_DIR/"
-chmod +x "$LOCAL_BIN_DIR/$BINARY_NAME"
+# ワークスペースのtargetディレクトリから取得
+WORKSPACE_TARGET="$PROJECT_ROOT/target/release"
 
-echo "ローカルデプロイ完了: $LOCAL_BIN_DIR/$BINARY_NAME"
-ls -lh "$LOCAL_BIN_DIR/$BINARY_NAME"
+# ローカルデプロイ
+echo "ローカルにデプロイ中..."
+LOCAL_BINARY_DIR="$HOME/.local/kijuku-db/bin"
+LOCAL_SYMLINK_DIR="$HOME/.local/bin"
+
+mkdir -p "$LOCAL_BINARY_DIR" "$LOCAL_SYMLINK_DIR"
+cp "$WORKSPACE_TARGET/$BINARY_NAME" "$LOCAL_BINARY_DIR/"
+chmod +x "$LOCAL_BINARY_DIR/$BINARY_NAME"
+ln -sf "$LOCAL_BINARY_DIR/$BINARY_NAME" "$LOCAL_SYMLINK_DIR/$BINARY_NAME"
+
+echo "ローカルデプロイ完了:"
+ls -lh "$LOCAL_BINARY_DIR/$BINARY_NAME"
+ls -lh "$LOCAL_SYMLINK_DIR/$BINARY_NAME"
 
 # リモートデプロイ
 if [ -n "$REMOTE_SSH_HOST" ]; then
@@ -35,32 +43,31 @@ if [ -n "$REMOTE_SSH_HOST" ]; then
   echo "リモートデプロイを開始します..."
   echo "リモートホスト: $REMOTE_SSH_HOST"
 
-  # リモートのバイナリパスを決定
-  if [ -n "$REMOTE_BINARY_PATH" ]; then
-    REMOTE_BIN_PATH="$REMOTE_BINARY_PATH"
-  elif [ -n "$REMOTE_WORK_DIR" ]; then
-    REMOTE_BIN_PATH="${REMOTE_WORK_DIR}/bin/${BINARY_NAME}"
-  else
-    REMOTE_BIN_PATH="~/.local/bin/${BINARY_NAME}"
-  fi
+  REMOTE_BINARY_DIR="~/.local/kijuku-db/bin"
+  REMOTE_BINARY_PATH="${REMOTE_BINARY_DIR}/${BINARY_NAME}"
+  REMOTE_SYMLINK_PATH="~/.local/bin/${BINARY_NAME}"
 
-  echo "リモートパス: $REMOTE_BIN_PATH"
+  echo "リモートバイナリパス: $REMOTE_BINARY_PATH"
+  echo "リモートシンボリックリンク: $REMOTE_SYMLINK_PATH"
 
   # リモート側のディレクトリを作成
-  REMOTE_BIN_DIR=$(dirname "$REMOTE_BIN_PATH")
-  echo "リモート側のディレクトリを作成中: $REMOTE_BIN_DIR"
-  ssh "$REMOTE_SSH_HOST" "mkdir -p $REMOTE_BIN_DIR"
+  echo "リモート側のディレクトリを作成中..."
+  ssh "$REMOTE_SSH_HOST" "mkdir -p $REMOTE_BINARY_DIR ~/.local/bin"
 
   # バイナリを転送
   echo "バイナリを転送中..."
-  scp "$RUST_SDK_DIR/target/release/$BINARY_NAME" "$REMOTE_SSH_HOST:$REMOTE_BIN_PATH"
+  scp "$WORKSPACE_TARGET/$BINARY_NAME" "$REMOTE_SSH_HOST:$REMOTE_BINARY_PATH"
 
   # 実行権限を付与
   echo "実行権限を付与中..."
-  ssh "$REMOTE_SSH_HOST" "chmod +x $REMOTE_BIN_PATH"
+  ssh "$REMOTE_SSH_HOST" "chmod +x $REMOTE_BINARY_PATH"
 
-  echo "リモートデプロイ完了: $REMOTE_SSH_HOST:$REMOTE_BIN_PATH"
-  ssh "$REMOTE_SSH_HOST" "ls -lh $REMOTE_BIN_PATH"
+  # シンボリックリンクを作成
+  echo "シンボリックリンクを作成中..."
+  ssh "$REMOTE_SSH_HOST" "ln -sf $REMOTE_BINARY_PATH $REMOTE_SYMLINK_PATH"
+
+  echo "リモートデプロイ完了:"
+  ssh "$REMOTE_SSH_HOST" "ls -lh $REMOTE_BINARY_PATH && ls -lh $REMOTE_SYMLINK_PATH"
 else
   echo ""
   echo "リモート設定が見つかりません。ローカルデプロイのみ実行しました。"

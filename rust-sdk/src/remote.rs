@@ -1,9 +1,11 @@
-use crate::{KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, QueryOptions, Result, Tag};
+use crate::{BackupInfo, BulkUpdateItem, CheckThumbnailResult, KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats, ThumbnailOptions, UpdateThumbnailResult};
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
+use ssh2_config::{ParseRule, SshConfig};
 use std::io::Read;
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::env;
 
 /// リモート接続設定
 #[derive(Debug, Clone)]
@@ -13,7 +15,7 @@ pub struct RemoteConfig {
     /// SSHポート
     pub port: Option<u16>,
     /// SSHユーザー名
-    pub username: String,
+    pub username: Option<String>,
     /// SSH秘密鍵のパス
     pub private_key_path: Option<PathBuf>,
     /// リモートのDBパス
@@ -27,7 +29,7 @@ impl Default for RemoteConfig {
         Self {
             ssh_host: String::from("localhost"),
             port: Some(22),
-            username: String::new(),
+            username: None,
             private_key_path: None,
             db_path: Some(String::from("~/.local/share/kijuku/kijuku.db")),
             binary_path: Some(String::from("~/.local/bin/kijuku-cli")),
@@ -61,14 +63,73 @@ impl RemoteKijukuDB {
         Self { config }
     }
 
+    /// SSH設定を読み込む
+    fn load_ssh_config(&self) -> Result<(String, u16, String, Option<PathBuf>)> {
+        let home = env::var("HOME").map_err(|_| KijukuError::Other("HOME environment variable not set".to_string()))?;
+        let ssh_config_path = PathBuf::from(&home).join(".ssh").join("config");
+
+        // SSH configが存在しない場合はデフォルト値を使用
+        if !ssh_config_path.exists() {
+            let username = self.config.username.clone().ok_or_else(|| {
+                KijukuError::Other(format!(
+                    "SSH user for '{}' is not specified and no ~/.ssh/config found",
+                    self.config.ssh_host
+                ))
+            })?;
+            return Ok((
+                self.config.ssh_host.clone(),
+                self.config.port.unwrap_or(22),
+                username,
+                self.config.private_key_path.clone(),
+            ));
+        }
+
+        let config_content = std::fs::read_to_string(&ssh_config_path)
+            .map_err(|e| KijukuError::Other(format!("Failed to read SSH config: {}", e)))?;
+
+        let mut reader = std::io::Cursor::new(config_content.as_bytes());
+        let ssh_config = SshConfig::default()
+            .parse(&mut reader, ParseRule::ALLOW_UNKNOWN_FIELDS)
+            .map_err(|e| KijukuError::Other(format!("Failed to parse SSH config: {}", e)))?;
+
+        // ホスト設定を取得
+        let params = ssh_config.query(&self.config.ssh_host);
+
+        // 各フィールドを取得（明示的な設定が優先）
+        let hostname = params.host_name.unwrap_or_else(|| self.config.ssh_host.clone());
+        let port = self.config.port.or(params.port).unwrap_or(22);
+        let username = self.config.username.clone()
+            .or(params.user)
+            .or_else(|| env::var("USER").ok())
+            .ok_or_else(|| {
+                KijukuError::Other(format!(
+                    "SSH user for '{}' is not specified. Set it in RemoteConfig, ~/.ssh/config or USER env var",
+                    self.config.ssh_host
+                ))
+            })?;
+        let identity_file = self.config.private_key_path.clone().or_else(|| {
+            params.identity_file.and_then(|files| {
+                files.first().map(|path| {
+                    // ~/ を展開
+                    let path_str = path.to_string_lossy();
+                    if path_str.starts_with("~/") {
+                        PathBuf::from(&home).join(&path_str[2..])
+                    } else {
+                        path.clone()
+                    }
+                })
+            })
+        });
+
+        Ok((hostname, port, username, identity_file))
+    }
+
     /// SSH接続を確立
     fn connect(&self) -> Result<Session> {
-        let tcp = TcpStream::connect(format!(
-            "{}:{}",
-            self.config.ssh_host,
-            self.config.port.unwrap_or(22)
-        ))
-        .map_err(|e| KijukuError::Other(format!("TCP connection failed: {}", e)))?;
+        let (hostname, port, username, identity_file) = self.load_ssh_config()?;
+
+        let tcp = TcpStream::connect(format!("{}:{}", hostname, port))
+            .map_err(|e| KijukuError::Other(format!("TCP connection failed: {}", e)))?;
 
         let mut sess = Session::new()
             .map_err(|e| KijukuError::Other(format!("SSH session creation failed: {}", e)))?;
@@ -78,12 +139,12 @@ impl RemoteKijukuDB {
             .map_err(|e| KijukuError::Other(format!("SSH handshake failed: {}", e)))?;
 
         // 認証
-        if let Some(key_path) = &self.config.private_key_path {
-            sess.userauth_pubkey_file(&self.config.username, None, key_path, None)
+        if let Some(key_path) = &identity_file {
+            sess.userauth_pubkey_file(&username, None, key_path, None)
                 .map_err(|e| KijukuError::Other(format!("SSH authentication failed: {}", e)))?;
         } else {
             return Err(KijukuError::Other(
-                "Private key path is required".to_string(),
+                "Private key path is required (set in RemoteConfig or SSH config)".to_string(),
             ));
         }
 
@@ -193,6 +254,26 @@ impl RemoteKijukuDB {
         Ok(data.version)
     }
 
+    /// テーブル一覧を取得
+    pub fn get_tables(&self) -> Result<Vec<String>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getTables".to_string(),
+            params: serde_json::json!({}),
+        })?;
+
+        self.check_response(response)
+    }
+
+    /// テーブルのカラム情報を取得
+    pub fn get_table_info(&self, table_name: &str) -> Result<Vec<TableColumnInfo>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getTableInfo".to_string(),
+            params: serde_json::json!({ "table_name": table_name }),
+        })?;
+
+        self.check_response(response)
+    }
+
     /// メディアを作成
     pub fn create_media(&self, data: &MediaInput) -> Result<Media> {
         let response = self.execute_remote_command(CommandRequest {
@@ -213,8 +294,10 @@ impl RemoteKijukuDB {
         self.check_response(response)
     }
 
-    /// メディアを更新
-    pub fn update_media(&self, id: i64, data: &MediaInput) -> Result<()> {
+    /// メディアを更新（部分更新）
+    ///
+    /// 指定されたフィールドのみ更新します。
+    pub fn update_media(&self, id: i64, data: &MediaUpdateInput) -> Result<()> {
         let response = self.execute_remote_command(CommandRequest {
             operation: "updateMedia".to_string(),
             params: serde_json::json!({ "id": id, "data": data }),
@@ -247,6 +330,20 @@ impl RemoteKijukuDB {
         self.check_response(response)
     }
 
+    /// 指定したフィールド群の重複なしの値の組み合わせ一覧を取得する
+    pub fn get_distinct_values(
+        &self,
+        fields: &[&str],
+        filter: &MediaFilter,
+    ) -> Result<Vec<Vec<Option<String>>>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getDistinctValues".to_string(),
+            params: serde_json::json!({ "fields": fields, "filter": filter }),
+        })?;
+
+        self.check_response(response)
+    }
+
     /// 複数のメディアを一括作成
     pub fn bulk_create_media(&self, data_list: &[MediaInput]) -> Result<Vec<Media>> {
         let response = self.execute_remote_command(CommandRequest {
@@ -255,6 +352,40 @@ impl RemoteKijukuDB {
         })?;
 
         self.check_response(response)
+    }
+
+    /// 複数のメディアを一括削除
+    pub fn bulk_delete_media(&self, ids: &[i64]) -> Result<()> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "bulkDeleteMedia".to_string(),
+            params: serde_json::json!({ "ids": ids }),
+        })?;
+
+        #[derive(Deserialize)]
+        struct DeleteResponse {
+            #[allow(dead_code)]
+            deleted: bool,
+        }
+
+        let _data: DeleteResponse = self.check_response(response)?;
+        Ok(())
+    }
+
+    /// 複数のメディアを一括更新
+    pub fn bulk_update_media(&self, updates: &[BulkUpdateItem]) -> Result<()> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "bulkUpdateMedia".to_string(),
+            params: serde_json::json!({ "updates": updates }),
+        })?;
+
+        #[derive(Deserialize)]
+        struct UpdateResponse {
+            #[allow(dead_code)]
+            updated: bool,
+        }
+
+        let _data: UpdateResponse = self.check_response(response)?;
+        Ok(())
     }
 
     /// タグを作成
@@ -312,6 +443,26 @@ impl RemoteKijukuDB {
         let response = self.execute_remote_command(CommandRequest {
             operation: "getMediaTags".to_string(),
             params: serde_json::json!({ "media_id": media_id }),
+        })?;
+
+        self.check_response(response)
+    }
+
+    /// タグの使用数統計を取得
+    pub fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getTagUsageStats".to_string(),
+            params: serde_json::json!({}),
+        })?;
+
+        self.check_response(response)
+    }
+
+    /// 未使用のタグを取得
+    pub fn find_unused_tags(&self) -> Result<Vec<Tag>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "findUnusedTags".to_string(),
+            params: serde_json::json!({}),
         })?;
 
         self.check_response(response)
@@ -377,6 +528,116 @@ impl RemoteKijukuDB {
 
         self.check_response(response)
     }
+
+    /// 手動バックアップを実行
+    pub fn backup(&self, label: Option<&str>) -> Result<Option<String>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "backup".to_string(),
+            params: serde_json::json!({ "label": label }),
+        })?;
+
+        #[derive(Deserialize)]
+        struct BackupResponse {
+            path: Option<String>,
+        }
+
+        let data: BackupResponse = self.check_response(response)?;
+        Ok(data.path)
+    }
+
+    /// バックアップ一覧を取得
+    pub fn list_backups(&self) -> Result<Vec<BackupInfo>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "listBackups".to_string(),
+            params: serde_json::json!({}),
+        })?;
+
+        #[derive(Deserialize)]
+        struct BackupInfoRaw {
+            id: String,
+            name: String,
+            path: String,
+            created_at: u64,
+            scope: String,
+            kind: serde_json::Value,
+            label: Option<String>,
+        }
+
+        let items: Vec<BackupInfoRaw> = self.check_response(response)?;
+        items
+            .into_iter()
+            .map(|item| {
+                use crate::backup::{BackupKind, BackupScope};
+                let scope = match item.scope.as_str() {
+                    "auto" => BackupScope::Auto,
+                    "manual" => BackupScope::Manual,
+                    "tmp" => BackupScope::Tmp,
+                    _ => BackupScope::Auto,
+                };
+                let kind = if item.kind["type"].as_str() == Some("diff") {
+                    BackupKind::Diff {
+                        base_id: item.kind["baseId"].as_str().unwrap_or_default().to_string(),
+                    }
+                } else {
+                    BackupKind::Full
+                };
+                Ok(BackupInfo {
+                    id: item.id,
+                    name: item.name,
+                    path: std::path::PathBuf::from(item.path),
+                    created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(item.created_at),
+                    scope,
+                    kind,
+                    label: item.label,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+    }
+
+    /// バックアップを復元
+    pub fn restore(&self, selector: &serde_json::Value) -> Result<String> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "restore".to_string(),
+            params: serde_json::json!({ "selector": selector }),
+        })?;
+
+        #[derive(Deserialize)]
+        struct RestoreResponse {
+            path: String,
+        }
+
+        let data: RestoreResponse = self.check_response(response)?;
+        Ok(data.path)
+    }
+
+    /// サムネイルの状態をチェック
+    pub fn check_thumbnail(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+    ) -> Result<CheckThumbnailResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "checkThumbnail".to_string(),
+            params: serde_json::json!({ "filter": filter, "options": options, "thumbnail_options": {} }),
+        })?;
+
+        self.check_response(response)
+    }
+
+    /// サムネイルを更新
+    pub fn update_thumbnail(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+        thumbnail_options: &ThumbnailOptions,
+    ) -> Result<UpdateThumbnailResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "updateThumbnail".to_string(),
+            params: serde_json::json!({ "filter": filter, "options": options, "thumbnail_options": thumbnail_options }),
+        })?;
+
+        self.check_response(response)
+    }
 }
 
 #[cfg(test)]
@@ -403,7 +664,7 @@ mod tests {
         let config = RemoteConfig {
             ssh_host: "example.com".to_string(),
             port: Some(2222),
-            username: "testuser".to_string(),
+            username: Some("testuser".to_string()),
             private_key_path: Some(PathBuf::from("/home/user/.ssh/id_rsa")),
             db_path: Some("/path/to/db.db".to_string()),
             binary_path: Some("/path/to/binary".to_string()),
@@ -411,6 +672,6 @@ mod tests {
 
         assert_eq!(config.ssh_host, "example.com");
         assert_eq!(config.port, Some(2222));
-        assert_eq!(config.username, "testuser");
+        assert_eq!(config.username, Some("testuser".to_string()));
     }
 }

@@ -11,6 +11,7 @@ export type MediaType = 'comic' | 'video' | 'music';
  */
 export interface Media {
   id: number;
+  uuid: string;
   title: string;
   title_id?: string;
   path?: string;
@@ -52,6 +53,8 @@ export interface Media {
 export interface MediaInput {
   title: string;
   media_type: MediaType;
+  /** UUIDを手動指定する場合はここに設定。省略時は自動生成。 */
+  uuid?: string;
   title_id?: string;
   path?: string;
   thumbnail_path?: string;
@@ -92,16 +95,47 @@ export interface MediaFilter {
   series?: string;
   source?: string;
   tag_ids?: number[];
+  flag_exist?: boolean;
+  language?: string;
+  magazine?: string;
+  magazine_id?: string;
+  extension?: string;
+  external_id?: string;
+  volume_title?: string;
+  title_en?: string;
+  artist_en?: string;
+  /** IDのIN句フィルタ（複数IDを一括フェッチする場合に使用） */
+  id_in?: number[];
+  /**
+   * OR条件で結合する追加フィルタ
+   * 各フィルタ内の条件はAND結合、or_filters間はOR結合される
+   */
+  or_filters?: MediaFilter[];
+}
+
+/**
+ * ソートキー（フィールドと方向）
+ */
+export interface SortKey {
+  field: string;
+  order?: 'ASC' | 'DESC';
 }
 
 /**
  * クエリオプション（ソート、ページネーション）
  */
 export interface QueryOptions {
-  orderBy?: string;
-  order?: 'ASC' | 'DESC';
+  sortKeys?: SortKey[];
   limit?: number;
   offset?: number;
+}
+
+/**
+ * 一括更新時の個別アイテム
+ */
+export interface BulkUpdateItem {
+  id: number;
+  data: Partial<MediaInput>;
 }
 
 /**
@@ -113,13 +147,83 @@ export interface Tag {
 }
 
 /**
+ * タグ使用統計情報
+ */
+export interface TagUsageStats {
+  tag_id: number;
+  tag_name: string;
+  count: number;
+}
+
+/**
  * バックアップ設定オプション
  */
 export interface BackupOptions {
-  backupDir: string;
+  /**
+   * バックアップファイルの保存先ディレクトリ
+   * 省略時はdbPathの親ディレクトリに"backup"フォルダを作成
+   */
+  backupDir?: string;
   intervalMs?: number;
   enabled?: boolean;
   onProgress?: (info: { totalPages: number; remainingPages: number }) => void;
+}
+
+/**
+ * サムネイル操作オプション
+ */
+export interface ThumbnailOptions {
+  /** trueの場合、DBを更新せず結果を出力のみ（updateThumbnailのみ有効） */
+  dry_run?: boolean;
+  /** trueの場合、既にサムネイルが存在しても再生成する（updateThumbnailのみ有効） */
+  force?: boolean;
+}
+
+export type CheckThumbnailStatus =
+  | { type: 'ok' }
+  | { type: 'skipped'; reason: string }
+  | { type: 'missing' }
+  | { type: 'fileNotFound' };
+
+export interface CheckThumbnailItemResult {
+  id: number;
+  uuid: string;
+  title: string;
+  expected_path?: string;
+  current_path?: string;
+  status: CheckThumbnailStatus;
+}
+
+export interface CheckThumbnailResult {
+  total: number;
+  ok: number;
+  missing: number;
+  file_not_found: number;
+  skipped: number;
+  details: CheckThumbnailItemResult[];
+}
+
+export type UpdateThumbnailStatus =
+  | { type: 'generated' }
+  | { type: 'alreadyExists' }
+  | { type: 'skipped'; reason: string }
+  | { type: 'error'; message: string };
+
+export interface UpdateThumbnailItemResult {
+  id: number;
+  uuid: string;
+  title: string;
+  thumbnail_path?: string;
+  status: UpdateThumbnailStatus;
+}
+
+export interface UpdateThumbnailResult {
+  total: number;
+  generated: number;
+  already_exists: number;
+  skipped: number;
+  errors: number;
+  details: UpdateThumbnailItemResult[];
 }
 
 /**
@@ -140,4 +244,16 @@ export interface MediaAttribute {
   key: string;
   value?: string;
   value_type: 'string' | 'integer' | 'boolean';
+}
+
+/**
+ * テーブルカラム情報
+ */
+export interface TableColumnInfo {
+  cid: number;
+  name: string;
+  type_name: string;
+  notnull: boolean;
+  dflt_value?: string;
+  pk: boolean;
 }
