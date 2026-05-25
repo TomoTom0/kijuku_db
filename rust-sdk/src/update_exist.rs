@@ -62,6 +62,15 @@ pub struct UpdateExistResult {
     pub detail_file: String,
 }
 
+impl Drop for UpdateExistResult {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.detail_file);
+        if let Some(ref ids_file) = self.updated_ids_file {
+            let _ = std::fs::remove_file(ids_file);
+        }
+    }
+}
+
 /// media_typeごとのデフォルト拡張子
 fn default_extension(media_type: MediaType) -> &'static str {
     match media_type {
@@ -249,7 +258,8 @@ fn process_media(
 ///
 /// この関数は結果を格納するために一時ファイルを作成します。
 /// 返される [`UpdateExistResult`] の `detail_file` および `updated_ids_file` に含まれる
-/// ファイルパスは、呼び出し側が不要になった時点で削除する責任があります。
+/// 返される [`UpdateExistResult`] がドロップされる際、一時ファイルは自動的に削除されます。
+/// ファイルの内容が必要な場合は、ドロップ前に読み取ってください。
 pub fn update_exist(
     conn: &Connection,
     filter: &MediaFilter,
