@@ -127,7 +127,11 @@ async fn auth_middleware(
     let (mut parts, body) = request.into_parts();
 
     // ExtensionからStateを取得（クローンして借用を解除）
-    let state = parts.extensions.get::<Arc<ServerState>>().unwrap().clone();
+    let state = parts
+        .extensions
+        .get::<Arc<ServerState>>()
+        .cloned()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // CookieJarを取得（Infallibleなのでunwrap()が安全）
     let jar = CookieJar::from_request_parts(&mut parts, &()).await.unwrap();
