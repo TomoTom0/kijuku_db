@@ -7,7 +7,7 @@ fn test_remote_config_default() {
 
     assert_eq!(config.ssh_host, "localhost");
     assert_eq!(config.port, Some(22));
-    assert!(config.username.is_empty());
+    assert!(config.username.is_none());
     assert_eq!(
         config.db_path,
         Some("~/.local/share/kijuku/kijuku.db".to_string())
@@ -23,7 +23,7 @@ fn test_remote_config_custom() {
     let config = RemoteConfig {
         ssh_host: "example.com".to_string(),
         port: Some(2222),
-        username: "testuser".to_string(),
+        username: Some("testuser".to_string()),
         private_key_path: Some(PathBuf::from("/home/user/.ssh/id_rsa")),
         db_path: Some("/custom/path/db.db".to_string()),
         binary_path: Some("/custom/path/binary".to_string()),
@@ -31,7 +31,7 @@ fn test_remote_config_custom() {
 
     assert_eq!(config.ssh_host, "example.com");
     assert_eq!(config.port, Some(2222));
-    assert_eq!(config.username, "testuser");
+    assert_eq!(config.username, Some("testuser".to_string()));
     assert_eq!(
         config.private_key_path,
         Some(PathBuf::from("/home/user/.ssh/id_rsa"))
@@ -45,7 +45,7 @@ fn test_remote_kijukudb_creation() {
     let config = RemoteConfig {
         ssh_host: "localhost".to_string(),
         port: Some(22),
-        username: "test".to_string(),
+        username: Some("test".to_string()),
         private_key_path: Some(PathBuf::from("/tmp/test_key")),
         db_path: None,
         binary_path: None,
@@ -60,7 +60,7 @@ fn test_remote_config_clone() {
     let config1 = RemoteConfig {
         ssh_host: "host1.com".to_string(),
         port: Some(22),
-        username: "user1".to_string(),
+        username: Some("user1".to_string()),
         private_key_path: Some(PathBuf::from("/path/to/key")),
         db_path: Some("/path/to/db".to_string()),
         binary_path: Some("/path/to/binary".to_string()),
@@ -81,7 +81,7 @@ fn test_remote_config_partial_options() {
     let config = RemoteConfig {
         ssh_host: "remote.host".to_string(),
         port: None, // デフォルトのポート22が使われる
-        username: "user".to_string(),
+        username: Some("user".to_string()),
         private_key_path: Some(PathBuf::from("/home/user/.ssh/id_ed25519")),
         db_path: None, // デフォルトパスが使われる
         binary_path: None, // デフォルトパスが使われる
@@ -89,7 +89,7 @@ fn test_remote_config_partial_options() {
 
     assert_eq!(config.ssh_host, "remote.host");
     assert_eq!(config.port, None);
-    assert_eq!(config.username, "user");
+    assert_eq!(config.username, Some("user".to_string()));
     assert_eq!(config.db_path, None);
     assert_eq!(config.binary_path, None);
 }
@@ -118,7 +118,7 @@ fn test_ssh_connection() {
     let config = RemoteConfig {
         ssh_host: ssh_host.unwrap(),
         port: Some(22),
-        username: ssh_user.unwrap(),
+        username: Some(ssh_user.unwrap()),
         private_key_path: Some(PathBuf::from(ssh_key.unwrap())),
         db_path: None,
         binary_path: None,
@@ -149,7 +149,7 @@ fn test_remote_migrate() {
     let config = RemoteConfig {
         ssh_host: ssh_host.unwrap(),
         port: Some(22),
-        username: ssh_user.unwrap(),
+        username: Some(ssh_user.unwrap()),
         private_key_path: Some(PathBuf::from(ssh_key.unwrap())),
         db_path: Some("/tmp/test_remote.db".to_string()),
         binary_path: None,
@@ -178,7 +178,7 @@ fn test_remote_crud_operations() {
     let config = RemoteConfig {
         ssh_host: ssh_host.unwrap(),
         port: Some(22),
-        username: ssh_user.unwrap(),
+        username: Some(ssh_user.unwrap()),
         private_key_path: Some(PathBuf::from(ssh_key.unwrap())),
         db_path: Some("/tmp/test_remote.db".to_string()),
         binary_path: None,
