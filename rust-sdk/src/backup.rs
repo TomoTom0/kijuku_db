@@ -433,7 +433,7 @@ impl BackupManager {
                 tmp_dir.join(format!("{}.{}-pre_restore.db", self.db_stem, timestamp));
             let mut dst = rusqlite::Connection::open(&pre_restore_path)?;
             let bk = rusqlite::backup::Backup::new(conn, &mut dst)?;
-            bk.run_to_completion(750_000, std::time::Duration::from_secs(10), None)?;
+            bk.run_to_completion(1000, std::time::Duration::from_millis(50), None)?;
         }
 
         // 2. バックアップを復元
@@ -442,7 +442,7 @@ impl BackupManager {
                 let src =
                     rusqlite::Connection::open_with_flags(&backup_info.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
                 let bk = rusqlite::backup::Backup::new(&src, conn)?;
-                bk.run_to_completion(750_000, std::time::Duration::from_secs(10), None)?;
+                bk.run_to_completion(1000, std::time::Duration::from_millis(50), None)?;
             }
             BackupKind::Diff { base_id } => {
                 let base = self
@@ -458,7 +458,7 @@ impl BackupManager {
 
                 let src = rusqlite::Connection::open_with_flags(&temp_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
                 let bk = rusqlite::backup::Backup::new(&src, conn)?;
-                bk.run_to_completion(750_000, std::time::Duration::from_secs(10), None)?;
+                bk.run_to_completion(1000, std::time::Duration::from_millis(50), None)?;
                 let _ = fs::remove_file(&temp_path);
             }
         }
@@ -641,7 +641,7 @@ impl BackupManager {
         )?;
         src_conn.busy_timeout(std::time::Duration::from_millis(self.busy_timeout_ms))?;
         let bk = rusqlite::backup::Backup::new(&src_conn, &mut dst_conn)?;
-        bk.run_to_completion(750_000, std::time::Duration::from_millis(100), None)?;
+        bk.run_to_completion(1000, std::time::Duration::from_millis(100), None)?;
         Ok(())
     }
 
@@ -1044,8 +1044,39 @@ fn apply_diff_to_file(base_path: &Path, diff_path: &Path, output_path: &Path) ->
 
     let base_page_count = fs::metadata(base_path)?.len() as usize / page_size;
 
+    // 一時ファイルに書き込み、完了後にアトミックにリネーム
+    let temp_path = output_path.with_extension("db.tmp");
+
+    let write_result = write_diff_to_temp(
+        base_path,
+        &mut diff_file,
+        &temp_path,
+        page_size,
+        total_pages,
+        changed_count,
+        base_page_count,
+    );
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+        return write_result;
+    }
+
+    fs::rename(&temp_path, output_path)?;
+    Ok(())
+}
+
+fn write_diff_to_temp(
+    base_path: &Path,
+    diff_file: &mut File,
+    temp_path: &Path,
+    page_size: usize,
+    total_pages: usize,
+    changed_count: usize,
+    base_page_count: usize,
+) -> Result<()> {
     let mut base_file = File::open(base_path)?;
-    let mut out = File::create(output_path)?;
+    let mut out = File::create(temp_path)?;
     let mut base_buf = vec![0u8; page_size];
     let mut patch_buf = vec![0u8; page_size];
     let zero_buf = vec![0u8; page_size];
@@ -1092,6 +1123,8 @@ fn apply_diff_to_file(base_path: &Path, diff_path: &Path, output_path: &Path) ->
         }
     }
 
+    out.sync_all()?;
+    drop(out);
     Ok(())
 }
 

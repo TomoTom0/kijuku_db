@@ -101,9 +101,10 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
             }
 
             // 3. テーブルを再作成してNOT NULL制約を付与（SQLiteではALTER TABLEでNOT NULL追加不可）
-            conn.execute_batch("
-                PRAGMA foreign_keys = OFF;
-
+            conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+            let migrate_result = (|| -> crate::error::Result<()> {
+                let tx = conn.unchecked_transaction()?;
+            tx.execute_batch("
                 CREATE TABLE media_new (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     uuid TEXT NOT NULL UNIQUE,
@@ -164,20 +165,23 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
                 BEGIN
                     UPDATE media SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
                 END;
-
-                PRAGMA foreign_keys = ON;
             ")?;
-
-            conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+                tx.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+                tx.commit()?;
+                Ok(())
+            })();
+            let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+            migrate_result?;
             Ok(())
         }
         5 => {
             // media_tags と media_attributes の外部キーに ON DELETE CASCADE を追加するためテーブルを再作成
 
-            conn.execute_batch("
-                PRAGMA foreign_keys = OFF;
-
-                -- media_tags を再作成（ON DELETE CASCADE 追加）
+            conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+            let migrate_result = (|| -> crate::error::Result<()> {
+                let tx = conn.unchecked_transaction()?;
+                tx.execute_batch("
+                    -- media_tags を再作成（ON DELETE CASCADE 追加）
                 CREATE TABLE media_tags_new (
                     media_id INTEGER NOT NULL,
                     tag_id INTEGER NOT NULL,
@@ -203,11 +207,13 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
                 INSERT INTO media_attributes_new SELECT media_id, key, value, value_type FROM media_attributes;
                 DROP TABLE media_attributes;
                 ALTER TABLE media_attributes_new RENAME TO media_attributes;
-
-                PRAGMA foreign_keys = ON;
-            ")?;
-
-            conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+                ")?;
+                tx.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+                tx.commit()?;
+                Ok(())
+            })();
+            let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+            migrate_result?;
             Ok(())
         }
         _ => Err(crate::error::KijukuError::Other(format!(
