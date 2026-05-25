@@ -201,5 +201,98 @@ describe('KijukuDB サムネイル操作', () => {
       expect(result.total).toBe(0);
       expect(result.generated).toBe(0);
     });
+
+    test('video: 動画ファイルが存在しない場合はskippedになる', () => {
+      const contentDir = path.join(tmpDir, 'content', 'series', 'vol1');
+      fs.mkdirSync(contentDir, { recursive: true });
+      const videoPath = path.join(contentDir, 'video.mp4');
+      // ファイルを作成しない
+
+      db.createMedia({ title: 'テスト動画', media_type: 'video', path: videoPath, extension: 'mp4' });
+
+      const result = db.updateThumbnail({}, undefined, { dry_run: true });
+
+      expect(result.skipped).toBe(1);
+      expect(result.generated).toBe(0);
+    });
+
+    test('video: 動画ファイルが存在する場合はdry_runでgeneratedになる', () => {
+      const contentDir = path.join(tmpDir, 'content', 'series', 'vol1');
+      fs.mkdirSync(contentDir, { recursive: true });
+      const videoPath = path.join(contentDir, 'video.mp4');
+      fs.writeFileSync(videoPath, 'dummy video');
+
+      db.createMedia({ title: 'テスト動画', media_type: 'video', path: videoPath, extension: 'mp4' });
+
+      const result = db.updateThumbnail({}, undefined, { dry_run: true });
+
+      expect(result.generated).toBe(1);
+    });
+
+    test('video: 既存サムネイルがある場合はalreadyExistsになる', () => {
+      const contentDir = path.join(tmpDir, 'content', 'series', 'vol1');
+      fs.mkdirSync(contentDir, { recursive: true });
+      const videoPath = path.join(contentDir, 'video.mp4');
+      fs.writeFileSync(videoPath, 'dummy video');
+
+      const coverDir = path.join(tmpDir, 'cover');
+      fs.mkdirSync(coverDir, { recursive: true });
+
+      const media = db.createMedia({ title: 'テスト動画', media_type: 'video', path: videoPath, extension: 'mp4' });
+      const thumbPath = path.join(tmpDir, 'cover', `${media.uuid}.jpg`);
+      fs.writeFileSync(thumbPath, 'dummy thumb');
+      db.updateMedia(media.id, { thumbnail_path: thumbPath });
+
+      const result = db.updateThumbnail({}, undefined, { dry_run: true });
+
+      expect(result.already_exists).toBe(1);
+    });
+
+    test('music: musicはサムネイル対象外でskippedになる', () => {
+      const contentDir = path.join(tmpDir, 'content', 'series', 'vol1');
+      fs.mkdirSync(contentDir, { recursive: true });
+      const musicPath = path.join(contentDir, 'audio.m4a');
+      fs.writeFileSync(musicPath, 'dummy audio');
+
+      db.createMedia({ title: 'テスト音楽', media_type: 'music', path: musicPath, extension: 'm4a' });
+
+      const result = db.updateThumbnail({}, undefined, { dry_run: true });
+
+      expect(result.skipped).toBe(1);
+      expect(result.details[0].status).toEqual({
+        type: 'skipped',
+        reason: 'musicはサムネイル対象外',
+      });
+    });
+
+    test('video: pathにextがない場合でもuuidから解決してgeneratedになる', () => {
+      const contentDir = path.join(tmpDir, 'content', 'series', 'vol1');
+      fs.mkdirSync(contentDir, { recursive: true });
+
+      const media = db.createMedia({ title: 'テスト動画extなし', media_type: 'video', extension: 'mp4' });
+      // pathにextを含めず、実際のファイルは {uuid}.mp4
+      const pathWithoutExt = path.join(contentDir, media.uuid);
+      const actualFile = `${pathWithoutExt}.mp4`;
+      fs.writeFileSync(actualFile, 'dummy video');
+      db.updateMedia(media.id, { path: pathWithoutExt });
+
+      const result = db.updateThumbnail({}, undefined, { dry_run: true });
+
+      expect(result.generated).toBe(1);
+    });
+
+    test('video: pathにextがなくuuidのファイルもない場合はskippedになる', () => {
+      const contentDir = path.join(tmpDir, 'content', 'series', 'vol1');
+      fs.mkdirSync(contentDir, { recursive: true });
+
+      const media = db.createMedia({ title: 'テスト動画なし', media_type: 'video', extension: 'mp4' });
+      const pathWithoutExt = path.join(contentDir, media.uuid);
+      // ファイルを作成しない
+      db.updateMedia(media.id, { path: pathWithoutExt });
+
+      const result = db.updateThumbnail({}, undefined, { dry_run: true });
+
+      expect(result.skipped).toBe(1);
+    });
   });
 });

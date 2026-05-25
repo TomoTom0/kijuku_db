@@ -1,10 +1,32 @@
 use crate::crud::update_media;
 use crate::error::Result;
 use crate::search::find_media;
-use crate::types::{Media, MediaFilter, MediaUpdateInput, QueryOptions};
+use crate::types::{Media, MediaFilter, MediaType, MediaUpdateInput, QueryOptions};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
+
+/// ffmpegでフレームを抽出するタイムスタンプ
+const VIDEO_THUMBNAIL_TIMESTAMP: &str = "00:00:01";
+
+/// pathからcontentの親ディレクトリ（サムネイル基準ディレクトリ）を取得する
+fn get_parent_before_content(path_str: &str) -> Option<PathBuf> {
+    let path = Path::new(path_str);
+    let components: Vec<Component> = path.components().collect();
+
+    let last_content_idx = components.iter().rposition(|c| {
+        matches!(c, Component::Normal(s) if s.to_str() == Some("content"))
+    })?;
+
+    let has_normal = components[..last_content_idx]
+        .iter()
+        .any(|c| matches!(c, Component::Normal(_)));
+    if !has_normal {
+        return None;
+    }
+
+    Some(components[..last_content_idx].iter().collect())
+}
 
 /// pathからサムネイルの期待パスを計算する
 ///
@@ -12,26 +34,60 @@ use std::path::{Component, Path, PathBuf};
 /// その親ディレクトリの cover/{uuid}.jpg を返す。
 /// contentが含まれない場合はNoneを返す。
 pub fn resolve_thumbnail_path(path_str: &str, uuid: &str) -> Option<String> {
-    let path = Path::new(path_str);
-    let components: Vec<Component> = path.components().collect();
-
-    // 最後の"content"コンポーネントを探す
-    let last_content_idx = components.iter().rposition(|c| {
-        matches!(c, Component::Normal(s) if s.to_str() == Some("content"))
-    })?;
-
-    // content以前のコンポーネントからparentパスを構築
-    // ルートディレクトリのみ（例: /content）はNoneとして扱う
-    let has_normal = components[..last_content_idx]
-        .iter()
-        .any(|c| matches!(c, Component::Normal(_)));
-    if !has_normal {
-        return None;
-    }
-    let parent: PathBuf = components[..last_content_idx].iter().collect();
-
+    let parent = get_parent_before_content(path_str)?;
     let thumbnail = parent.join("cover").join(format!("{}.jpg", uuid));
     Some(thumbnail.to_string_lossy().into_owned())
+}
+
+/// thumbnail_pathとexpected_pathを比較する
+///
+/// 先頭文字で絶対パスか相対パスかを判定し、相対パスの場合は
+/// media_pathの基準ディレクトリを用いて絶対パスに解決してから比較する。
+fn thumbnail_path_matches(current: &str, expected: &str, media_path: &str) -> bool {
+    if current == expected {
+        return true;
+    }
+    // currentが相対パス（先頭が/ではない）の場合、基準ディレクトリから解決する
+    if !current.starts_with('/') {
+        if let Some(parent) = get_parent_before_content(media_path) {
+            let resolved = parent.join(current);
+            return resolved.to_string_lossy() == expected;
+        }
+    }
+    false
+}
+
+/// video/musicの実際のファイルパスを解決する
+///
+/// pathにextが含まれていればそのまま、含まれていなければ
+/// {path}.{ext} または {uuid}.* 形式で代替を探す。
+fn resolve_media_file_path(path_str: &str, ext: &str, uuid: &str) -> Option<String> {
+    let path = Path::new(path_str);
+    if path.exists() {
+        return Some(path_str.to_string());
+    }
+    // path.{ext} を試す
+    let with_ext = format!("{}.{}", path_str, ext);
+    if Path::new(&with_ext).exists() {
+        return Some(with_ext);
+    }
+    // 同じディレクトリ内で {uuid}.* 形式のファイルを探す
+    let parent = path.parent()?;
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let fname_str = fname.to_string_lossy();
+        if let Some(dot_pos) = fname_str.rfind('.') {
+            let stem = &fname_str[..dot_pos];
+            let file_ext = &fname_str[dot_pos + 1..];
+            if stem == uuid && !file_ext.is_empty() {
+                return Some(parent.join(&*fname_str).to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
 }
 
 /// サムネイルチェック・更新のオプション
@@ -131,9 +187,12 @@ fn check_media_thumbnail(media: &Media) -> CheckThumbnailItemResult {
         CheckThumbnailStatus::Skipped { reason: "pathにcontentが含まれていない".to_string() }
     } else {
         let expected = expected_path.as_deref().unwrap();
+        let media_path = media.path.as_deref().unwrap();
         match &media.thumbnail_path {
             None => CheckThumbnailStatus::Missing,
-            Some(current) if current != expected => CheckThumbnailStatus::Missing,
+            Some(current)
+                if !thumbnail_path_matches(current, expected, media_path) =>
+                CheckThumbnailStatus::Missing,
             Some(_) => {
                 if Path::new(expected).exists() {
                     CheckThumbnailStatus::Ok
@@ -228,21 +287,54 @@ fn update_media_thumbnail(
         Some(p) => p,
     };
 
-    // 001.{ext} が存在しない場合はスキップ
-    let ext = media.extension.as_deref().unwrap_or("jpg");
-    let first_page = Path::new(&path_str).join(format!("001.{}", ext));
-    if !first_page.exists() {
-        return Ok(build_item_result(
-            media,
-            UpdateThumbnailStatus::Skipped { reason: format!("001.{} が存在しない", ext) },
-            None,
-        ));
-    }
+    // media_typeに応じたソースファイルのチェック
+    let resolved_video_path = match media.media_type {
+        MediaType::Comic => {
+            let ext = media.extension.as_deref().unwrap_or("jpg");
+            let first_page = Path::new(&path_str).join(format!("001.{}", ext));
+            if !first_page.exists() {
+                return Ok(build_item_result(
+                    media,
+                    UpdateThumbnailStatus::Skipped {
+                        reason: format!("001.{} が存在しない", ext),
+                    },
+                    None,
+                ));
+            }
+            None
+        }
+        MediaType::Video => {
+            let ext = media.extension.as_deref().unwrap_or("mp4");
+            match resolve_media_file_path(&path_str, ext, &media.uuid) {
+                Some(p) => Some(p),
+                None => {
+                    return Ok(build_item_result(
+                        media,
+                        UpdateThumbnailStatus::Skipped {
+                            reason: "動画ファイルが存在しない".to_string(),
+                        },
+                        None,
+                    ));
+                }
+            }
+        }
+        MediaType::Music => {
+            return Ok(build_item_result(
+                media,
+                UpdateThumbnailStatus::Skipped {
+                    reason: "musicはサムネイル対象外".to_string(),
+                },
+                None,
+            ));
+        }
+    };
 
     // forceでない場合、既存サムネイルが正常であればスキップ
     if !options.force {
         if let Some(ref current) = media.thumbnail_path {
-            if current == &expected_path && Path::new(&expected_path).exists() {
+            if thumbnail_path_matches(current, &expected_path, &path_str)
+                && Path::new(&expected_path).exists()
+            {
                 return Ok(build_item_result(
                     media,
                     UpdateThumbnailStatus::AlreadyExists,
@@ -285,32 +377,56 @@ fn update_media_thumbnail(
         ));
     }
 
-    // ImageMagick の convert でサムネイルを生成（高さ180px固定、品質85）
-    let convert_result = std::process::Command::new("convert")
-        .arg(first_page.as_os_str())
-        .arg("-resize")
-        .arg("x180")
-        .arg("-quality")
-        .arg("85")
-        .arg(&expected_path)
-        .output();
+    // media_typeに応じたサムネイル生成
+    let cmd_result = match media.media_type {
+        MediaType::Comic => {
+            let ext = media.extension.as_deref().unwrap_or("jpg");
+            let first_page = Path::new(&path_str).join(format!("001.{}", ext));
+            std::process::Command::new("convert")
+                .arg(first_page.as_os_str())
+                .args(["-resize", "x180", "-quality", "85"])
+                .arg(&expected_path)
+                .output()
+        }
+        MediaType::Video => {
+            let resolved = resolved_video_path.as_deref().unwrap();
+            std::process::Command::new("ffmpeg")
+                .args(["-ss", VIDEO_THUMBNAIL_TIMESTAMP])
+                .arg("-i")
+                .arg(&resolved)
+                .args(["-vframes", "1", "-q:v", "2", "-y"])
+                .arg(&expected_path)
+                .output()
+        }
+        MediaType::Music => unreachable!(),
+    };
 
-    match convert_result {
+    match cmd_result {
         Err(e) => {
+            let cmd_name = match media.media_type {
+                MediaType::Comic => "convert",
+                MediaType::Video => "ffmpeg",
+                MediaType::Music => unreachable!(),
+            };
             return Ok(build_item_result(
                 media,
                 UpdateThumbnailStatus::Error {
-                    message: format!("convertの実行に失敗: {}", e),
+                    message: format!("{}の実行に失敗: {}", cmd_name, e),
                 },
                 None,
             ));
         }
         Ok(output) if !output.status.success() => {
+            let cmd_name = match media.media_type {
+                MediaType::Comic => "convert",
+                MediaType::Video => "ffmpeg",
+                MediaType::Music => unreachable!(),
+            };
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Ok(build_item_result(
                 media,
                 UpdateThumbnailStatus::Error {
-                    message: format!("convert失敗: {}", stderr.trim()),
+                    message: format!("{}失敗: {}", cmd_name, stderr.trim()),
                 },
                 None,
             ));
@@ -376,6 +492,45 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
         conn
+    }
+
+    // ========== thumbnail_path_matches のテスト ==========
+
+    #[test]
+    fn test_thumbnail_path_matches_absolute_same() {
+        assert!(thumbnail_path_matches(
+            "/media/onepiece/cover/x.jpg",
+            "/media/onepiece/cover/x.jpg",
+            "/media/onepiece/content",
+        ));
+    }
+
+    #[test]
+    fn test_thumbnail_path_matches_absolute_different() {
+        assert!(!thumbnail_path_matches(
+            "/media/onepiece/cover/x.jpg",
+            "/media/naruto/cover/x.jpg",
+            "/media/onepiece/content",
+        ));
+    }
+
+    #[test]
+    fn test_thumbnail_path_matches_relative_resolved() {
+        // currentが相対パスの場合、media_pathの基準ディレクトリから解決する
+        assert!(thumbnail_path_matches(
+            "cover/x.jpg",
+            "/media/onepiece/cover/x.jpg",
+            "/media/onepiece/content",
+        ));
+    }
+
+    #[test]
+    fn test_thumbnail_path_matches_relative_no_match() {
+        assert!(!thumbnail_path_matches(
+            "cover/y.jpg",
+            "/media/onepiece/cover/x.jpg",
+            "/media/onepiece/content",
+        ));
     }
 
     // ========== resolve_thumbnail_path のテスト ==========
@@ -698,5 +853,246 @@ mod tests {
         // coverディレクトリが作成されている
         let cover_dir = tmp.path().join("cover");
         assert!(cover_dir.exists());
+    }
+
+    // ========== Video update_thumbnail のテスト ==========
+
+    #[test]
+    fn test_update_thumbnail_video_skip_music() {
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+        let content_dir = tmp.path().join("content");
+        fs::create_dir(&content_dir).unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "Music".to_string(),
+            media_type: MediaType::Music,
+            path: Some(content_dir.to_str().unwrap().to_string()),
+            uuid: Some("test-uuid-music".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let result =
+            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
+                .unwrap();
+        assert_eq!(result.skipped, 1);
+        assert!(matches!(
+            &result.details[0].status,
+            UpdateThumbnailStatus::Skipped { reason } if reason.contains("music")
+        ));
+    }
+
+    #[test]
+    fn test_update_thumbnail_video_skip_no_file() {
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+        let content_dir = tmp.path().join("content");
+        fs::create_dir(&content_dir).unwrap();
+        let video_path = content_dir.join("video.mp4");
+        // ファイルを作成しない
+
+        create_media(&conn, &MediaInput {
+            title: "Video no file".to_string(),
+            media_type: MediaType::Video,
+            path: Some(video_path.to_str().unwrap().to_string()),
+            uuid: Some("test-uuid-video-nofile".to_string()),
+            extension: Some("mp4".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let result =
+            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
+                .unwrap();
+        assert_eq!(result.skipped, 1);
+    }
+
+    #[test]
+    fn test_update_thumbnail_video_dry_run() {
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+        let content_dir = tmp.path().join("content");
+        fs::create_dir(&content_dir).unwrap();
+        let video_path = content_dir.join("video.mp4");
+        fs::write(&video_path, b"dummy video").unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "Video dry_run".to_string(),
+            media_type: MediaType::Video,
+            path: Some(video_path.to_str().unwrap().to_string()),
+            uuid: Some("test-uuid-video-dry".to_string()),
+            extension: Some("mp4".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let result = update_thumbnail(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &ThumbnailOptions { dry_run: true, force: false },
+        )
+        .unwrap();
+        assert_eq!(result.generated, 1);
+        assert_eq!(result.errors, 0);
+
+        // ファイルは生成されていない
+        let cover_dir = tmp.path().join("cover");
+        assert!(!cover_dir.exists());
+    }
+
+    #[test]
+    fn test_update_thumbnail_video_success() {
+        let fake_bin_dir = TempDir::new().unwrap();
+        let fake_ffmpeg = fake_bin_dir.path().join("ffmpeg");
+        fs::write(
+            &fake_ffmpeg,
+            "#!/bin/sh\nfor last; do true; done\ntouch \"$last\"\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&fake_ffmpeg, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+        let uuid = "test-uuid-video-success";
+
+        let content_dir = tmp.path().join("content");
+        fs::create_dir(&content_dir).unwrap();
+        let video_path = content_dir.join("video.mp4");
+        fs::write(&video_path, b"dummy video").unwrap();
+
+        let media = create_media(&conn, &MediaInput {
+            title: "Video成功".to_string(),
+            media_type: MediaType::Video,
+            path: Some(video_path.to_str().unwrap().to_string()),
+            uuid: Some(uuid.to_string()),
+            extension: Some("mp4".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", fake_bin_dir.path().display(), original_path);
+        let result = {
+            std::env::set_var("PATH", &new_path);
+            let r = update_thumbnail(
+                &conn,
+                &MediaFilter::default(),
+                None,
+                &ThumbnailOptions { dry_run: false, force: false },
+            );
+            std::env::set_var("PATH", &original_path);
+            r
+        }
+        .unwrap();
+
+        assert_eq!(result.generated, 1);
+        assert_eq!(result.errors, 0);
+
+        let db_media = get_media(&conn, media.id).unwrap();
+        let expected_thumb = format!("{}/cover/{}.jpg", tmp.path().display(), uuid);
+        assert_eq!(db_media.thumbnail_path, Some(expected_thumb));
+
+        let cover_dir = tmp.path().join("cover");
+        assert!(cover_dir.exists());
+    }
+
+    #[test]
+    fn test_update_thumbnail_video_already_exists() {
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+        let uuid = "test-uuid-video-exists";
+
+        let content_dir = tmp.path().join("content");
+        fs::create_dir(&content_dir).unwrap();
+        let video_path = content_dir.join("video.mp4");
+        fs::write(&video_path, b"dummy video").unwrap();
+
+        let cover_dir = tmp.path().join("cover");
+        fs::create_dir(&cover_dir).unwrap();
+        let thumb_path = cover_dir.join(format!("{}.jpg", uuid));
+        fs::write(&thumb_path, b"dummy thumb").unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "Video既存あり".to_string(),
+            media_type: MediaType::Video,
+            path: Some(video_path.to_str().unwrap().to_string()),
+            uuid: Some(uuid.to_string()),
+            extension: Some("mp4".to_string()),
+            thumbnail_path: Some(thumb_path.to_str().unwrap().to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let result =
+            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
+                .unwrap();
+        assert_eq!(result.already_exists, 1);
+        assert_eq!(result.generated, 0);
+    }
+
+    #[test]
+    fn test_update_thumbnail_video_resolve_ext_from_uuid() {
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+        let uuid = "test-uuid-video-resolve";
+
+        let content_dir = tmp.path().join("content");
+        fs::create_dir(&content_dir).unwrap();
+        // pathにextを含めず、実際のファイルは {uuid}.mp4
+        let path_without_ext = content_dir.join(uuid);
+        let actual_file = content_dir.join(format!("{}.mp4", uuid));
+        fs::write(&actual_file, b"dummy video").unwrap();
+
+        create_media(&conn, &MediaInput {
+            title: "Video extなし".to_string(),
+            media_type: MediaType::Video,
+            path: Some(path_without_ext.to_str().unwrap().to_string()),
+            uuid: Some(uuid.to_string()),
+            extension: Some("mp4".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let result = update_thumbnail(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &ThumbnailOptions { dry_run: true, force: false },
+        )
+        .unwrap();
+        assert_eq!(result.generated, 1);
+    }
+
+    #[test]
+    fn test_update_thumbnail_video_no_file_no_uuid_match() {
+        let conn = setup_db();
+        let tmp = TempDir::new().unwrap();
+        let uuid = "test-uuid-video-nofile2";
+
+        let content_dir = tmp.path().join("content");
+        fs::create_dir(&content_dir).unwrap();
+        let path_without_ext = content_dir.join(uuid);
+        // ファイルを作成しない
+
+        create_media(&conn, &MediaInput {
+            title: "Video ファイルなし".to_string(),
+            media_type: MediaType::Video,
+            path: Some(path_without_ext.to_str().unwrap().to_string()),
+            uuid: Some(uuid.to_string()),
+            extension: Some("mp4".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let result =
+            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
+                .unwrap();
+        assert_eq!(result.skipped, 1);
     }
 }
