@@ -46,6 +46,35 @@ impl CommandResponse {
             error: Some(message),
         }
     }
+
+    fn ack() -> Self {
+        Self::success(serde_json::json!({"ok": true}))
+    }
+
+    fn from_result<T: serde::Serialize>(result: kijuku_db::Result<T>, error_prefix: &str) -> Self {
+        match result {
+            Ok(data) => match serde_json::to_value(data) {
+                Ok(v) => Self::success(v),
+                Err(e) => Self::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+            },
+            Err(e) => Self::error(format!("{}{}", error_prefix, e)),
+        }
+    }
+
+    fn from_option<T: serde::Serialize>(option: Option<T>) -> Self {
+        match option {
+            Some(data) => match serde_json::to_value(data) {
+                Ok(v) => Self::success(v),
+                Err(e) => Self::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+            },
+            None => Self::success(serde_json::Value::Null),
+        }
+    }
+}
+
+fn deserialize_params<T: serde::de::DeserializeOwned>(params: &serde_json::Value) -> Result<T, CommandResponse> {
+    serde_json::from_value(params.clone())
+        .map_err(|e| CommandResponse::error(format!("パラメータエラー: {}", e)))
 }
 
 /// メディア作成のパラメータ
@@ -769,7 +798,7 @@ fn execute_command(db: &mut KijukuDB, request: &CommandRequest) -> CommandRespon
 
 fn handle_migrate(db: &KijukuDB) -> CommandResponse {
     match db.migrate() {
-        Ok(_) => CommandResponse::success(serde_json::json!({"migrated": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("マイグレーションエラー: {}", e)),
     }
 }
@@ -782,97 +811,55 @@ fn handle_get_schema_version(db: &KijukuDB) -> CommandResponse {
 }
 
 fn handle_get_tables(db: &KijukuDB) -> CommandResponse {
-    match db.get_tables() {
-        Ok(tables) => match serde_json::to_value(tables) {
-            Ok(data) => CommandResponse::success(data),
-            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
-        },
-        Err(e) => CommandResponse::error(format!("テーブル一覧取得エラー: {}", e)),
-    }
+    CommandResponse::from_result(db.get_tables(), "テーブル一覧取得エラー: ")
 }
 
 fn handle_get_table_info(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
-    let params: GetTableInfoParams = match serde_json::from_value(params.clone()) {
-        Ok(p) => p,
-        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    let params = match deserialize_params::<GetTableInfoParams>(params) {
+        Ok(p) => p, Err(e) => return e,
     };
-
-    match db.get_table_info(&params.table_name) {
-        Ok(columns) => match serde_json::to_value(columns) {
-            Ok(data) => CommandResponse::success(data),
-            Err(e) => CommandResponse::error(format!("テーブル情報取得エラー: {}", e)),
-        },
-        Err(e) => CommandResponse::error(format!("テーブル情報取得エラー: {}", e)),
-    }
+    CommandResponse::from_result(db.get_table_info(&params.table_name), "テーブル情報取得エラー: ")
 }
 
 fn handle_create_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
-    let params: CreateMediaParams = match serde_json::from_value(params.clone()) {
-        Ok(p) => p,
-        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    let params = match deserialize_params::<CreateMediaParams>(params) {
+        Ok(p) => p, Err(e) => return e,
     };
-
-    match db.create_media(&params.data) {
-        Ok(media) => match serde_json::to_value(media) {
-            Ok(data) => CommandResponse::success(data),
-            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
-        },
-        Err(e) => CommandResponse::error(format!("メディア作成エラー: {}", e)),
-    }
+    CommandResponse::from_result(db.create_media(&params.data), "メディア作成エラー: ")
 }
 
 fn handle_get_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
-    let params: GetMediaParams = match serde_json::from_value(params.clone()) {
-        Ok(p) => p,
-        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    let params = match deserialize_params::<GetMediaParams>(params) {
+        Ok(p) => p, Err(e) => return e,
     };
-
-    match db.get_media(params.id) {
-        Some(media) => match serde_json::to_value(media) {
-            Ok(data) => CommandResponse::success(data),
-            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
-        },
-        None => CommandResponse::error(format!("メディアが見つかりません (id: {})", params.id)),
-    }
+    CommandResponse::from_option(db.get_media(params.id))
 }
 
 fn handle_update_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
-    let params: UpdateMediaParams = match serde_json::from_value(params.clone()) {
-        Ok(p) => p,
-        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    let params = match deserialize_params::<UpdateMediaParams>(params) {
+        Ok(p) => p, Err(e) => return e,
     };
-
     match db.update_media(params.id, &params.data) {
-        Ok(_) => CommandResponse::success(serde_json::json!({"updated": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("メディア更新エラー: {}", e)),
     }
 }
 
 fn handle_delete_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
-    let params: DeleteMediaParams = match serde_json::from_value(params.clone()) {
-        Ok(p) => p,
-        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    let params = match deserialize_params::<DeleteMediaParams>(params) {
+        Ok(p) => p, Err(e) => return e,
     };
-
     match db.delete_media(params.id) {
-        Ok(_) => CommandResponse::success(serde_json::json!({"deleted": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("メディア削除エラー: {}", e)),
     }
 }
 
 fn handle_find_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
-    let params: FindMediaParams = match serde_json::from_value(params.clone()) {
-        Ok(p) => p,
-        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    let params = match deserialize_params::<FindMediaParams>(params) {
+        Ok(p) => p, Err(e) => return e,
     };
-
-    match db.find_media(&params.filter, params.options.as_ref()) {
-        Ok(media_list) => match serde_json::to_value(media_list) {
-            Ok(data) => CommandResponse::success(data),
-            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
-        },
-        Err(e) => CommandResponse::error(format!("メディア検索エラー: {}", e)),
-    }
+    CommandResponse::from_result(db.find_media(&params.filter, params.options.as_ref()), "メディア検索エラー: ")
 }
 
 fn handle_get_distinct_values(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
@@ -913,7 +900,7 @@ fn handle_bulk_delete_media(db: &KijukuDB, params: &serde_json::Value) -> Comman
     };
 
     match db.bulk_delete_media(&params.ids) {
-        Ok(_) => CommandResponse::success(serde_json::json!({"deleted": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("一括削除エラー: {}", e)),
     }
 }
@@ -925,7 +912,7 @@ fn handle_bulk_update_media(db: &KijukuDB, params: &serde_json::Value) -> Comman
     };
 
     match db.bulk_update_media(&params.updates) {
-        Ok(_) => CommandResponse::success(serde_json::json!({"updated": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("一括更新エラー: {}", e)),
     }
 }
@@ -956,7 +943,7 @@ fn handle_get_tag_by_name(db: &KijukuDB, params: &serde_json::Value) -> CommandR
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
         },
-        None => CommandResponse::error(format!("タグが見つかりません (name: {})", params.name)),
+        None => CommandResponse::success(serde_json::Value::Null),
     }
 }
 
@@ -977,7 +964,7 @@ fn handle_add_tag_to_media(db: &KijukuDB, params: &serde_json::Value) -> Command
     };
 
     match db.add_tag_to_media(params.media_id, params.tag_id) {
-        Ok(_) => CommandResponse::success(serde_json::json!({"added": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("タグ追加エラー: {}", e)),
     }
 }
@@ -989,7 +976,7 @@ fn handle_remove_tag_from_media(db: &KijukuDB, params: &serde_json::Value) -> Co
     };
 
     match db.remove_tag_from_media(params.media_id, params.tag_id) {
-        Ok(_) => CommandResponse::success(serde_json::json!({"removed": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("タグ削除エラー: {}", e)),
     }
 }
@@ -1047,7 +1034,7 @@ fn handle_set_media_attribute(db: &KijukuDB, params: &serde_json::Value) -> Comm
         params.value.as_deref(),
         value_type,
     ) {
-        Ok(_) => CommandResponse::success(serde_json::json!({"set": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("属性設定エラー: {}", e)),
     }
 }
@@ -1063,10 +1050,7 @@ fn handle_get_media_attribute(db: &KijukuDB, params: &serde_json::Value) -> Comm
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
         },
-        Ok(None) => CommandResponse::error(format!(
-            "属性が見つかりません (media_id: {}, key: {})",
-            params.media_id, params.key
-        )),
+        Ok(None) => CommandResponse::success(serde_json::Value::Null),
         Err(e) => CommandResponse::error(format!("属性取得エラー: {}", e)),
     }
 }
@@ -1093,7 +1077,7 @@ fn handle_delete_media_attribute(db: &KijukuDB, params: &serde_json::Value) -> C
     };
 
     match db.delete_media_attribute(params.media_id, &params.key) {
-        Ok(_) => CommandResponse::success(serde_json::json!({"deleted": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("属性削除エラー: {}", e)),
     }
 }
@@ -1108,7 +1092,7 @@ fn handle_delete_all_media_attributes(
     };
 
     match db.delete_all_media_attributes(params.media_id) {
-        Ok(_) => CommandResponse::success(serde_json::json!({"deleted": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("全属性削除エラー: {}", e)),
     }
 }
@@ -1322,7 +1306,7 @@ fn handle_get_media_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandRe
     };
     match db.get_media_hash(&params.item_uuid, &params.filename, &params.time_range) {
         Ok(Some(hash)) => CommandResponse::success(media_hash_to_json(&hash)),
-        Ok(None) => CommandResponse::error("ハッシュが見つかりません".to_string()),
+        Ok(None) => CommandResponse::success(serde_json::Value::Null),
         Err(e) => CommandResponse::error(format!("ハッシュ取得エラー: {}", e)),
     }
 }
@@ -1351,7 +1335,7 @@ fn handle_delete_media_hash(db: &KijukuDB, params: &serde_json::Value) -> Comman
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
     match db.delete_media_hash(&params.item_uuid, &params.filename, &params.time_range) {
-        Ok(_) => CommandResponse::success(serde_json::json!({"deleted": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("ハッシュ削除エラー: {}", e)),
     }
 }
@@ -1362,7 +1346,7 @@ fn handle_delete_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> Comm
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
     match db.delete_media_hashes(&params.item_uuid) {
-        Ok(_) => CommandResponse::success(serde_json::json!({"deleted": true})),
+        Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("ハッシュ全削除エラー: {}", e)),
     }
 }

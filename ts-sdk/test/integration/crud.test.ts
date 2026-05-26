@@ -148,6 +148,51 @@ describe('CRUD Operations', () => {
       expect(updated?.media_type).toBe('comic');
     });
 
+    test('nullableフィールドをnullに設定できる', () => {
+      const input: MediaInput = {
+        title: 'Nullable Test',
+        media_type: 'comic',
+        artist: 'Original Artist',
+        series: 'Original Series',
+        description: 'Original Description',
+      };
+
+      const created = db.createMedia(input);
+
+      // artist を null に設定（他のフィールドは変更されない）
+      db.updateMedia(created.id, {
+        artist: null as unknown as string,
+        description: null as unknown as string,
+      });
+
+      const updated = db.getMedia(created.id);
+      expect(updated?.artist).toBeNull();
+      expect(updated?.description).toBeNull();
+      expect(updated?.series).toBe('Original Series');
+      expect(updated?.title).toBe('Nullable Test');
+
+      // null から値を再設定
+      db.updateMedia(created.id, {
+        artist: 'Reassigned Artist',
+      });
+
+      const reassigned = db.getMedia(created.id);
+      expect(reassigned?.artist).toBe('Reassigned Artist');
+    });
+
+    test('更新するフィールドがない場合でもエラーにならない', () => {
+      const input: MediaInput = {
+        title: 'Empty Update Test',
+        media_type: 'comic',
+      };
+
+      const created = db.createMedia(input);
+      db.updateMedia(created.id, {});
+
+      const updated = db.getMedia(created.id);
+      expect(updated?.title).toBe('Empty Update Test');
+    });
+
     test('一部のフィールドのみを更新できる', () => {
       const input: MediaInput = {
         title: 'テストコミック2',
