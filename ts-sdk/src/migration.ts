@@ -23,7 +23,7 @@ function getSchemaPath(): string {
  */
 export function migrate(db: Database.Database): void {
   const currentVersion = getSchemaVersion(db);
-  const targetVersion = 5;
+  const targetVersion = 6;
 
   if (currentVersion === 0) {
     // 初回マイグレーション: schema.sqlを実行
@@ -196,6 +196,34 @@ function applyMigration(db: Database.Database, version: number): void {
         PRAGMA foreign_keys = ON;
       `);
       db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (5);');
+      break;
+    }
+    case 6: {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS media_hashes (
+            item_uuid       TEXT NOT NULL,
+            filename        TEXT NOT NULL DEFAULT '',
+            time_range      TEXT NOT NULL DEFAULT '',
+            content_hash    BLOB NOT NULL CHECK(length(content_hash) = 32),
+            alternative_of  TEXT,
+            embedding       BLOB,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (item_uuid, filename, time_range),
+            FOREIGN KEY (item_uuid) REFERENCES media(uuid) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_media_hashes_content ON media_hashes(content_hash);
+
+        CREATE TRIGGER IF NOT EXISTS update_media_hashes_timestamp
+        AFTER UPDATE ON media_hashes
+        FOR EACH ROW
+        BEGIN
+            UPDATE media_hashes SET updated_at = datetime('now')
+            WHERE item_uuid = NEW.item_uuid AND filename = NEW.filename AND time_range = NEW.time_range;
+        END;
+      `);
+      db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (6);');
       break;
     }
     default:

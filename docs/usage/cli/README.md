@@ -40,7 +40,7 @@ TypeScript SDKの `RemoteKijukuDB` はこのモードを使用してSSH経由で
 echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.db
 ```
 
-**stdin操作一覧（34種類）:**
+**stdin操作一覧（44種類）:**
 
 | カテゴリ | 操作名 | 説明 | 主なパラメータ |
 |---------|--------|------|--------------|
@@ -73,6 +73,16 @@ echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.d
 | **ファイル操作** | `updateExist` | flag_exist更新 | `filter?`, `options?`, `update_options?` |
 | | `checkThumbnail` | サムネイル状態確認 | `filter?`, `options?` |
 | | `updateThumbnail` | サムネイル生成 | `filter?`, `options?`, `thumbnail_options?` |
+| **ハッシュ操作** | `addMediaHash` | ハッシュ登録（単件） | `input: MediaHashInput` |
+| | `addMediaHashes` | ハッシュ一括登録 | `inputs: MediaHashInput[]` |
+| | `getMediaHashes` | 作品の全ハッシュ取得 | `item_uuid` |
+| | `getMediaHash` | 位置指定ハッシュ取得 | `item_uuid`, `filename`, `time_range` |
+| | `findByContentHash` | SHA256完全一致検索 | `hash_hex` |
+| | `deleteMediaHash` | ハッシュ削除（連鎖） | `item_uuid`, `filename`, `time_range` |
+| | `deleteMediaHashes` | 作品ハッシュ全削除 | `item_uuid` |
+| | `findDuplicateHashes` | 重複ハッシュ検出 | なし |
+| | `computeMediaHash` | ハッシュ計算・登録 | `item_uuid`, `media_path`, `media_type`, `duration_sec?` |
+| | `computeMediaHashes` | 一括ハッシュ計算 | `filter`, `options?`, `force` |
 | **バックアップ** | `backup` | バックアップ作成 | `label?` |
 | | `listBackups` | バックアップ一覧 | なし |
 | | `restore` | バックアップ復元 | `selector?` |
@@ -216,6 +226,60 @@ kijuku-cli --db ./data/kijuku.db update-exist --dry-run
 
 # フィルタを指定して対象を絞り込む
 kijuku-cli --db ./data/kijuku.db update-exist --filter '{"media_type":"comic"}'
+```
+
+### hash
+
+コンテンツハッシュ（SHA256）の操作を行います。ファイル内容ベースでメディアを同定・重複検出できます。
+
+#### hash compute
+
+ハッシュを計算してDBに登録します。
+
+```bash
+# 特定作品のハッシュを計算
+kijuku-cli --db ./data/kijuku.db hash compute --uuid <item_uuid>
+
+# ハッシュ未計算の全作品を計算
+kijuku-cli --db ./data/kijuku.db hash compute --all
+
+# 既存ハッシュがあっても再計算
+kijuku-cli --db ./data/kijuku.db hash compute --all --force
+
+# フィルタで対象を絞り込む
+kijuku-cli --db ./data/kijuku.db hash compute --all --filter '{"media_type":"comic"}'
+```
+
+メディアタイプごとの計算内容:
+
+| media_type | 計算内容 |
+|-----------|---------|
+| `music` | ファイル全体hash + 先頭30秒hash |
+| `video` | ファイル全体hashのみ |
+| `comic` | 各ページ画像hash + 全体hash（全ページhash結合） |
+
+#### hash list
+
+特定作品のハッシュ一覧を表示します。
+
+```bash
+kijuku-cli --db ./data/kijuku.db hash list --uuid <item_uuid>
+```
+
+#### hash find
+
+SHA256ハッシュ値で検索します。
+
+```bash
+kijuku-cli --db ./data/kijuku.db hash find --hash <sha256_hex>
+```
+
+#### hash duplicates
+
+重複するコンテンツハッシュを検出します。
+
+```bash
+kijuku-cli --db ./data/kijuku.db hash duplicates
 ```
 
 ### server

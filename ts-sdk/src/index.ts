@@ -12,6 +12,9 @@ import type {
   DBOptions,
   MediaAttribute,
   BulkUpdateItem,
+  MediaHash,
+  MediaHashInput,
+  ComputeHashResult,
 } from './types.js';
 import * as migration from './migration.js';
 import * as crud from './crud.js';
@@ -19,6 +22,7 @@ import * as tag from './tag.js';
 import * as search from './search.js';
 import * as bulk from './bulk.js';
 import * as attribute from './attribute.js';
+import * as hashModule from './hash.js';
 import { BackupManager, BackupSelector } from './backup.js';
 import type { BackupInfo } from './backup.js';
 import * as updateExistModule from './update_exist.js';
@@ -46,6 +50,7 @@ export type {
 export { loadConfig, globalConfigPath, defaultKijukuConfig, defaultBackupConfig } from './config.js';
 export type { KijukuConfig, BackupConfig, RetentionTierConfig } from './config.js';
 export { ALLOWED_DISTINCT_FIELDS } from './search.js';
+export { hexToBytes, bytesToHex } from './hash.js';
 export { startServer } from './server/index.js';
 export { AuthManager, generatePassword } from './server/auth.js';
 
@@ -296,6 +301,53 @@ export class KijukuDB {
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
     });
+  }
+
+  // ========== メディアハッシュ操作 ==========
+
+  addMediaHash(input: MediaHashInput): MediaHash {
+    return hashModule.addMediaHash(this.db, input);
+  }
+
+  addMediaHashes(inputs: MediaHashInput[]): MediaHash[] {
+    return hashModule.addMediaHashes(this.db, inputs);
+  }
+
+  getMediaHashes(itemUuid: string): MediaHash[] {
+    return hashModule.getMediaHashes(this.db, itemUuid);
+  }
+
+  getMediaHash(itemUuid: string, filename: string, timeRange: string): MediaHash | null {
+    return hashModule.getMediaHash(this.db, itemUuid, filename, timeRange);
+  }
+
+  findByContentHash(hashBytes: Uint8Array): MediaHash[] {
+    return hashModule.findByContentHash(this.db, hashBytes);
+  }
+
+  deleteMediaHash(itemUuid: string, filename: string, timeRange: string): void {
+    hashModule.deleteMediaHash(this.db, itemUuid, filename, timeRange);
+  }
+
+  deleteMediaHashes(itemUuid: string): void {
+    hashModule.deleteMediaHashes(this.db, itemUuid);
+  }
+
+  findDuplicateHashes(): Array<{ content_hash: Uint8Array; count: number }> {
+    return hashModule.findDuplicateHashes(this.db);
+  }
+
+  computeMediaHash(
+    itemUuid: string,
+    mediaPath: string,
+    mediaType: string,
+    durationSec?: number
+  ): ComputeHashResult {
+    return hashModule.computeMediaHash(this.db, itemUuid, mediaPath, mediaType, durationSec);
+  }
+
+  computeMediaHashes(filter: MediaFilter, options?: QueryOptions, force?: boolean): ComputeHashResult[] {
+    return hashModule.computeMediaHashes(this.db, filter, options, force);
   }
 
   /**

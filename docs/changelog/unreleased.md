@@ -16,6 +16,30 @@
 
 ## Added
 
+### content-hash: ファイル内容ベースの同定機構 (TASK-207〜214)
+
+SHA256ハッシュによるファイル内容ベースの同定・重複検出機能を実装。
+
+- `media_hashes`テーブルを追加（PK: `item_uuid, filename, time_range`、FK: `media(uuid) ON DELETE CASCADE`）
+- スキーマバージョン5→6のマイグレーション
+- Rust SDKに`hash`モジュールを追加: CRUD操作、`compute_media_hash`（SHA256ストリーミング計算）、`hex_to_bytes`/`bytes_to_hex`ヘルパー
+- TypeScript SDKに`hash.ts`モジュールを追加: Rust SDKと同等の機能、`better-sqlite3`によるローカル操作
+- `RemoteKijukuDB`にハッシュ操作メソッドを追加（SSH経由）
+- CLIに`hash`サブコマンドを追加: `compute`, `list`, `find`, `duplicates`
+- CLI stdin JSON APIに10個のハッシュ操作を追加
+- メディアタイプごとの計算: Music（全体+先頭30秒）、Video（全体のみ）、Comic（各ページ+全体hash）
+
+**ファイル:**
+- `rust-sdk/src/hash.rs`: ハッシュ操作モジュール（新規）
+- `rust-sdk/src/types.rs`: `MediaHash`, `MediaHashInput`型追加
+- `rust-sdk/src/migration.rs`: v6マイグレーション追加
+- `rust-sdk/schema.sql`: `media_hashes`テーブル定義追加
+- `rust-sdk/src/bin/cli.rs`: `hash`サブコマンド・stdin JSONハンドラ追加
+- `ts-sdk/src/hash.ts`: ハッシュ操作モジュール（新規）
+- `ts-sdk/src/types.ts`: `MediaHash`, `MediaHashInput`, `ComputeHashResult`型追加
+- `ts-sdk/src/remote.ts`: `RemoteKijukuDB`にハッシュメソッド追加
+- `docs/design/content-hash.md`: 設計ドキュメント（新規）
+
 ### update-thumbnail の Video 対応（ffmpeg によるサムネイル抽出）
 
 - `update-thumbnail` が `media_type: video` のメディアに対応（従来は Comic のみ）
