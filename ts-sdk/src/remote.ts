@@ -16,6 +16,9 @@ import type {
   MediaAttribute,
   TableColumnInfo,
   BulkUpdateItem,
+  MediaHash,
+  MediaHashInput,
+  ComputeHashResult,
 } from './types.js';
 import type { UpdateExistOptions, UpdateExistResult } from './update_exist.js';
 import type { BackupInfo, BackupScope, BackupKind } from './backup.js';
@@ -741,6 +744,93 @@ export class RemoteKijukuDB {
         : ({ type: 'full' } as BackupKind),
       label: item.label,
     }));
+  }
+
+  // ========== メディアハッシュ操作 ==========
+
+  async addMediaHash(input: MediaHashInput): Promise<MediaHash> {
+    const response = await this.executeRemoteCommand({
+      operation: 'addMediaHash',
+      params: { input },
+    });
+    return this.checkResponse(response);
+  }
+
+  async addMediaHashes(inputs: MediaHashInput[]): Promise<MediaHash[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'addMediaHashes',
+      params: { inputs },
+    });
+    return this.checkResponse(response);
+  }
+
+  async getMediaHashes(itemUuid: string): Promise<MediaHash[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'getMediaHashes',
+      params: { item_uuid: itemUuid },
+    });
+    return this.checkResponse(response);
+  }
+
+  async getMediaHash(itemUuid: string, filename: string, timeRange: string): Promise<MediaHash | null> {
+    const response = await this.executeRemoteCommand({
+      operation: 'getMediaHash',
+      params: { item_uuid: itemUuid, filename, time_range: timeRange },
+    });
+    return this.checkResponse(response);
+  }
+
+  async findByContentHash(hashBytes: Uint8Array): Promise<MediaHash[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'findByContentHash',
+      params: { hash_hex: Array.from(hashBytes).map(b => b.toString(16).padStart(2, '0')).join('') },
+    });
+    return this.checkResponse(response);
+  }
+
+  async deleteMediaHash(itemUuid: string, filename: string, timeRange: string): Promise<void> {
+    const response = await this.executeRemoteCommand({
+      operation: 'deleteMediaHash',
+      params: { item_uuid: itemUuid, filename, time_range: timeRange },
+    });
+    this.checkResponse(response);
+  }
+
+  async deleteMediaHashes(itemUuid: string): Promise<void> {
+    const response = await this.executeRemoteCommand({
+      operation: 'deleteMediaHashes',
+      params: { item_uuid: itemUuid },
+    });
+    this.checkResponse(response);
+  }
+
+  async findDuplicateHashes(): Promise<Array<{ content_hash: Uint8Array; count: number }>> {
+    const response = await this.executeRemoteCommand({
+      operation: 'findDuplicateHashes',
+      params: {},
+    });
+    return this.checkResponse(response);
+  }
+
+  async computeMediaHash(
+    itemUuid: string,
+    mediaPath: string,
+    mediaType: string,
+    durationSec?: number
+  ): Promise<ComputeHashResult> {
+    const response = await this.executeRemoteCommand({
+      operation: 'computeMediaHash',
+      params: { item_uuid: itemUuid, media_path: mediaPath, media_type: mediaType, duration_sec: durationSec ?? null },
+    });
+    return this.checkResponse(response);
+  }
+
+  async computeMediaHashes(filter: MediaFilter, options?: QueryOptions, force?: boolean): Promise<ComputeHashResult[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'computeMediaHashes',
+      params: { filter, options: options ?? null, force: force ?? false },
+    });
+    return this.checkResponse(response);
   }
 
   /**

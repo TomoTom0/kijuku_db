@@ -399,6 +399,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### コンテンツハッシュ操作
+
+ファイル内容ベースの同定・重複検出を行います。
+
+```rust
+use kijuku_db::{KijukuDB, MediaFilter, MediaHashInput, hash::{hex_to_bytes, bytes_to_hex}};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = KijukuDB::open("my-media.db")?;
+    db.migrate()?;
+
+    // 特定作品のハッシュを計算・登録
+    let result = db.compute_media_hash(
+        "item-uuid-here",
+        "/path/to/media/file.mp3",
+        "music",
+        Some(180), // duration_sec
+    )?;
+    if result.skipped {
+        println!("Skipped: {}", result.skip_reason.unwrap_or_default());
+    } else {
+        for hash in &result.hashes {
+            println!("{}: {}", hash.time_range, bytes_to_hex(&hash.content_hash));
+        }
+    }
+
+    // ハッシュ未計算の全作品を一括計算
+    let results = db.compute_media_hashes(&MediaFilter::default(), None, false)?;
+    println!("Computed {} items", results.len());
+
+    // SHA256で検索
+    let hash_bytes = hex_to_bytes("abcdef0123456789...")?;
+    let found = db.find_by_content_hash(&hash_bytes)?;
+    for hash in &found {
+        println!("Found: {} @ {}", hash.item_uuid, hash.filename);
+    }
+
+    // 重複検出
+    let dupes = db.find_duplicate_hashes()?;
+    for (hash, count) in &dupes {
+        println!("Duplicate: {} ({} times)", bytes_to_hex(hash), count);
+    }
+
+    Ok(())
+}
+```
+
 ### ファイル存在チェック（update_exist）
 
 メディアの `path` に実ファイルが存在するかチェックし、`flag_exist` を更新します：
@@ -941,6 +988,27 @@ pub enum AttributeValueType {
     String,
     Integer,
     Boolean,
+}
+
+// メディアハッシュ情報
+pub struct MediaHash {
+    pub item_uuid: String,
+    pub filename: String,
+    pub time_range: String,
+    pub content_hash: Vec<u8>,       // SHA256（32バイト）
+    pub alternative_of: Option<String>,
+    pub embedding: Option<Vec<u8>>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// メディアハッシュ登録用入力
+pub struct MediaHashInput {
+    pub item_uuid: String,
+    pub filename: String,
+    pub time_range: String,
+    pub content_hash: Vec<u8>,
+    pub alternative_of: Option<String>,
 }
 
 // バルク更新アイテム

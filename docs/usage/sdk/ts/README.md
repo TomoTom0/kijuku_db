@@ -287,6 +287,41 @@ db.deleteMediaAttribute(mediaId, 'rating');
 db.deleteAllMediaAttributes(mediaId);
 ```
 
+### コンテンツハッシュ操作
+
+ファイル内容ベースの同定・重複検出を行います。
+
+```typescript
+// 特定作品のハッシュを計算・登録
+const result = db.computeMediaHash(
+  'item-uuid-here',
+  '/path/to/media/file.mp3',
+  'music',
+  180 // durationSec（省略可）
+);
+if (result.skipped) {
+  console.log('Skipped:', result.skip_reason);
+} else {
+  for (const hash of result.hashes) {
+    console.log(`${hash.time_range}: ${Buffer.from(hash.content_hash).toString('hex')}`);
+  }
+}
+
+// ハッシュ未計算の全作品を一括計算
+const results = db.computeMediaHashes({}, undefined, false);
+console.log(`Computed ${results.length} items`);
+
+// SHA256で検索
+const hashBytes = new Uint8Array(32); // SHA256ハッシュ値
+const found = db.findByContentHash(hashBytes);
+
+// 重複検出
+const dupes = db.findDuplicateHashes();
+for (const { content_hash, count } of dupes) {
+  console.log(`Duplicate: ${Buffer.from(content_hash).toString('hex')} (${count} times)`);
+}
+```
+
 ### ファイル存在チェック（updateExist）
 
 メディアの `path` に実ファイルが存在するかチェックし、`flag_exist` を更新します：
@@ -645,6 +680,12 @@ import type {
   UpdateExistOptions,
   UpdateExistResult,
   UpdateExistItemResult,
+  // ハッシュ型
+  MediaHash,
+  MediaHashInput,
+  ComputeHashResult,
+  hexToBytes,
+  bytesToHex,
   // DB情報型
   TableColumnInfo,
   // リモート型

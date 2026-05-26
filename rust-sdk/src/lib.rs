@@ -39,6 +39,7 @@ pub mod bulk;
 pub mod config;
 pub mod crud;
 pub mod error;
+pub mod hash;
 pub mod migration;
 pub mod remote;
 pub mod search;
@@ -310,6 +311,69 @@ impl KijukuDB {
         value_type: Option<AttributeValueType>,
     ) -> Result<()> {
         attribute::set_media_attribute(&self.conn, media_id, key, value, value_type)
+    }
+
+    // ========== メディアハッシュ操作 ==========
+
+    /// メディアハッシュを登録（単件）
+    pub fn add_media_hash(&self, input: &MediaHashInput) -> Result<MediaHash> {
+        hash::add_media_hash(&self.conn, input)
+    }
+
+    /// メディアハッシュを一括登録
+    pub fn add_media_hashes(&self, inputs: &[MediaHashInput]) -> Result<Vec<MediaHash>> {
+        hash::add_media_hashes(&self.conn, inputs)
+    }
+
+    /// 特定作品の全ハッシュを取得
+    pub fn get_media_hashes(&self, item_uuid: &str) -> Result<Vec<MediaHash>> {
+        hash::get_media_hashes(&self.conn, item_uuid)
+    }
+
+    /// 特定位置のハッシュを取得
+    pub fn get_media_hash(&self, item_uuid: &str, filename: &str, time_range: &str) -> Result<Option<MediaHash>> {
+        hash::get_media_hash(&self.conn, item_uuid, filename, time_range)
+    }
+
+    /// SHA256による完全一致検索
+    pub fn find_by_content_hash(&self, hash_bytes: &[u8]) -> Result<Vec<MediaHash>> {
+        hash::find_by_content_hash(&self.conn, hash_bytes)
+    }
+
+    /// 特定位置のハッシュを削除（代替行の連鎖削除を含む）
+    pub fn delete_media_hash(&self, item_uuid: &str, filename: &str, time_range: &str) -> Result<()> {
+        hash::delete_media_hash(&self.conn, item_uuid, filename, time_range)
+    }
+
+    /// 特定作品のハッシュを全削除
+    pub fn delete_media_hashes(&self, item_uuid: &str) -> Result<()> {
+        hash::delete_media_hashes(&self.conn, item_uuid)
+    }
+
+    /// 重複ハッシュの検出
+    pub fn find_duplicate_hashes(&self) -> Result<Vec<(Vec<u8>, i64)>> {
+        hash::find_duplicate_hashes(&self.conn)
+    }
+
+    /// 特定のメディアのハッシュを計算・登録
+    pub fn compute_media_hash(
+        &self,
+        item_uuid: &str,
+        media_path: &str,
+        media_type: &str,
+        duration_sec: Option<i32>,
+    ) -> Result<hash::ComputeHashResult> {
+        hash::compute_media_hash(&self.conn, item_uuid, media_path, media_type, duration_sec)
+    }
+
+    /// フィルタ条件でメディアを絞り込み、ハッシュを計算・登録
+    pub fn compute_media_hashes(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+        force: bool,
+    ) -> Result<Vec<hash::ComputeHashResult>> {
+        hash::compute_media_hashes(&self.conn, filter, options, force)
     }
 
     /// メディアの属性を取得

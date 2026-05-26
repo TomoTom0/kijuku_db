@@ -61,8 +61,8 @@ SDK外（アプリケーション層）で実装すべき機能：
 - flag_exist自動更新
 
 ### 補助ツール
-当面は不要。必要に応じて後で対応：
-- データ変換・検証系（バリデーション、インポート/エクスポート、重複検出）
+- データ変換・検証系（バリデーション、インポート/エクスポート）: 当面不要
+- **重複検出**: content-hash機能として実装（SHA256ベース、`docs/design/content-hash.md`参照）
 
 ## データベース設計
 
@@ -129,14 +129,17 @@ CREATE INDEX idx_media_tags_media_id ON media_tags(media_id);
 #### 外部キー制約
 ```sql
 -- media_tags
-FOREIGN KEY (media_id) REFERENCES media(id)
+FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE
 FOREIGN KEY (tag_id) REFERENCES tags(id)
 
 -- media_attributes
-FOREIGN KEY (media_id) REFERENCES media(id)
+FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE
+
+-- media_hashes
+FOREIGN KEY (item_uuid) REFERENCES media(uuid) ON DELETE CASCADE
 ```
 
-**方針**: CASCADE動作は使わない。孤立レコードの削除は別途実装。
+**方針**: media_tags・media_attributesはCASCADEを採用（version 5で変更）。media_hashesもCASCADE採用。
 
 ### デフォルト値
 
