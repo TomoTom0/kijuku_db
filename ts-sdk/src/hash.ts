@@ -129,11 +129,15 @@ export function deleteMediaHash(
   filename: string,
   timeRange: string
 ): void {
-  // 削除対象が原本の場合、代替行も削除
-  db.prepare('DELETE FROM media_hashes WHERE item_uuid = ? AND alternative_of = ?')
-    .run(itemUuid, filename);
-  db.prepare('DELETE FROM media_hashes WHERE item_uuid = ? AND alternative_of = ?')
-    .run(itemUuid, timeRange);
+  // 削除対象が原本の場合、代替行も削除（空文字ではalternative_ofを検索しない）
+  if (filename) {
+    db.prepare('DELETE FROM media_hashes WHERE item_uuid = ? AND alternative_of = ?')
+      .run(itemUuid, filename);
+  }
+  if (timeRange) {
+    db.prepare('DELETE FROM media_hashes WHERE item_uuid = ? AND alternative_of = ?')
+      .run(itemUuid, timeRange);
+  }
   db.prepare('DELETE FROM media_hashes WHERE item_uuid = ? AND filename = ? AND time_range = ?')
     .run(itemUuid, filename, timeRange);
 }
@@ -162,8 +166,16 @@ export function findDuplicateHashes(db: Database.Database): Array<{ content_hash
 
 function computeSha256File(filePath: string): Uint8Array {
   const hash = crypto.createHash('sha256');
-  const data = fs.readFileSync(filePath);
-  hash.update(data);
+  const fd = fs.openSync(filePath, 'r');
+  const buffer = Buffer.alloc(8192);
+  try {
+    let bytesRead = 0;
+    while ((bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
   return new Uint8Array(hash.digest());
 }
 
@@ -207,22 +219,46 @@ function computeMusicHash(
   mediaPath: string,
   durationSec?: number
 ): ComputeHashResult {
-  const stat = fs.statSync(mediaPath);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(mediaPath);
+  } catch (e) {
+    return { item_uuid: itemUuid, hashes: [], skipped: true, skip_reason: `Failed to read file metadata: ${e instanceof Error ? e.message : String(e)}` };
+  }
+
   if (stat.size === 0) {
     return { item_uuid: itemUuid, hashes: [], skipped: true, skip_reason: 'File size is 0' };
   }
 
-  const wholeHash = computeSha256File(mediaPath);
+  let wholeHash: Uint8Array;
+  let prefixHash: Uint8Array;
+  try {
+    wholeHash = computeSha256File(mediaPath);
 
-  // 先頭30秒分のバイト数を推定
-  let prefixBytes = 1024 * 1024; // デフォルト1MB
-  if (durationSec && durationSec > 0) {
-    prefixBytes = Math.max(1, Math.floor(stat.size * 30 / durationSec));
+    // 先頭30秒分のバイト数を推定
+    let prefixBytes = 1024 * 1024; // デフォルト1MB
+    if (durationSec && durationSec > 0) {
+      prefixBytes = Math.max(1, Math.floor(stat.size * 30 / durationSec));
+    }
+    const hash = crypto.createHash('sha256');
+    const fd = fs.openSync(mediaPath, 'r');
+    const buffer = Buffer.alloc(8192);
+    try {
+      let remaining = prefixBytes;
+      while (remaining > 0) {
+        const toRead = Math.min(buffer.length, remaining);
+        const bytesRead = fs.readSync(fd, buffer, 0, toRead, null);
+        if (bytesRead === 0) break;
+        hash.update(buffer.subarray(0, bytesRead));
+        remaining -= bytesRead;
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    prefixHash = new Uint8Array(hash.digest());
+  } catch (e) {
+    return { item_uuid: itemUuid, hashes: [], skipped: true, skip_reason: `Failed to compute hash: ${e instanceof Error ? e.message : String(e)}` };
   }
-  const hash = crypto.createHash('sha256');
-  const data = fs.readFileSync(mediaPath);
-  hash.update(data.subarray(0, prefixBytes));
-  const prefixHash = new Uint8Array(hash.digest());
 
   const inputs: MediaHashInput[] = [
     { item_uuid: itemUuid, filename: '', time_range: '', content_hash: wholeHash },
@@ -238,12 +274,24 @@ function computeVideoHash(
   itemUuid: string,
   mediaPath: string
 ): ComputeHashResult {
-  const stat = fs.statSync(mediaPath);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(mediaPath);
+  } catch (e) {
+    return { item_uuid: itemUuid, hashes: [], skipped: true, skip_reason: `Failed to read file metadata: ${e instanceof Error ? e.message : String(e)}` };
+  }
+
   if (stat.size === 0) {
     return { item_uuid: itemUuid, hashes: [], skipped: true, skip_reason: 'File size is 0' };
   }
 
-  const wholeHash = computeSha256File(mediaPath);
+  let wholeHash: Uint8Array;
+  try {
+    wholeHash = computeSha256File(mediaPath);
+  } catch (e) {
+    return { item_uuid: itemUuid, hashes: [], skipped: true, skip_reason: `Failed to compute hash: ${e instanceof Error ? e.message : String(e)}` };
+  }
+
   const hashes = addMediaHashes(db, [
     { item_uuid: itemUuid, filename: '', time_range: '', content_hash: wholeHash },
   ]);
@@ -255,13 +303,23 @@ function computeComicHash(
   itemUuid: string,
   mediaPath: string
 ): ComputeHashResult {
-  if (!fs.statSync(mediaPath).isDirectory()) {
-    return { item_uuid: itemUuid, hashes: [], skipped: true, skip_reason: `Comic path is not a directory: ${mediaPath}` };
+  let files: string[];
+  try {
+    if (!fs.statSync(mediaPath).isDirectory()) {
+      return { item_uuid: itemUuid, hashes: [], skipped: true, skip_reason: `Comic path is not a directory: ${mediaPath}` };
+    }
+    files = fs.readdirSync(mediaPath)
+      .filter(f => {
+        try {
+          return fs.statSync(path.join(mediaPath, f)).isFile() && isImageFile(f);
+        } catch {
+          return false;
+        }
+      })
+      .sort();
+  } catch (e) {
+    return { item_uuid: itemUuid, hashes: [], skipped: true, skip_reason: `Failed to read directory: ${e instanceof Error ? e.message : String(e)}` };
   }
-
-  const files = fs.readdirSync(mediaPath)
-    .filter(f => fs.statSync(path.join(mediaPath, f)).isFile() && isImageFile(f))
-    .sort();
 
   if (files.length === 0) {
     return { item_uuid: itemUuid, hashes: [], skipped: true, skip_reason: 'No image files found in directory' };

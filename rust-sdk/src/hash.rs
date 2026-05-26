@@ -128,21 +128,21 @@ pub fn delete_media_hash(
     filename: &str,
     time_range: &str,
 ) -> Result<()> {
-    // 削除対象が原本の場合、その代替行も削除
-    conn.execute(
-        "DELETE FROM media_hashes
-         WHERE item_uuid = ?1 AND alternative_of = ?2",
-        params![item_uuid, filename],
-    )?;
-    // time_rangeも考慮: alternative_ofがfilenameとtime_rangeの組み合わせを参照する場合
-    // design docではalternative_ofはfilenameの値のみ（Comicの別フォーマット）または
-    // time_rangeの値のみ（Videoの別品質）を格納する設計
-    // 念のためtime_rangeも含めて代替行を削除
-    conn.execute(
-        "DELETE FROM media_hashes
-         WHERE item_uuid = ?1 AND alternative_of = ?2",
-        params![item_uuid, time_range],
-    )?;
+    // 削除対象が原本の場合、その代替行も削除（空文字ではalternative_ofを検索しない）
+    if !filename.is_empty() {
+        conn.execute(
+            "DELETE FROM media_hashes
+             WHERE item_uuid = ?1 AND alternative_of = ?2",
+            params![item_uuid, filename],
+        )?;
+    }
+    if !time_range.is_empty() {
+        conn.execute(
+            "DELETE FROM media_hashes
+             WHERE item_uuid = ?1 AND alternative_of = ?2",
+            params![item_uuid, time_range],
+        )?;
+    }
     // 最後に指定行を削除
     conn.execute(
         "DELETE FROM media_hashes
@@ -422,8 +422,19 @@ fn compute_comic_hash(
     }
 
     // ディレクトリ内の画像ファイルを列挙
-    let mut image_files: Vec<String> = std::fs::read_dir(path)
-        .unwrap_or_else(|_| std::fs::read_dir(path).expect("read_dir failed"))
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return Ok(ComputeHashResult {
+                item_uuid: item_uuid.to_string(),
+                hashes: vec![],
+                skipped: true,
+                skip_reason: Some(format!("Failed to read directory: {}", e)),
+            });
+        }
+    };
+
+    let mut image_files: Vec<String> = entries
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
         .filter_map(|e| {
