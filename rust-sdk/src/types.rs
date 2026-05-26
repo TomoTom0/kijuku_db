@@ -339,6 +339,29 @@ impl AttributeValueType {
     }
 }
 
+/// メディアハッシュ情報
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaHash {
+    pub item_uuid: String,
+    pub filename: String,
+    pub time_range: String,
+    pub content_hash: Vec<u8>,
+    pub alternative_of: Option<String>,
+    pub embedding: Option<Vec<u8>>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// メディアハッシュ登録時の入力型
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaHashInput {
+    pub item_uuid: String,
+    pub filename: String,
+    pub time_range: String,
+    pub content_hash: Vec<u8>,
+    pub alternative_of: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

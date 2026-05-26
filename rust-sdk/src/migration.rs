@@ -23,7 +23,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
     let current_version = get_current_version(conn)?;
-    let target_version = 5;
+    let target_version = 6;
 
     if current_version == 0 {
         // 初回マイグレーション: schema.sqlを実行
@@ -216,6 +216,35 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
             migrate_result?;
             Ok(())
         }
+        6 => {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS media_hashes (
+                    item_uuid       TEXT NOT NULL,
+                    filename        TEXT NOT NULL DEFAULT '',
+                    time_range      TEXT NOT NULL DEFAULT '',
+                    content_hash    BLOB NOT NULL CHECK(length(content_hash) = 32),
+                    alternative_of  TEXT,
+                    embedding       BLOB,
+                    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (item_uuid, filename, time_range),
+                    FOREIGN KEY (item_uuid) REFERENCES media(uuid) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_media_hashes_content ON media_hashes(content_hash);
+
+                CREATE TRIGGER IF NOT EXISTS update_media_hashes_timestamp
+                AFTER UPDATE ON media_hashes
+                FOR EACH ROW
+                BEGIN
+                    UPDATE media_hashes SET updated_at = datetime('now')
+                    WHERE item_uuid = NEW.item_uuid AND filename = NEW.filename AND time_range = NEW.time_range;
+                END;
+                "
+            )?;
+            conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+            Ok(())
+        }
         _ => Err(crate::error::KijukuError::Other(format!(
             "Unknown migration version: {}",
             version
@@ -294,7 +323,7 @@ mod tests {
         migrate(&conn).unwrap();
 
         let version = get_schema_version(&conn).unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]

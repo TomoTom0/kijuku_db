@@ -11,6 +11,7 @@ TypeScript SDKを基準に記載し、Rust SDKの相違点は[Rust SDK](#rust-sd
   - [メディア操作](#メディア操作)
   - [タグ操作](#タグ操作)
   - [属性操作](#属性操作)
+  - [ハッシュ操作](#ハッシュ操作)
   - [トランザクション](#トランザクション)
   - [バックアップ操作](#バックアップ操作)
   - [バックアップ読み取り操作](#バックアップ読み取り操作)
@@ -873,6 +874,76 @@ db.deleteMediaAttribute(1, 'rating');
 ```typescript
 db.deleteAllMediaAttributes(1);
 ```
+
+---
+
+### ハッシュ操作
+
+#### `addMediaHash(input: MediaHashInput): MediaHash`
+
+メディアハッシュを登録（単件）。既存のPKと同じ場合はupsert。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `input` | `MediaHashInput` | ✓ | ハッシュ入力データ |
+
+#### `addMediaHashes(inputs: MediaHashInput[]): MediaHash[]`
+
+メディアハッシュを一括登録。トランザクション内で処理。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `inputs` | `MediaHashInput[]` | ✓ | ハッシュ入力データ配列 |
+
+#### `getMediaHashes(itemUuid: string): MediaHash[]`
+
+特定作品の全ハッシュを取得。
+
+#### `getMediaHash(itemUuid: string, filename: string, timeRange: string): MediaHash | null`
+
+特定位置のハッシュを取得。
+
+#### `findByContentHash(hashBytes: Uint8Array): MediaHash[]`
+
+SHA256による完全一致検索。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `hashBytes` | `Uint8Array` | ✓ | SHA256ハッシュ値（32バイト） |
+
+#### `deleteMediaHash(itemUuid: string, filename: string, timeRange: string): void`
+
+特定位置のハッシュを削除。代替行（`alternative_of`が該当位置を指す行）も連鎖削除。
+
+#### `deleteMediaHashes(itemUuid: string): void`
+
+特定作品のハッシュを全削除。
+
+#### `findDuplicateHashes(): Array<{ content_hash: Uint8Array; count: number }>`
+
+重複ハッシュを検出。2件以上の同一`content_hash`を持つエントリを返す。
+
+#### `computeMediaHash(itemUuid: string, mediaPath: string, mediaType: string, durationSec?: number): ComputeHashResult`
+
+特定のメディアのハッシュを計算・登録。
+
+メディアタイプごとの計算内容:
+
+| mediaType | 計算内容 |
+|-----------|---------|
+| `music` | ファイル全体hash + 先頭30秒hash |
+| `video` | ファイル全体hashのみ |
+| `comic` | 各ページ画像hash + 全体hash（全ページhash結合） |
+
+#### `computeMediaHashes(filter: MediaFilter, options?: QueryOptions, force?: boolean): ComputeHashResult[]`
+
+フィルタ条件でメディアを絞り込み、ハッシュを計算・登録。`force=false`の場合、既存ハッシュがある作品はスキップ。
 
 ---
 
@@ -2083,6 +2154,46 @@ interface UpdateExistResult {
   updated_ids: number[] | null;
   updated_ids_file: string | null;
   detail_file: string;
+}
+```
+
+---
+
+### MediaHash
+
+```typescript
+interface MediaHash {
+  item_uuid: string;
+  filename: string;
+  time_range: string;
+  content_hash: Uint8Array;
+  alternative_of?: string;
+  embedding?: Uint8Array;
+  created_at: string;
+  updated_at: string;
+}
+```
+
+### MediaHashInput
+
+```typescript
+interface MediaHashInput {
+  item_uuid: string;
+  filename: string;
+  time_range: string;
+  content_hash: Uint8Array;
+  alternative_of?: string;
+}
+```
+
+### ComputeHashResult
+
+```typescript
+interface ComputeHashResult {
+  item_uuid: string;
+  hashes: MediaHash[];
+  skipped: boolean;
+  skip_reason?: string;
 }
 ```
 

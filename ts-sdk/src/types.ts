@@ -257,3 +257,38 @@ export interface TableColumnInfo {
   dflt_value?: string;
   pk: boolean;
 }
+
+/**
+ * メディアハッシュ情報
+ */
+export interface MediaHash {
+  item_uuid: string;
+  filename: string;
+  time_range: string;
+  content_hash: Uint8Array;
+  alternative_of?: string;
+  embedding?: Uint8Array;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * メディアハッシュ登録時の入力型
+ */
+export interface MediaHashInput {
+  item_uuid: string;
+  filename: string;
+  time_range: string;
+  content_hash: Uint8Array;
+  alternative_of?: string;
+}
+
+/**
+ * ハッシュ計算結果
+ */
+export interface ComputeHashResult {
+  item_uuid: string;
+  hashes: MediaHash[];
+  skipped: boolean;
+  skip_reason?: string;
+}

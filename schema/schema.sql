@@ -1,5 +1,5 @@
 -- kijuku_db スキーマ定義
--- Version: 5
+-- Version: 6
 
 -- 外部キー制約を有効化
 PRAGMA foreign_keys = ON;
@@ -99,9 +99,36 @@ BEGIN
   UPDATE media SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;
 
+-- メディアハッシュテーブル
+CREATE TABLE IF NOT EXISTS media_hashes (
+  item_uuid       TEXT NOT NULL,
+  filename        TEXT NOT NULL DEFAULT '',
+  time_range      TEXT NOT NULL DEFAULT '',
+  content_hash    BLOB NOT NULL CHECK(length(content_hash) = 32),
+  alternative_of  TEXT,
+  embedding       BLOB,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (item_uuid, filename, time_range),
+  FOREIGN KEY (item_uuid) REFERENCES media(uuid) ON DELETE CASCADE
+);
+
+-- インデックス: ハッシュ検索用
+CREATE INDEX IF NOT EXISTS idx_media_hashes_content ON media_hashes(content_hash);
+
+-- トリガー: media_hashesのupdated_at自動更新
+CREATE TRIGGER IF NOT EXISTS update_media_hashes_timestamp
+AFTER UPDATE ON media_hashes
+FOR EACH ROW
+BEGIN
+  UPDATE media_hashes SET updated_at = datetime('now')
+  WHERE item_uuid = NEW.item_uuid AND filename = NEW.filename AND time_range = NEW.time_range;
+END;
+
 -- 初期バージョンを記録
 INSERT OR IGNORE INTO schema_version (version) VALUES (1);
 INSERT OR IGNORE INTO schema_version (version) VALUES (2);
 INSERT OR IGNORE INTO schema_version (version) VALUES (3);
 INSERT OR IGNORE INTO schema_version (version) VALUES (4);
 INSERT OR IGNORE INTO schema_version (version) VALUES (5);
+INSERT OR IGNORE INTO schema_version (version) VALUES (6);

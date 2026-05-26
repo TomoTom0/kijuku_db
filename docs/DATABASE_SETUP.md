@@ -29,7 +29,7 @@ db.close();
 ```typescript
 const db = new KijukuDB('db/my-media.db');
 const version = db.getSchemaVersion();
-console.log(`Current schema version: ${version}`); // 現在: 5
+console.log(`Current schema version: ${version}`); // 現在: 6
 ```
 
 #### マイグレーション履歴
@@ -41,6 +41,7 @@ console.log(`Current schema version: ${version}`); // 現在: 5
 | 3 | `volume_number` カラム再追加（volume_textから自動計算） |
 | 4 | `uuid` カラム追加（NOT NULL、自動生成） |
 | 5 | `media_tags`・`media_attributes` の外部キーに `ON DELETE CASCADE` 追加（media削除時の自動カスケード削除） |
+| 6 | `media_hashes` テーブル追加（ファイル内容ベースの同定・重複検出、`content_hash` BLOB + `item_uuid` FK CASCADE） |
 
 ## 2. データインポート
 

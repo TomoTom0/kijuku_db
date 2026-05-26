@@ -7,8 +7,8 @@ use clap::Parser;
 use include_dir::{include_dir, Dir};
 use kijuku_db::{
     AttributeValueType, BackupInfo, BackupKind, BackupOptions, BackupScope, BackupSelector,
-    BulkUpdateItem, DBOptions, KijukuDB, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions,
-    ThumbnailOptions, UpdateExistOptions,
+    BulkUpdateItem, DBOptions, KijukuDB, MediaFilter, MediaInput, MediaHashInput,
+    MediaUpdateInput, QueryOptions, ThumbnailOptions, UpdateExistOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -175,6 +175,69 @@ struct DeleteMediaAttributeParams {
 #[derive(Debug, Deserialize)]
 struct DeleteAllMediaAttributesParams {
     media_id: i64,
+}
+
+/// ハッシュ追加のパラメータ
+#[derive(Debug, Deserialize)]
+struct AddMediaHashParams {
+    input: MediaHashInput,
+}
+
+/// ハッシュ一括追加のパラメータ
+#[derive(Debug, Deserialize)]
+struct AddMediaHashesParams {
+    inputs: Vec<MediaHashInput>,
+}
+
+/// ハッシュ取得（作品別）のパラメータ
+#[derive(Debug, Deserialize)]
+struct GetMediaHashesParams {
+    item_uuid: String,
+}
+
+/// ハッシュ取得（位置指定）のパラメータ
+#[derive(Debug, Deserialize)]
+struct GetMediaHashParams {
+    item_uuid: String,
+    filename: String,
+    time_range: String,
+}
+
+/// content_hash検索のパラメータ
+#[derive(Debug, Deserialize)]
+struct FindByContentHashParams {
+    hash_hex: String,
+}
+
+/// ハッシュ削除のパラメータ
+#[derive(Debug, Deserialize)]
+struct DeleteMediaHashParams {
+    item_uuid: String,
+    filename: String,
+    time_range: String,
+}
+
+/// ハッシュ全削除のパラメータ
+#[derive(Debug, Deserialize)]
+struct DeleteMediaHashesParams {
+    item_uuid: String,
+}
+
+/// compute_media_hashのパラメータ
+#[derive(Debug, Deserialize)]
+struct ComputeMediaHashParams {
+    item_uuid: String,
+    media_path: String,
+    media_type: String,
+    duration_sec: Option<i32>,
+}
+
+/// compute_media_hashesのパラメータ
+#[derive(Debug, Deserialize)]
+struct ComputeMediaHashesParams {
+    filter: MediaFilter,
+    options: Option<QueryOptions>,
+    force: bool,
 }
 
 /// update-existのパラメータ
@@ -378,6 +441,44 @@ enum Commands {
         #[arg(long)]
         nth: Option<usize>,
     },
+    /// コンテンツハッシュ操作
+    Hash {
+        #[command(subcommand)]
+        hash_command: HashCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum HashCommands {
+    /// ハッシュを計算・登録
+    Compute {
+        /// 特定作品のUUID
+        #[arg(long)]
+        uuid: Option<String>,
+        /// ハッシュ未計算の全作品を計算
+        #[arg(long)]
+        all: bool,
+        /// 既存ハッシュがあっても再計算
+        #[arg(long)]
+        force: bool,
+        /// MediaFilterのJSON文字列
+        #[arg(long, default_value = "{}")]
+        filter: String,
+    },
+    /// 特定作品のハッシュ一覧を表示
+    List {
+        /// 作品のUUID
+        #[arg(long)]
+        uuid: String,
+    },
+    /// SHA256ハッシュ値で検索
+    Find {
+        /// SHA256ハッシュ値（HEX文字列）
+        #[arg(long)]
+        hash: String,
+    },
+    /// 重複ハッシュを検出
+    Duplicates,
 }
 
 async fn handle_server(ctx: &CliContext, port: u16, password: Option<String>) {
@@ -565,6 +666,9 @@ async fn main() {
         Some(Commands::Restore { nth }) => {
             handle_restore_subcommand(&ctx, *nth);
         }
+        Some(Commands::Hash { hash_command }) => {
+            handle_hash_subcommand(&ctx, hash_command);
+        }
         None => {
             handle_stdin(&ctx);
         }
@@ -646,6 +750,16 @@ fn execute_command(db: &mut KijukuDB, request: &CommandRequest) -> CommandRespon
         "updateExist" => handle_update_exist(db, &request.params),
         "checkThumbnail" => handle_check_thumbnail(db, &request.params),
         "updateThumbnail" => handle_update_thumbnail(db, &request.params),
+        "addMediaHash" => handle_add_media_hash(db, &request.params),
+        "addMediaHashes" => handle_add_media_hashes(db, &request.params),
+        "getMediaHashes" => handle_get_media_hashes(db, &request.params),
+        "getMediaHash" => handle_get_media_hash(db, &request.params),
+        "findByContentHash" => handle_find_by_content_hash(db, &request.params),
+        "deleteMediaHash" => handle_delete_media_hash(db, &request.params),
+        "deleteMediaHashes" => handle_delete_media_hashes(db, &request.params),
+        "findDuplicateHashes" => handle_find_duplicate_hashes(db),
+        "computeMediaHash" => handle_compute_media_hash(db, &request.params),
+        "computeMediaHashes" => handle_compute_media_hashes(db, &request.params),
         "backup" => handle_backup(db, &request.params),
         "listBackups" => handle_list_backups(db),
         "restore" => handle_restore(db, &request.params),
@@ -1144,6 +1258,277 @@ fn handle_update_thumbnail_subcommand(ctx: &CliContext, dry_run: bool, force: bo
         },
         Err(e) => {
             output_response(&CommandResponse::error(format!("update-thumbnailエラー: {}", e)))
+        }
+    }
+}
+
+fn media_hash_to_json(hash: &kijuku_db::MediaHash) -> serde_json::Value {
+    use kijuku_db::hash::bytes_to_hex;
+    serde_json::json!({
+        "item_uuid": hash.item_uuid,
+        "filename": hash.filename,
+        "time_range": hash.time_range,
+        "content_hash": bytes_to_hex(&hash.content_hash),
+        "alternative_of": hash.alternative_of,
+        "embedding": hash.embedding.as_ref().map(|e| bytes_to_hex(e)),
+        "created_at": hash.created_at,
+        "updated_at": hash.updated_at,
+    })
+}
+
+fn handle_add_media_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: AddMediaHashParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.add_media_hash(&params.input) {
+        Ok(hash) => CommandResponse::success(media_hash_to_json(&hash)),
+        Err(e) => CommandResponse::error(format!("ハッシュ追加エラー: {}", e)),
+    }
+}
+
+fn handle_add_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: AddMediaHashesParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.add_media_hashes(&params.inputs) {
+        Ok(hashes) => {
+            let json: Vec<_> = hashes.iter().map(media_hash_to_json).collect();
+            CommandResponse::success(serde_json::Value::Array(json))
+        }
+        Err(e) => CommandResponse::error(format!("ハッシュ一括追加エラー: {}", e)),
+    }
+}
+
+fn handle_get_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: GetMediaHashesParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.get_media_hashes(&params.item_uuid) {
+        Ok(hashes) => {
+            let json: Vec<_> = hashes.iter().map(media_hash_to_json).collect();
+            CommandResponse::success(serde_json::Value::Array(json))
+        }
+        Err(e) => CommandResponse::error(format!("ハッシュ取得エラー: {}", e)),
+    }
+}
+
+fn handle_get_media_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: GetMediaHashParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.get_media_hash(&params.item_uuid, &params.filename, &params.time_range) {
+        Ok(Some(hash)) => CommandResponse::success(media_hash_to_json(&hash)),
+        Ok(None) => CommandResponse::error("ハッシュが見つかりません".to_string()),
+        Err(e) => CommandResponse::error(format!("ハッシュ取得エラー: {}", e)),
+    }
+}
+
+fn handle_find_by_content_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: FindByContentHashParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    let hash_bytes = match kijuku_db::hash::hex_to_bytes(&params.hash_hex) {
+        Ok(b) => b,
+        Err(e) => return CommandResponse::error(format!("ハッシュ値エラー: {}", e)),
+    };
+    match db.find_by_content_hash(&hash_bytes) {
+        Ok(hashes) => {
+            let json: Vec<_> = hashes.iter().map(media_hash_to_json).collect();
+            CommandResponse::success(serde_json::Value::Array(json))
+        }
+        Err(e) => CommandResponse::error(format!("ハッシュ検索エラー: {}", e)),
+    }
+}
+
+fn handle_delete_media_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: DeleteMediaHashParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.delete_media_hash(&params.item_uuid, &params.filename, &params.time_range) {
+        Ok(_) => CommandResponse::success(serde_json::json!({"deleted": true})),
+        Err(e) => CommandResponse::error(format!("ハッシュ削除エラー: {}", e)),
+    }
+}
+
+fn handle_delete_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: DeleteMediaHashesParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.delete_media_hashes(&params.item_uuid) {
+        Ok(_) => CommandResponse::success(serde_json::json!({"deleted": true})),
+        Err(e) => CommandResponse::error(format!("ハッシュ全削除エラー: {}", e)),
+    }
+}
+
+fn handle_find_duplicate_hashes(db: &KijukuDB) -> CommandResponse {
+    match db.find_duplicate_hashes() {
+        Ok(dupes) => {
+            use kijuku_db::hash::bytes_to_hex;
+            let json: Vec<_> = dupes.iter().map(|(hash, count)| {
+                serde_json::json!({
+                    "content_hash": bytes_to_hex(hash),
+                    "count": count,
+                })
+            }).collect();
+            CommandResponse::success(serde_json::Value::Array(json))
+        }
+        Err(e) => CommandResponse::error(format!("重複検出エラー: {}", e)),
+    }
+}
+
+fn handle_compute_media_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: ComputeMediaHashParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.compute_media_hash(&params.item_uuid, &params.media_path, &params.media_type, params.duration_sec) {
+        Ok(result) => {
+            let hashes: Vec<_> = result.hashes.iter().map(media_hash_to_json).collect();
+            CommandResponse::success(serde_json::json!({
+                "item_uuid": result.item_uuid,
+                "hashes": hashes,
+                "skipped": result.skipped,
+                "skip_reason": result.skip_reason,
+            }))
+        }
+        Err(e) => CommandResponse::error(format!("ハッシュ計算エラー: {}", e)),
+    }
+}
+
+fn handle_compute_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: ComputeMediaHashesParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.compute_media_hashes(&params.filter, params.options.as_ref(), params.force) {
+        Ok(results) => {
+            let json: Vec<_> = results.iter().map(|r| {
+                let hashes: Vec<_> = r.hashes.iter().map(media_hash_to_json).collect();
+                serde_json::json!({
+                    "item_uuid": r.item_uuid,
+                    "hashes": hashes,
+                    "skipped": r.skipped,
+                    "skip_reason": r.skip_reason,
+                })
+            }).collect();
+            CommandResponse::success(serde_json::Value::Array(json))
+        }
+        Err(e) => CommandResponse::error(format!("ハッシュ計算エラー: {}", e)),
+    }
+}
+
+fn handle_hash_subcommand(ctx: &CliContext, cmd: &HashCommands) {
+    let db = match open_and_migrate_db_for_json_output(ctx) {
+        Some(db) => db,
+        None => return,
+    };
+    match cmd {
+        HashCommands::Compute { uuid, all, force, filter } => {
+            let media_filter: MediaFilter = match serde_json::from_str(filter) {
+                Ok(f) => f,
+                Err(e) => {
+                    output_response(&CommandResponse::error(format!("filterのJSONパースエラー: {}", e)));
+                    return;
+                }
+            };
+            if let Some(u) = uuid {
+                // 特定UUIDのcompute: メディアを検索してcompute
+                match db.find_media(&MediaFilter { id_in: None, ..Default::default() }, None) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        output_response(&CommandResponse::error(format!("メディア検索エラー: {}", e)));
+                        return;
+                    }
+                }
+                // UUIDからメディアを取得
+                let media_list = db.find_media(&MediaFilter { ..Default::default() }, None).unwrap_or_default();
+                let media = media_list.iter().find(|m| m.uuid == *u);
+                if let Some(m) = media {
+                    if !m.flag_exist || m.path.is_none() {
+                        output_response(&CommandResponse::error("対象メディアはpathがないかflag_existがfalseです".to_string()));
+                        return;
+                    }
+                    match db.compute_media_hash(&m.uuid, m.path.as_ref().unwrap(), m.media_type.as_str(), m.duration_sec) {
+                        Ok(result) => {
+                            let hashes: Vec<_> = result.hashes.iter().map(media_hash_to_json).collect();
+                            output_response(&CommandResponse::success(serde_json::json!({
+                                "item_uuid": result.item_uuid,
+                                "hashes": hashes,
+                                "skipped": result.skipped,
+                                "skip_reason": result.skip_reason,
+                            })));
+                        }
+                        Err(e) => output_response(&CommandResponse::error(format!("ハッシュ計算エラー: {}", e))),
+                    }
+                } else {
+                    output_response(&CommandResponse::error(format!("メディアが見つかりません (uuid: {})", u)));
+                }
+            } else if *all {
+                match db.compute_media_hashes(&media_filter, None, *force) {
+                    Ok(results) => {
+                        let json: Vec<_> = results.iter().map(|r| {
+                            let hashes: Vec<_> = r.hashes.iter().map(media_hash_to_json).collect();
+                            serde_json::json!({
+                                "item_uuid": r.item_uuid,
+                                "hashes": hashes,
+                                "skipped": r.skipped,
+                                "skip_reason": r.skip_reason,
+                            })
+                        }).collect();
+                        output_response(&CommandResponse::success(serde_json::Value::Array(json)));
+                    }
+                    Err(e) => output_response(&CommandResponse::error(format!("ハッシュ計算エラー: {}", e))),
+                }
+            } else {
+                output_response(&CommandResponse::error("--uuid または --all を指定してください".to_string()));
+            }
+        }
+        HashCommands::List { uuid } => {
+            match db.get_media_hashes(uuid) {
+                Ok(hashes) => {
+                    let json: Vec<_> = hashes.iter().map(media_hash_to_json).collect();
+                    output_response(&CommandResponse::success(serde_json::Value::Array(json)));
+                }
+                Err(e) => output_response(&CommandResponse::error(format!("ハッシュ取得エラー: {}", e))),
+            }
+        }
+        HashCommands::Find { hash } => {
+            let hash_bytes = match kijuku_db::hash::hex_to_bytes(hash) {
+                Ok(b) => b,
+                Err(e) => {
+                    output_response(&CommandResponse::error(format!("ハッシュ値エラー: {}", e)));
+                    return;
+                }
+            };
+            match db.find_by_content_hash(&hash_bytes) {
+                Ok(hashes) => {
+                    let json: Vec<_> = hashes.iter().map(media_hash_to_json).collect();
+                    output_response(&CommandResponse::success(serde_json::Value::Array(json)));
+                }
+                Err(e) => output_response(&CommandResponse::error(format!("ハッシュ検索エラー: {}", e))),
+            }
+        }
+        HashCommands::Duplicates => {
+            match db.find_duplicate_hashes() {
+                Ok(dupes) => {
+                    use kijuku_db::hash::bytes_to_hex;
+                    let json: Vec<_> = dupes.iter().map(|(hash, count)| {
+                        serde_json::json!({
+                            "content_hash": bytes_to_hex(hash),
+                            "count": count,
+                        })
+                    }).collect();
+                    output_response(&CommandResponse::success(serde_json::Value::Array(json)));
+                }
+                Err(e) => output_response(&CommandResponse::error(format!("重複検出エラー: {}", e))),
+            }
         }
     }
 }

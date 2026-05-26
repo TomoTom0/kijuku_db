@@ -71,7 +71,7 @@ fn test_cli_get_schema_version() {
     let response = execute_cli_command(db_path, command);
 
     assert_eq!(response["success"], true);
-    assert_eq!(response["data"]["version"], 5);
+    assert_eq!(response["data"]["version"], 6);
 }
 
 #[test]
