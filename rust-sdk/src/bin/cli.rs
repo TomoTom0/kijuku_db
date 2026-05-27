@@ -73,7 +73,7 @@ impl CommandResponse {
 }
 
 fn deserialize_params<T: serde::de::DeserializeOwned>(params: &serde_json::Value) -> Result<T, CommandResponse> {
-    serde_json::from_value(params.clone())
+    T::deserialize(params)
         .map_err(|e| CommandResponse::error(format!("パラメータエラー: {}", e)))
 }
 
