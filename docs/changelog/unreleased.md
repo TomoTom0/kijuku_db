@@ -295,6 +295,28 @@ SHA256ハッシュによるファイル内容ベースの同定・重複検出�
 - `ts-sdk/src/bulk.ts`
 - `rust-sdk/src/bulk.rs`
 
+### CLI内部プロトコルの整理 (TASK-218〜220, TASK-222, TASK-224)
+
+- CLI JSON APIの成功レスポンスを統一: `{"migrated": true}`, `{"deleted": true}`, `{"updated": true}` 等を `{"ok": true}` に統一
+- `CommandResponse::ack()`, `from_result()`, `from_option()` ヘルパーを追加しハンドラのboilerplateを削減
+- `deserialize_params<T>` ヘルパーでパラメータデシリアライズのboilerplateを1行に集約
+- `check_unit_response()` を追加し、データなしレスポンスの使い捨て構造体（`DeleteResponse`, `UpdateResponse`等）を削除
+- `BackupResponse`/`RestoreResponse` を共通 `PathResponse` に統合
+
+**ファイル:**
+- `rust-sdk/src/bin/cli.rs`: ヘルパー追加、ハンドラリファクタリング
+- `rust-sdk/src/remote.ts`: hash操作のhex/Uint8Array変換ヘルパー追加
+- `rust-sdk/src/remote.rs`: `check_unit_response` 追加、使い捨て構造体削除
+
+### RemoteKijukuDB: BackupKindデシリアライズの型安全化 (TASK-221, TASK-223)
+
+- `BackupInfoRaw.kind` を `serde_json::Value` から `BackupKindRaw` enum (`serde(tag = "type")`) に変更
+- `BackupInfoRaw.created_at` を `u64` から `f64` に修正（小数秒に対応）
+- `restore` 引数の型安全化を検討（現状 `serde_json::Value` で対応、FIXMEとして記録）
+
+**ファイル:**
+- `rust-sdk/src/remote.rs`: `BackupKindRaw` enum 追加、`BackupInfoRaw` フィールド修正
+
 ## Technical Notes
 
 ### 自動バックアップ

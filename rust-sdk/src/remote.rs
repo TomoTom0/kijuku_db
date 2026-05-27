@@ -1,4 +1,4 @@
-use crate::{BackupInfo, BulkUpdateItem, CheckThumbnailResult, KijukuError, Media, MediaAttribute, MediaFilter, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats, ThumbnailOptions, UpdateThumbnailResult};
+use crate::{BackupInfo, BulkUpdateItem, CheckThumbnailResult, KijukuError, Media, MediaAttribute, MediaFilter, MediaHash, MediaHashInput, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats, ThumbnailOptions, UpdateExistOptions, UpdateExistResult, UpdateThumbnailResult};
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
 use ssh2_config::{ParseRule, SshConfig};
@@ -213,7 +213,7 @@ impl RemoteKijukuDB {
             .map_err(|e| KijukuError::Other(format!("Failed to parse response from stdout: {}. Raw output: {}", e, output)))
     }
 
-    /// レスポンスのエラーチェック
+    /// レスポンスのエラーチェック（データあり）
     fn check_response<T: for<'de> Deserialize<'de>>(
         &self,
         response: CommandResponse,
@@ -228,6 +228,16 @@ impl RemoteKijukuDB {
             .map_err(|e| KijukuError::Other(format!("Failed to deserialize data: {}", e)))
     }
 
+    /// レスポンスのエラーチェック（データなし）
+    fn check_unit_response(&self, response: CommandResponse) -> Result<()> {
+        if !response.success {
+            return Err(KijukuError::Other(
+                response.error.unwrap_or_else(|| "Unknown error".to_string()),
+            ));
+        }
+        Ok(())
+    }
+
     /// マイグレーションを実行
     pub fn migrate(&self) -> Result<()> {
         let response = self.execute_remote_command(CommandRequest {
@@ -235,7 +245,7 @@ impl RemoteKijukuDB {
             params: serde_json::json!({}),
         })?;
 
-        self.check_response::<()>(response)
+        self.check_unit_response(response)
     }
 
     /// 現在のスキーマバージョンを取得
@@ -303,7 +313,7 @@ impl RemoteKijukuDB {
             params: serde_json::json!({ "id": id, "data": data }),
         })?;
 
-        self.check_response(response)
+        self.check_unit_response(response)
     }
 
     /// メディアを削除
@@ -313,7 +323,7 @@ impl RemoteKijukuDB {
             params: serde_json::json!({ "id": id }),
         })?;
 
-        self.check_response(response)
+        self.check_unit_response(response)
     }
 
     /// メディアを検索
@@ -361,14 +371,7 @@ impl RemoteKijukuDB {
             params: serde_json::json!({ "ids": ids }),
         })?;
 
-        #[derive(Deserialize)]
-        struct DeleteResponse {
-            #[allow(dead_code)]
-            deleted: bool,
-        }
-
-        let _data: DeleteResponse = self.check_response(response)?;
-        Ok(())
+        self.check_unit_response(response)
     }
 
     /// 複数のメディアを一括更新
@@ -378,14 +381,7 @@ impl RemoteKijukuDB {
             params: serde_json::json!({ "updates": updates }),
         })?;
 
-        #[derive(Deserialize)]
-        struct UpdateResponse {
-            #[allow(dead_code)]
-            updated: bool,
-        }
-
-        let _data: UpdateResponse = self.check_response(response)?;
-        Ok(())
+        self.check_unit_response(response)
     }
 
     /// タグを作成
@@ -425,7 +421,7 @@ impl RemoteKijukuDB {
             params: serde_json::json!({ "media_id": media_id, "tag_id": tag_id }),
         })?;
 
-        self.check_response(response)
+        self.check_unit_response(response)
     }
 
     /// メディアからタグを削除
@@ -435,7 +431,7 @@ impl RemoteKijukuDB {
             params: serde_json::json!({ "media_id": media_id, "tag_id": tag_id }),
         })?;
 
-        self.check_response(response)
+        self.check_unit_response(response)
     }
 
     /// メディアに関連付けられたタグを取得
@@ -486,7 +482,7 @@ impl RemoteKijukuDB {
             }),
         })?;
 
-        self.check_response(response)
+        self.check_unit_response(response)
     }
 
     /// メディアの属性を取得
@@ -516,7 +512,7 @@ impl RemoteKijukuDB {
             params: serde_json::json!({ "media_id": media_id, "key": key }),
         })?;
 
-        self.check_response(response)
+        self.check_unit_response(response)
     }
 
     /// メディアの全ての属性を削除
@@ -526,7 +522,7 @@ impl RemoteKijukuDB {
             params: serde_json::json!({ "media_id": media_id }),
         })?;
 
-        self.check_response(response)
+        self.check_unit_response(response)
     }
 
     /// 手動バックアップを実行
@@ -537,11 +533,11 @@ impl RemoteKijukuDB {
         })?;
 
         #[derive(Deserialize)]
-        struct BackupResponse {
+        struct PathResponse {
             path: Option<String>,
         }
 
-        let data: BackupResponse = self.check_response(response)?;
+        let data: PathResponse = self.check_response(response)?;
         Ok(data.path)
     }
 
@@ -557,10 +553,18 @@ impl RemoteKijukuDB {
             id: String,
             name: String,
             path: String,
-            created_at: u64,
+            #[serde(rename = "createdAt")]
+            created_at: f64,
             scope: String,
-            kind: serde_json::Value,
+            kind: BackupKindRaw,
             label: Option<String>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(tag = "type", rename_all = "camelCase")]
+        enum BackupKindRaw {
+            Full,
+            Diff { base_id: String },
         }
 
         let items: Vec<BackupInfoRaw> = self.check_response(response)?;
@@ -574,18 +578,15 @@ impl RemoteKijukuDB {
                     "tmp" => BackupScope::Tmp,
                     _ => BackupScope::Auto,
                 };
-                let kind = if item.kind["type"].as_str() == Some("diff") {
-                    BackupKind::Diff {
-                        base_id: item.kind["baseId"].as_str().unwrap_or_default().to_string(),
-                    }
-                } else {
-                    BackupKind::Full
+                let kind = match item.kind {
+                    BackupKindRaw::Full => BackupKind::Full,
+                    BackupKindRaw::Diff { base_id } => BackupKind::Diff { base_id },
                 };
                 Ok(BackupInfo {
                     id: item.id,
                     name: item.name,
                     path: std::path::PathBuf::from(item.path),
-                    created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs(item.created_at),
+                    created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(item.created_at),
                     scope,
                     kind,
                     label: item.label,
@@ -602,12 +603,161 @@ impl RemoteKijukuDB {
         })?;
 
         #[derive(Deserialize)]
-        struct RestoreResponse {
+        struct PathResponse {
             path: String,
         }
 
-        let data: RestoreResponse = self.check_response(response)?;
+        let data: PathResponse = self.check_response(response)?;
         Ok(data.path)
+    }
+
+    // --- update_exist ---
+
+    /// フィルタで絞り込んだメディアのflag_existをファイル存在状態に基づいて更新する
+    pub fn update_exist(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+        update_options: &UpdateExistOptions,
+    ) -> Result<UpdateExistResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "updateExist".to_string(),
+            params: serde_json::json!({ "filter": filter, "options": options, "update_options": update_options }),
+        })?;
+        self.check_response(response)
+    }
+
+    // --- hash operations ---
+
+    /// メディアハッシュを追加
+    pub fn add_media_hash(&self, input: &MediaHashInput) -> Result<MediaHash> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "addMediaHash".to_string(),
+            params: serde_json::json!({ "input": input }),
+        })?;
+        let remote: MediaHashRemote = self.check_response(response)?;
+        remote.to_media_hash()
+    }
+
+    /// メディアハッシュを一括追加
+    pub fn add_media_hashes(&self, inputs: &[MediaHashInput]) -> Result<Vec<MediaHash>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "addMediaHashes".to_string(),
+            params: serde_json::json!({ "inputs": inputs }),
+        })?;
+        let remotes: Vec<MediaHashRemote> = self.check_response(response)?;
+        remotes.into_iter().map(|r| r.to_media_hash()).collect()
+    }
+
+    /// 指定UUIDのメディアハッシュ一覧を取得
+    pub fn get_media_hashes(&self, item_uuid: &str) -> Result<Vec<MediaHash>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getMediaHashes".to_string(),
+            params: serde_json::json!({ "item_uuid": item_uuid }),
+        })?;
+        let remotes: Vec<MediaHashRemote> = self.check_response(response)?;
+        remotes.into_iter().map(|r| r.to_media_hash()).collect()
+    }
+
+    /// 指定位置のメディアハッシュを取得
+    pub fn get_media_hash(
+        &self,
+        item_uuid: &str,
+        filename: &str,
+        time_range: &str,
+    ) -> Result<Option<MediaHash>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getMediaHash".to_string(),
+            params: serde_json::json!({ "item_uuid": item_uuid, "filename": filename, "time_range": time_range }),
+        })?;
+        let remote: Option<MediaHashRemote> = self.check_response(response)?;
+        remote.map(|r| r.to_media_hash()).transpose()
+    }
+
+    /// content_hashでメディアハッシュを検索
+    pub fn find_by_content_hash(&self, hash_bytes: &[u8]) -> Result<Vec<MediaHash>> {
+        let hash_hex = crate::hash::bytes_to_hex(hash_bytes);
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "findByContentHash".to_string(),
+            params: serde_json::json!({ "hash_hex": hash_hex }),
+        })?;
+        let remotes: Vec<MediaHashRemote> = self.check_response(response)?;
+        remotes.into_iter().map(|r| r.to_media_hash()).collect()
+    }
+
+    /// 指定位置のメディアハッシュを削除
+    pub fn delete_media_hash(
+        &self,
+        item_uuid: &str,
+        filename: &str,
+        time_range: &str,
+    ) -> Result<()> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "deleteMediaHash".to_string(),
+            params: serde_json::json!({ "item_uuid": item_uuid, "filename": filename, "time_range": time_range }),
+        })?;
+        self.check_unit_response(response)
+    }
+
+    /// 指定UUIDのメディアハッシュを全削除
+    pub fn delete_media_hashes(&self, item_uuid: &str) -> Result<()> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "deleteMediaHashes".to_string(),
+            params: serde_json::json!({ "item_uuid": item_uuid }),
+        })?;
+        self.check_unit_response(response)
+    }
+
+    /// 重複するcontent_hashを検索
+    pub fn find_duplicate_hashes(&self) -> Result<Vec<(Vec<u8>, i64)>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "findDuplicateHashes".to_string(),
+            params: serde_json::json!({}),
+        })?;
+        let items: Vec<DuplicateHashRemote> = self.check_response(response)?;
+        items
+            .into_iter()
+            .map(|item| {
+                crate::hash::hex_to_bytes(&item.content_hash)
+                    .map(|bytes| (bytes, item.count))
+            })
+            .collect()
+    }
+
+    /// 特定のメディアのハッシュを計算・登録
+    pub fn compute_media_hash(
+        &self,
+        item_uuid: &str,
+        media_path: &str,
+        media_type: &str,
+        duration_sec: Option<i32>,
+    ) -> Result<crate::hash::ComputeHashResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "computeMediaHash".to_string(),
+            params: serde_json::json!({
+                "item_uuid": item_uuid,
+                "media_path": media_path,
+                "media_type": media_type,
+                "duration_sec": duration_sec,
+            }),
+        })?;
+        let remote: ComputeHashResultRemote = self.check_response(response)?;
+        remote.to_compute_result()
+    }
+
+    /// フィルタ条件でメディアを絞り込み、ハッシュを計算・登録
+    pub fn compute_media_hashes(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+        force: bool,
+    ) -> Result<Vec<crate::hash::ComputeHashResult>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "computeMediaHashes".to_string(),
+            params: serde_json::json!({ "filter": filter, "options": options, "force": force }),
+        })?;
+        let remotes: Vec<ComputeHashResultRemote> = self.check_response(response)?;
+        remotes.into_iter().map(|r| r.to_compute_result()).collect()
     }
 
     /// サムネイルの状態をチェック
@@ -637,6 +787,63 @@ impl RemoteKijukuDB {
         })?;
 
         self.check_response(response)
+    }
+}
+
+/// CLIのmedia_hash_to_json出力をデシリアライズするためのヘルパー
+/// CLIはVec<u8>をhex文字列に変換して出力するため、直接MediaHashとしてデシリアライズできない
+#[derive(Deserialize)]
+struct MediaHashRemote {
+    item_uuid: String,
+    filename: String,
+    time_range: String,
+    content_hash: String,
+    alternative_of: Option<String>,
+    embedding: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+impl MediaHashRemote {
+    fn to_media_hash(self) -> Result<MediaHash> {
+        Ok(MediaHash {
+            item_uuid: self.item_uuid,
+            filename: self.filename,
+            time_range: self.time_range,
+            content_hash: crate::hash::hex_to_bytes(&self.content_hash)?,
+            alternative_of: self.alternative_of,
+            embedding: self.embedding
+                .map(|e| crate::hash::hex_to_bytes(&e))
+                .transpose()?,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct DuplicateHashRemote {
+    content_hash: String,
+    count: i64,
+}
+
+#[derive(Deserialize)]
+struct ComputeHashResultRemote {
+    item_uuid: String,
+    hashes: Vec<MediaHashRemote>,
+    skipped: bool,
+    skip_reason: Option<String>,
+}
+
+impl ComputeHashResultRemote {
+    fn to_compute_result(self) -> Result<crate::hash::ComputeHashResult> {
+        let hashes = self.hashes.into_iter().map(|r| r.to_media_hash()).collect::<Result<Vec<_>>>()?;
+        Ok(crate::hash::ComputeHashResult {
+            item_uuid: self.item_uuid,
+            hashes,
+            skipped: self.skipped,
+            skip_reason: self.skip_reason,
+        })
     }
 }
 

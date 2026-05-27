@@ -748,20 +748,52 @@ export class RemoteKijukuDB {
 
   // ========== メディアハッシュ操作 ==========
 
+  private hexToUint8Array(hex: string): Uint8Array {
+    if (hex.length % 2 !== 0) {
+      throw new Error('Hex string must have an even length');
+    }
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2) {
+      bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+    }
+    return bytes;
+  }
+
+  private convertMediaHashFromRemote(raw: any): MediaHash {
+    if (!raw) {
+      throw new Error('Invalid remote media hash data');
+    }
+    return {
+      ...raw,
+      content_hash: this.hexToUint8Array(raw.content_hash),
+      embedding: raw.embedding ? this.hexToUint8Array(raw.embedding) : undefined,
+    };
+  }
+
   async addMediaHash(input: MediaHashInput): Promise<MediaHash> {
     const response = await this.executeRemoteCommand({
       operation: 'addMediaHash',
-      params: { input },
+      params: {
+        input: {
+          ...input,
+          content_hash: Array.from(input.content_hash).map(b => b.toString(16).padStart(2, '0')).join(''),
+        },
+      },
     });
-    return this.checkResponse(response);
+    return this.convertMediaHashFromRemote(this.checkResponse(response));
   }
 
   async addMediaHashes(inputs: MediaHashInput[]): Promise<MediaHash[]> {
+    const converted = inputs.map(input => ({
+      ...input,
+      content_hash: Array.from(input.content_hash).map(b => b.toString(16).padStart(2, '0')).join(''),
+    }));
     const response = await this.executeRemoteCommand({
       operation: 'addMediaHashes',
-      params: { inputs },
+      params: { inputs: converted },
     });
-    return this.checkResponse(response);
+    const data: any[] = this.checkResponse(response);
+    return data.map(r => this.convertMediaHashFromRemote(r));
   }
 
   async getMediaHashes(itemUuid: string): Promise<MediaHash[]> {
@@ -769,7 +801,8 @@ export class RemoteKijukuDB {
       operation: 'getMediaHashes',
       params: { item_uuid: itemUuid },
     });
-    return this.checkResponse(response);
+    const data: any[] = this.checkResponse(response);
+    return data.map(r => this.convertMediaHashFromRemote(r));
   }
 
   async getMediaHash(itemUuid: string, filename: string, timeRange: string): Promise<MediaHash | null> {
@@ -777,7 +810,8 @@ export class RemoteKijukuDB {
       operation: 'getMediaHash',
       params: { item_uuid: itemUuid, filename, time_range: timeRange },
     });
-    return this.checkResponse(response);
+    const data = this.checkResponse(response);
+    return data ? this.convertMediaHashFromRemote(data) : null;
   }
 
   async findByContentHash(hashBytes: Uint8Array): Promise<MediaHash[]> {
@@ -785,7 +819,8 @@ export class RemoteKijukuDB {
       operation: 'findByContentHash',
       params: { hash_hex: Array.from(hashBytes).map(b => b.toString(16).padStart(2, '0')).join('') },
     });
-    return this.checkResponse(response);
+    const data: any[] = this.checkResponse(response);
+    return data.map(r => this.convertMediaHashFromRemote(r));
   }
 
   async deleteMediaHash(itemUuid: string, filename: string, timeRange: string): Promise<void> {
@@ -809,7 +844,8 @@ export class RemoteKijukuDB {
       operation: 'findDuplicateHashes',
       params: {},
     });
-    return this.checkResponse(response);
+    const data: Array<{ content_hash: string; count: number }> = this.checkResponse(response);
+    return data.map(item => ({ content_hash: this.hexToUint8Array(item.content_hash), count: item.count }));
   }
 
   async computeMediaHash(
@@ -822,7 +858,8 @@ export class RemoteKijukuDB {
       operation: 'computeMediaHash',
       params: { item_uuid: itemUuid, media_path: mediaPath, media_type: mediaType, duration_sec: durationSec ?? null },
     });
-    return this.checkResponse(response);
+    const data: any = this.checkResponse(response);
+    return { ...data, hashes: data.hashes.map((r: any) => this.convertMediaHashFromRemote(r)) };
   }
 
   async computeMediaHashes(filter: MediaFilter, options?: QueryOptions, force?: boolean): Promise<ComputeHashResult[]> {
@@ -830,7 +867,8 @@ export class RemoteKijukuDB {
       operation: 'computeMediaHashes',
       params: { filter, options: options ?? null, force: force ?? false },
     });
-    return this.checkResponse(response);
+    const data: any[] = this.checkResponse(response);
+    return data.map(r => ({ ...r, hashes: r.hashes.map((h: any) => this.convertMediaHashFromRemote(h)) }));
   }
 
   /**
