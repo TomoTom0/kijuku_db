@@ -1452,6 +1452,7 @@ const remoteDb = new RemoteKijukuDB({
 | **タグ操作** | `createTag()`, `getTagByName()`, `getAllTags()`, `addTagToMedia()`, `removeTagFromMedia()`, `getMediaTags()`, `getTagUsageStats()`, `findUnusedTags()` | |
 | **属性操作** | `setMediaAttribute()`, `getMediaAttribute()`, `getMediaAttributes()`, `deleteMediaAttribute()`, `deleteAllMediaAttributes()` | |
 | **サムネイル** | `checkThumbnail()`, `updateThumbnail()` | |
+| **ハッシュ操作** | `addMediaHash()`, `addMediaHashes()`, `getMediaHashes()`, `getMediaHash()`, `findByContentHash()`, `deleteMediaHash()`, `deleteMediaHashes()`, `findDuplicateHashes()`, `computeMediaHash()`, `computeMediaHashes()` | |
 | **ファイル存在** | `updateExist()` | |
 
 **相違点:**

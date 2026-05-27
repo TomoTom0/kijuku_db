@@ -127,6 +127,127 @@ fn test_full_workflow() {
 }
 
 #[test]
+fn test_update_nullable_fields() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db = KijukuDB::open(temp_file.path()).unwrap();
+    db.migrate().unwrap();
+
+    // nullableフィールド付きでメディア作成
+    let media = db.create_media(&MediaInput {
+        title: "Nullable Test".to_string(),
+        media_type: MediaType::Comic,
+        artist: Some("Original Artist".to_string()),
+        series: Some("Original Series".to_string()),
+        description: Some("Original Description".to_string()),
+        ..Default::default()
+    }).unwrap();
+    assert_eq!(media.artist, Some("Original Artist".to_string()));
+    assert_eq!(media.series, Some("Original Series".to_string()));
+
+    // Case 1: 値の更新 (Some(Some(value)))
+    db.update_media(media.id, &MediaUpdateInput {
+        artist: Some(Some("Updated Artist".to_string())),
+        ..Default::default()
+    }).unwrap();
+    let updated = db.get_media(media.id).unwrap();
+    assert_eq!(updated.artist, Some("Updated Artist".to_string()));
+    // 他のフィールドは変更されない
+    assert_eq!(updated.series, Some("Original Series".to_string()));
+    assert_eq!(updated.description, Some("Original Description".to_string()));
+
+    // Case 2: NULL設定 (Some(None))
+    db.update_media(media.id, &MediaUpdateInput {
+        artist: Some(None),
+        description: Some(None),
+        ..Default::default()
+    }).unwrap();
+    let updated = db.get_media(media.id).unwrap();
+    assert_eq!(updated.artist, None);
+    assert_eq!(updated.description, None);
+    // 他のフィールドは変更されない
+    assert_eq!(updated.series, Some("Original Series".to_string()));
+
+    // Case 3: 更新なし (None)
+    db.update_media(media.id, &MediaUpdateInput {
+        ..Default::default()
+    }).unwrap();
+    let updated = db.get_media(media.id).unwrap();
+    assert_eq!(updated.artist, None);
+    assert_eq!(updated.series, Some("Original Series".to_string()));
+
+    // Case 4: 整数nullableフィールドのNULL設定
+    db.update_media(media.id, &MediaUpdateInput {
+        file_size: Some(Some(1024)),
+        page_count: Some(Some(100)),
+        ..Default::default()
+    }).unwrap();
+    let updated = db.get_media(media.id).unwrap();
+    assert_eq!(updated.file_size, Some(1024));
+    assert_eq!(updated.page_count, Some(100));
+
+    db.update_media(media.id, &MediaUpdateInput {
+        file_size: Some(None),
+        page_count: Some(None),
+        ..Default::default()
+    }).unwrap();
+    let updated = db.get_media(media.id).unwrap();
+    assert_eq!(updated.file_size, None);
+    assert_eq!(updated.page_count, None);
+}
+
+#[test]
+fn test_update_media_json_deserialization() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db = KijukuDB::open(temp_file.path()).unwrap();
+    db.migrate().unwrap();
+
+    let media = db.create_media(&MediaInput {
+        title: "JSON Deser Test".to_string(),
+        media_type: MediaType::Comic,
+        artist: Some("Original".to_string()),
+        ..Default::default()
+    }).unwrap();
+
+    // JSONからdeserialization: artist = null → Some(None)
+    let json = serde_json::json!({
+        "artist": null
+    });
+    let input: MediaUpdateInput = serde_json::from_value(json).unwrap();
+    assert_eq!(input.artist, Some(None));
+    assert!(input.title.is_none());
+
+    db.update_media(media.id, &input).unwrap();
+    let updated = db.get_media(media.id).unwrap();
+    assert_eq!(updated.artist, None);
+    assert_eq!(updated.title, "JSON Deser Test"); // 変更されない
+
+    // JSONからdeserialization: artist = "NewValue" → Some(Some("NewValue"))
+    let json = serde_json::json!({
+        "artist": "NewValue"
+    });
+    let input: MediaUpdateInput = serde_json::from_value(json).unwrap();
+    assert_eq!(input.artist, Some(Some("NewValue".to_string())));
+
+    db.update_media(media.id, &input).unwrap();
+    let updated = db.get_media(media.id).unwrap();
+    assert_eq!(updated.artist, Some("NewValue".to_string()));
+
+    // JSONからdeserialization: 空オブジェクト → 全てNone
+    let json = serde_json::json!({});
+    let input: MediaUpdateInput = serde_json::from_value(json).unwrap();
+    assert!(input.artist.is_none());
+    assert!(input.title.is_none());
+
+    // UUIDにnullは設定できない
+    let json = serde_json::json!({
+        "uuid": null
+    });
+    let input: MediaUpdateInput = serde_json::from_value(json).unwrap();
+    let result = db.update_media(media.id, &input);
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_error_handling() {
     let temp_file = NamedTempFile::new().unwrap();
     let db = KijukuDB::open(temp_file.path()).unwrap();

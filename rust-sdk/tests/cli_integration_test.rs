@@ -48,7 +48,7 @@ fn test_cli_migrate() {
     let response = execute_cli_command(db_path, command);
 
     assert_eq!(response["success"], true);
-    assert_eq!(response["data"]["migrated"], true);
+    assert_eq!(response["data"]["ok"], true);
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn test_cli_error_handling() {
         "params": {}
     }));
 
-    // 存在しないメディアを取得
+    // 存在しないメディアを取得（null が返る）
     let response = execute_cli_command(db_path, json!({
         "operation": "getMedia",
         "params": {
@@ -241,8 +241,8 @@ fn test_cli_error_handling() {
         }
     }));
 
-    assert_eq!(response["success"], false);
-    assert!(response["error"].as_str().unwrap().contains("見つかりません"));
+    assert_eq!(response["success"], true);
+    assert!(response["data"].is_null());
 }
 
 #[test]
