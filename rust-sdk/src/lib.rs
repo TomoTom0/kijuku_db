@@ -178,7 +178,9 @@ impl KijukuDB {
 
     /// メディアを作成
     pub fn create_media(&self, input: &MediaInput) -> Result<Media> {
-        crud::create_media(&self.conn, input)
+        let result = crud::create_media(&self.conn, input)?;
+        self.record_operation();
+        Ok(result)
     }
 
     /// IDでメディアを取得
@@ -190,12 +192,16 @@ impl KijukuDB {
     ///
     /// 指定されたフィールドのみ更新します。
     pub fn update_media(&self, id: i64, input: &MediaUpdateInput) -> Result<()> {
-        crud::update_media(&self.conn, id, input)
+        crud::update_media(&self.conn, id, input)?;
+        self.record_operation();
+        Ok(())
     }
 
     /// メディアを削除
     pub fn delete_media(&self, id: i64) -> Result<()> {
-        crud::delete_media(&self.conn, id)
+        crud::delete_media(&self.conn, id)?;
+        self.record_operation();
+        Ok(())
     }
 
     /// メディアを検索
@@ -234,7 +240,11 @@ impl KijukuDB {
         options: Option<&QueryOptions>,
         thumbnail_options: &ThumbnailOptions,
     ) -> Result<UpdateThumbnailResult> {
-        thumbnail::update_thumbnail(&self.conn, filter, options, thumbnail_options)
+        let result = thumbnail::update_thumbnail(&self.conn, filter, options, thumbnail_options)?;
+        if result.generated > 0 {
+            self.record_operation();
+        }
+        Ok(result)
     }
 
     /// フィルタで絞り込んだメディアのflag_existをファイル存在状態に基づいて更新する
@@ -244,27 +254,37 @@ impl KijukuDB {
         options: Option<&QueryOptions>,
         update_options: &UpdateExistOptions,
     ) -> Result<UpdateExistResult> {
-        update_exist::update_exist(&self.conn, filter, options, update_options)
+        let result = update_exist::update_exist(&self.conn, filter, options, update_options)?;
+        self.record_operation();
+        Ok(result)
     }
 
     /// 複数のメディアを一括作成
     pub fn bulk_create_media(&self, data_list: &[MediaInput]) -> Result<Vec<Media>> {
-        bulk::bulk_create_media(&self.conn, data_list)
+        let result = bulk::bulk_create_media(&self.conn, data_list)?;
+        self.record_operation();
+        Ok(result)
     }
 
     /// 複数のメディアを一括削除
     pub fn bulk_delete_media(&self, ids: &[i64]) -> Result<()> {
-        bulk::bulk_delete_media(&self.conn, ids)
+        bulk::bulk_delete_media(&self.conn, ids)?;
+        self.record_operation();
+        Ok(())
     }
 
     /// 複数のメディアを一括更新
     pub fn bulk_update_media(&self, updates: &[BulkUpdateItem]) -> Result<()> {
-        bulk::bulk_update_media(&self.conn, updates)
+        bulk::bulk_update_media(&self.conn, updates)?;
+        self.record_operation();
+        Ok(())
     }
 
     /// タグを作成
     pub fn create_tag(&self, name: &str) -> Result<Tag> {
-        tag::create_tag(&self.conn, name)
+        let result = tag::create_tag(&self.conn, name)?;
+        self.record_operation();
+        Ok(result)
     }
 
     /// タグ名でタグを取得
@@ -279,12 +299,16 @@ impl KijukuDB {
 
     /// メディアにタグを追加
     pub fn add_tag_to_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
-        tag::add_tag_to_media(&self.conn, media_id, tag_id)
+        tag::add_tag_to_media(&self.conn, media_id, tag_id)?;
+        self.record_operation();
+        Ok(())
     }
 
     /// メディアからタグを削除
     pub fn remove_tag_from_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
-        tag::remove_tag_from_media(&self.conn, media_id, tag_id)
+        tag::remove_tag_from_media(&self.conn, media_id, tag_id)?;
+        self.record_operation();
+        Ok(())
     }
 
     /// メディアに関連付けられたタグを取得
@@ -310,19 +334,25 @@ impl KijukuDB {
         value: Option<&str>,
         value_type: Option<AttributeValueType>,
     ) -> Result<()> {
-        attribute::set_media_attribute(&self.conn, media_id, key, value, value_type)
+        attribute::set_media_attribute(&self.conn, media_id, key, value, value_type)?;
+        self.record_operation();
+        Ok(())
     }
 
     // ========== メディアハッシュ操作 ==========
 
     /// メディアハッシュを登録（単件）
     pub fn add_media_hash(&self, input: &MediaHashInput) -> Result<MediaHash> {
-        hash::add_media_hash(&self.conn, input)
+        let result = hash::add_media_hash(&self.conn, input)?;
+        self.record_operation();
+        Ok(result)
     }
 
     /// メディアハッシュを一括登録
     pub fn add_media_hashes(&self, inputs: &[MediaHashInput]) -> Result<Vec<MediaHash>> {
-        hash::add_media_hashes(&self.conn, inputs)
+        let result = hash::add_media_hashes(&self.conn, inputs)?;
+        self.record_operation();
+        Ok(result)
     }
 
     /// 特定作品の全ハッシュを取得
@@ -342,12 +372,16 @@ impl KijukuDB {
 
     /// 特定位置のハッシュを削除（代替行の連鎖削除を含む）
     pub fn delete_media_hash(&self, item_uuid: &str, filename: &str, time_range: &str) -> Result<()> {
-        hash::delete_media_hash(&self.conn, item_uuid, filename, time_range)
+        hash::delete_media_hash(&self.conn, item_uuid, filename, time_range)?;
+        self.record_operation();
+        Ok(())
     }
 
     /// 特定作品のハッシュを全削除
     pub fn delete_media_hashes(&self, item_uuid: &str) -> Result<()> {
-        hash::delete_media_hashes(&self.conn, item_uuid)
+        hash::delete_media_hashes(&self.conn, item_uuid)?;
+        self.record_operation();
+        Ok(())
     }
 
     /// 重複ハッシュの検出
@@ -388,12 +422,16 @@ impl KijukuDB {
 
     /// メディアの属性を削除
     pub fn delete_media_attribute(&self, media_id: i64, key: &str) -> Result<()> {
-        attribute::delete_media_attribute(&self.conn, media_id, key)
+        attribute::delete_media_attribute(&self.conn, media_id, key)?;
+        self.record_operation();
+        Ok(())
     }
 
     /// メディアの全ての属性を削除
     pub fn delete_all_media_attributes(&self, media_id: i64) -> Result<()> {
-        attribute::delete_all_media_attributes(&self.conn, media_id)
+        attribute::delete_all_media_attributes(&self.conn, media_id)?;
+        self.record_operation();
+        Ok(())
     }
 
     /// トランザクション内で複数の操作を実行
@@ -432,6 +470,18 @@ impl KijukuDB {
     /// # Ok(())
     /// # }
     /// ```
+    /// バックアップマネージャーに操作を記録する
+    ///
+    /// バックアップマネージャーが設定されていない場合は何もしない。
+    /// エラーはログ出力のみで、呼び出し元の操作は妨げない。
+    fn record_operation(&self) {
+        if let Some(manager) = &self.backup_manager {
+            if let Err(e) = manager.record_operation() {
+                eprintln!("Backup operation failed: {}", e);
+            }
+        }
+    }
+
     pub fn transaction<F, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(&Self) -> Result<T>,
@@ -441,15 +491,7 @@ impl KijukuDB {
         match f(self) {
             Ok(result) => {
                 self.conn.execute("COMMIT", [])?;
-
-                // バックアップマネージャーがあれば操作を記録
-                if let Some(manager) = &self.backup_manager {
-                    // エラーは記録するが、トランザクションの成功は妨げない
-                    if let Err(e) = manager.record_operation() {
-                        eprintln!("Backup operation failed: {}", e);
-                    }
-                }
-
+                self.record_operation();
                 Ok(result)
             }
             Err(e) => {

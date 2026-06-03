@@ -312,7 +312,11 @@ fn test_cli_restore() {
     }));
     let media_id = create_response["data"]["id"].as_i64().unwrap();
 
-    execute_cli_command(db_path, json!({"operation": "backup", "params": {}}));
+    // ラベル付きで手動バックアップを作成
+    execute_cli_command(db_path, json!({
+        "operation": "backup",
+        "params": { "label": "pre-delete" }
+    }));
 
     // メディアを削除
     execute_cli_command(db_path, json!({
@@ -320,10 +324,20 @@ fn test_cli_restore() {
         "params": { "id": media_id }
     }));
 
-    // バックアップから復元
+    // バックアップ一覧を取得して手動バックアップを探す
+    let list_response = execute_cli_command(db_path, json!({
+        "operation": "listBackups",
+        "params": {}
+    }));
+    let backups = list_response["data"].as_array().unwrap();
+    let backup_index = backups.iter().position(|b| {
+        b["label"].as_str() == Some("pre-delete")
+    }).unwrap();
+
+    // 特定バックアップから復元
     let restore_response = execute_cli_command(db_path, json!({
         "operation": "restore",
-        "params": { "selector": { "type": "latest" } }
+        "params": { "selector": { "type": "nth", "n": backup_index } }
     }));
 
     assert_eq!(restore_response["success"], true);

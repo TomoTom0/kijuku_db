@@ -215,6 +215,16 @@ SHA256ハッシュによるファイル内容ベースの同定・重複検出�
 
 ## Fixed
 
+### Rust SDK: 全書き込みメソッドで自動バックアップ記録を有効化 (TASK-228)
+
+- Rust SDKの全18個の書き込みメソッド（create/update/delete/bulk/tag/attribute/hash）に `record_operation()` 呼び出しを追加
+- private helper `KijukuDB::record_operation()` を新設し、バックアップマネージャーに操作を記録
+- `update_thumbnail` は `generated > 0` の場合のみ記録（TS SDKと同一挙動）
+- これによりRust SDKでもTS SDKと同様に、書き込み操作後に自動バックアップが正しく作成されるよう修正
+
+**ファイル:**
+- `rust-sdk/src/lib.rs`: `record_operation()` 追加、全書き込みメソッドに呼び出し追加
+
 ### SQLite DBロック時のリトライ戦略を実装 (TASK-174)
 
 - バックアップ開始時に DB がロックされている場合、即エラーにならず段階的なリトライを行うよう改善
