@@ -255,7 +255,9 @@ impl KijukuDB {
         update_options: &UpdateExistOptions,
     ) -> Result<UpdateExistResult> {
         let result = update_exist::update_exist(&self.conn, filter, options, update_options)?;
-        self.record_operation();
+        if result.updated > 0 {
+            self.record_operation();
+        }
         Ok(result)
     }
 
@@ -475,6 +477,9 @@ impl KijukuDB {
     /// バックアップマネージャーが設定されていない場合は何もしない。
     /// エラーはログ出力のみで、呼び出し元の操作は妨げない。
     fn record_operation(&self) {
+        if !self.conn.is_autocommit() {
+            return;
+        }
         if let Some(manager) = &self.backup_manager {
             if let Err(e) = manager.record_operation() {
                 eprintln!("Backup operation failed: {}", e);
