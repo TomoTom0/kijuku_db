@@ -2,6 +2,22 @@
 
 ## Breaking
 
+### バックエンド抽象化・async API 化（D1 対応の前提）(TASK-1,2,4)
+
+純DB操作を `KijukuBackend` async trait で抽象化し、Local / D1 / Remote を
+`Box<dyn KijukuBackend>`（`&dyn`）で透過的に扱えるようにした。
+
+- `KijukuDB` の接続を `Arc<Mutex<Connection>>` 化。`connection()`（`&Connection` 直接取得）を廃止し `conn_handle()` に変更
+- 既存の同期メソッド（`create_media` / `find_media` / `create_tag` 等）は `#[deprecated]` となり、async API（`KijukuBackend`）の使用を推奨
+- 低レベル SQL 実行を `SqlExec` trait（`LocalExec` / `D1Exec`）で抽象化し、組み立て層（crud/bulk/search/hash/tag/attribute）の `_async` 関数を Local/D1 で共有
+- `migrate` を `KijukuBackend::migrate` に一本化（Local=schema.sql、D1=schema.d1.sql を自動選択）
+- `RemoteKijukuDB` に `Clone` を追加し `KijukuBackend` を実装
+
+**ファイル:**
+- `rust-sdk/src/backend.rs`（新規）, `rust-sdk/src/exec.rs`（新規）, `rust-sdk/src/exec_local.rs`（新規）, `rust-sdk/src/db_value.rs`（新規）
+- `rust-sdk/src/lib.rs`, `rust-sdk/src/remote.rs`, `rust-sdk/src/bin/cli.rs`, `rust-sdk/src/server/mod.rs`
+- 組み立て層各 `*_async` 追加: `crud.rs`, `bulk.rs`, `search.rs`, `hash.rs`, `tag.rs`, `attribute.rs`, `migration.rs`
+
 ### update-exist レスポンス構造変更
 
 - `UpdateExistResult.items` を廃止。大量レスポンスによるSSLストリームハングを防ぐため
@@ -15,6 +31,26 @@
 - `ts-sdk/src/update_exist.ts`
 
 ## Added
+
+### Cloudflare D1 バックエンド (TASK-4)
+
+- `D1KijukuDB`: Cloudflare D1 を REST API 経由で操作する新バックエンド。`KijukuBackend` を実装し Local と組み立て層を完全共有
+- `wrangler login` 済みの OAuth トークンを再利用し、API token の手動発行不要で接続（`D1KijukuDB::from_wrangler`）
+- D1 REST は BLOB 型を扱えないため、`content_hash` / `embedding` は TEXT(hex) で送受信（`schema.d1.sql`）。`db_value` が hex 変換を吸収
+- CLI `--backend d1` オプション（環境変数 `D1_ACCOUNT_ID` / `D1_DATABASE_ID`）。D1 では純DB操作・docs・stdin プロトコル・bulk-load のみ利用可能
+
+**ファイル:**
+- `rust-sdk/src/d1_backend.rs`（新規）, `rust-sdk/src/d1_client.rs`（新規）, `rust-sdk/src/exec_d1.rs`（新規）, `rust-sdk/schema.d1.sql`（新規）
+
+### ローカル→D1 バルクロードツール（完全移行）(TASK-5)
+
+- `bulk_load::transfer`: source（任意 `KijukuBackend`）→ dest（任意）へ media / tags / media_tags / attributes / hashes の全データを欠落なく移行。タグは get-or-create、media は uuid 保持で転送し関連を張り直し
+- `bulk_load::verify`: source/dest の件数・内容の完全一致を検証（単体でも `--verify-only` で再検証可能）
+- CLI `bulk-load` サブコマンド（`--chunk-size`、`--verify-only`）。SDK の `transfer` / `verify` を呼ぶ薄いラッパ
+- 実D1 で `d1_bulk_load_from_local` 統合テスト検証済み
+
+**ファイル:**
+- `rust-sdk/src/bulk_load.rs`（新規）, `rust-sdk/tests/d1_test.rs`（新規）, `rust-sdk/src/bin/cli.rs`
 
 ### content-hash: ファイル内容ベースの同定機構 (TASK-207〜214)
 

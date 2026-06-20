@@ -1,3 +1,6 @@
+// バックアップテストは意図的に deprecated 同期 API を検証
+#![allow(deprecated)]
+
 use kijuku_db::{BackupKind, BackupManager, BackupOptions, BackupScope, BackupSelector, DBOptions, KijukuDB, MediaInput, MediaType};
 use rusqlite;
 use std::thread;

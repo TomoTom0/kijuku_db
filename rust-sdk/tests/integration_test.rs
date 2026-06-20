@@ -1,3 +1,6 @@
+// 結合テストは意図的に deprecated 同期 API を検証（後方互換の保証）
+#![allow(deprecated)]
+
 use kijuku_db::{KijukuDB, MediaInput, MediaUpdateInput, MediaType, MediaFilter, QueryOptions, SortKey, SortOrder};
 use tempfile::NamedTempFile;
 

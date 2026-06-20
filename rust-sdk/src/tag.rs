@@ -1,4 +1,6 @@
-use crate::error::Result;
+use crate::db_value::{SqlParam, SqlRow};
+use crate::error::{KijukuError, Result};
+use crate::exec::SqlExec;
 use crate::types::{Tag, TagUsageStats};
 use rusqlite::{params, Connection};
 
@@ -121,6 +123,111 @@ pub fn find_unused_tags(conn: &Connection) -> Result<Vec<Tag>> {
         .collect::<std::result::Result<Vec<Tag>, _>>()?;
 
     Ok(tags)
+}
+
+// ========== async バックエンド（SqlExec）用 ==========
+
+fn row_to_tag(row: &SqlRow) -> Result<Tag> {
+    Ok(Tag {
+        id: row.get_int("id")?,
+        name: row.get_text("name")?,
+    })
+}
+
+fn row_to_tag_usage_stats(row: &SqlRow) -> Result<TagUsageStats> {
+    Ok(TagUsageStats {
+        tag_id: row.get_int("id")?,
+        tag_name: row.get_text("name")?,
+        count: row.get_int("count")?,
+    })
+}
+
+/// async バックエンド経由でタグを作成（`RETURNING` で id/name を取得）
+pub async fn create_tag_async(exec: &dyn SqlExec, name: &str) -> Result<Tag> {
+    let sql = "INSERT INTO tags (name) VALUES (?1) RETURNING id, name";
+    let params = vec![SqlParam::Text(name.to_string())];
+    let rows = exec.query(sql, &params).await?;
+    let row = rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| KijukuError::Other("作成されたタグが見つかりません".to_string()))?;
+    row_to_tag(&row)
+}
+
+/// async バックエンド経由でタグ名から取得
+pub async fn get_tag_by_name_async(exec: &dyn SqlExec, name: &str) -> Result<Option<Tag>> {
+    let sql = "SELECT id, name FROM tags WHERE name = ?1";
+    let params = vec![SqlParam::Text(name.to_string())];
+    let rows = exec.query(sql, &params).await?;
+    match rows.into_iter().next() {
+        Some(row) => Ok(Some(row_to_tag(&row)?)),
+        None => Ok(None),
+    }
+}
+
+/// async バックエンド経由で全タグを取得
+pub async fn get_all_tags_async(exec: &dyn SqlExec) -> Result<Vec<Tag>> {
+    let sql = "SELECT id, name FROM tags ORDER BY name";
+    let rows = exec.query(sql, &[]).await?;
+    rows.iter().map(row_to_tag).collect()
+}
+
+/// async バックエンド経由でメディアにタグを追加（INSERT OR IGNORE）
+pub async fn add_tag_to_media_async(
+    exec: &dyn SqlExec,
+    media_id: i64,
+    tag_id: i64,
+) -> Result<()> {
+    let sql = "INSERT OR IGNORE INTO media_tags (media_id, tag_id) VALUES (?1, ?2)";
+    let params = vec![SqlParam::Int(media_id), SqlParam::Int(tag_id)];
+    exec.execute(sql, &params).await?;
+    Ok(())
+}
+
+/// async バックエンド経由でメディアからタグを削除
+pub async fn remove_tag_from_media_async(
+    exec: &dyn SqlExec,
+    media_id: i64,
+    tag_id: i64,
+) -> Result<()> {
+    let sql = "DELETE FROM media_tags WHERE media_id = ?1 AND tag_id = ?2";
+    let params = vec![SqlParam::Int(media_id), SqlParam::Int(tag_id)];
+    exec.execute(sql, &params).await?;
+    Ok(())
+}
+
+/// async バックエンド経由でメディアのタグを取得
+pub async fn get_media_tags_async(exec: &dyn SqlExec, media_id: i64) -> Result<Vec<Tag>> {
+    let sql = "SELECT t.id, t.name
+         FROM tags t
+         INNER JOIN media_tags mt ON t.id = mt.tag_id
+         WHERE mt.media_id = ?1
+         ORDER BY t.name";
+    let params = vec![SqlParam::Int(media_id)];
+    let rows = exec.query(sql, &params).await?;
+    rows.iter().map(row_to_tag).collect()
+}
+
+/// async バックエンド経由でタグ使用数統計を取得
+pub async fn get_tag_usage_stats_async(exec: &dyn SqlExec) -> Result<Vec<TagUsageStats>> {
+    let sql = "SELECT t.id, t.name, COUNT(mt.media_id) as count
+         FROM tags t
+         LEFT JOIN media_tags mt ON t.id = mt.tag_id
+         GROUP BY t.id, t.name
+         ORDER BY count DESC, t.name ASC";
+    let rows = exec.query(sql, &[]).await?;
+    rows.iter().map(row_to_tag_usage_stats).collect()
+}
+
+/// async バックエンド経由で未使用タグを取得
+pub async fn find_unused_tags_async(exec: &dyn SqlExec) -> Result<Vec<Tag>> {
+    let sql = "SELECT t.id, t.name
+         FROM tags t
+         LEFT JOIN media_tags mt ON t.id = mt.tag_id
+         WHERE mt.media_id IS NULL
+         ORDER BY t.name";
+    let rows = exec.query(sql, &[]).await?;
+    rows.iter().map(row_to_tag).collect()
 }
 
 #[cfg(test)]

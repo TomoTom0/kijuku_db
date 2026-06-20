@@ -26,6 +26,18 @@ pub enum KijukuError {
     /// その他のエラー
     #[error("Error: {0}")]
     Other(String),
+
+    /// HTTPエラー（D1 REST API等）
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+
+    /// D1 APIエラー
+    #[error("D1 error: {0}")]
+    D1(String),
+
+    /// サポートされていない操作（D1等の制約）
+    #[error("Not supported: {0}")]
+    NotSupported(String),
 }
 
 /// きじゅくDBのResult型

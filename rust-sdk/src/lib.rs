@@ -34,11 +34,19 @@
 //! ```
 
 pub mod attribute;
+pub mod backend;
 pub mod backup;
 pub mod bulk;
+pub mod bulk_load;
 pub mod config;
 pub mod crud;
+pub mod d1_backend;
+pub mod d1_client;
+pub mod db_value;
 pub mod error;
+pub mod exec;
+pub mod exec_d1;
+pub mod exec_local;
 pub mod hash;
 pub mod migration;
 pub mod remote;
@@ -53,8 +61,15 @@ pub use backup::{
     AutoRecord, AutoRecordStatus, BackupInfo, BackupKind, BackupManager, BackupOptions,
     BackupScope, BackupSelector, RetentionPolicy, RetentionTier,
 };
+pub use backend::KijukuBackend;
+pub use bulk_load::{transfer, verify, TransferOptions, TransferReport};
+pub use d1_backend::D1KijukuDB;
+pub use d1_client::D1Config;
 pub use config::{load_config, BackupConfig, KijukuConfig};
+pub use db_value::{SqlParam, SqlRow};
 pub use error::{KijukuError, Result};
+pub use exec::SqlExec;
+pub use exec_local::LocalExec;
 pub use migration::TableColumnInfo;
 pub use remote::{RemoteConfig, RemoteKijukuDB};
 pub use search::ALLOWED_DISTINCT_FIELDS;
@@ -70,10 +85,17 @@ pub use update_exist::{UpdateExistItemResult, UpdateExistOptions, UpdateExistRes
 
 use rusqlite::Connection;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
-/// きじゅくDBのメインクラス
+/// きじゅくDBのメインクラス（Local バックエンド）
+///
+/// 接続は `Arc<Mutex<Connection>>` で持ち、async 操作は共有 `LocalExec` 経由で
+/// `spawn_blocking` に乗せる。既存の同期メソッドは deprecated だが後方互換のため維持され、
+/// 内部で接続を都度ロックして動作する（`transaction` 内でのデッドロックを避けるため、
+/// ロックは各操作ごとに取得・解放し、トランザクション状態は同一接続に維持される）。
 pub struct KijukuDB {
-    conn: Connection,
+    conn: Arc<Mutex<Connection>>,
+    exec: LocalExec,
     options: DBOptions,
     backup_manager: Option<BackupManager>,
 }
@@ -91,8 +113,11 @@ impl KijukuDB {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        let conn = Arc::new(Mutex::new(conn));
+        let exec = LocalExec::new(Arc::clone(&conn));
         Ok(Self {
             conn,
+            exec,
             options: DBOptions::default(),
             backup_manager: None,
         })
@@ -127,23 +152,36 @@ impl KijukuDB {
             None
         };
 
-        Ok(Self { conn, options, backup_manager })
+        let conn = Arc::new(Mutex::new(conn));
+        let exec = LocalExec::new(Arc::clone(&conn));
+        Ok(Self {
+            conn,
+            exec,
+            options,
+            backup_manager,
+        })
     }
 
     /// インメモリデータベースを作成
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        let conn = Arc::new(Mutex::new(conn));
+        let exec = LocalExec::new(Arc::clone(&conn));
         Ok(Self {
             conn,
+            exec,
             options: DBOptions::default(),
             backup_manager: None,
         })
     }
 
-    /// データベース接続への参照を取得
-    pub fn connection(&self) -> &Connection {
-        &self.conn
+    /// 接続の `Arc` ハンドルを取得（同プロセス内で `LocalExec` 等と共有する用途・内部用）。
+    ///
+    /// NOTE: `connection()`（`&Connection` 直接取得）は conn の `Arc<Mutex>` 化に伴い廃止。
+    /// 直接 SQL 実行が必要な呼び出し側は公開メソッド経由か async trait（`KijukuBackend`）へ移行。
+    pub fn conn_handle(&self) -> Arc<Mutex<Connection>> {
+        Arc::clone(&self.conn)
     }
 
     /// データベースオプションへの参照を取得
@@ -151,77 +189,112 @@ impl KijukuDB {
         &self.options
     }
 
+    /// Mutex ロック失敗を KijukuError へ変換
+    fn lock_err<E: std::fmt::Display>(e: E) -> KijukuError {
+        KijukuError::Other(format!("connection lock error: {}", e))
+    }
+
     /// マイグレーションを実行
+    #[deprecated(note = "async API を使用してください (KijukuBackend::migrate)")]
     pub fn migrate(&self) -> Result<()> {
-        migration::migrate(&self.conn)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        migration::migrate(&conn)
     }
 
     /// スキーマバージョンを取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_schema_version)")]
     pub fn get_schema_version(&self) -> Result<i64> {
-        migration::get_schema_version(&self.conn)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        migration::get_schema_version(&conn)
     }
 
     /// テーブル一覧を取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_tables)")]
     pub fn get_tables(&self) -> Result<Vec<String>> {
-        migration::get_tables(&self.conn)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        migration::get_tables(&conn)
     }
 
     /// 外部キー制約が有効かチェック
     pub fn is_foreign_keys_enabled(&self) -> Result<bool> {
-        migration::is_foreign_keys_enabled(&self.conn)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        migration::is_foreign_keys_enabled(&conn)
     }
 
     /// 特定テーブルのカラム情報を取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_table_info)")]
     pub fn get_table_info(&self, table_name: &str) -> Result<Vec<TableColumnInfo>> {
-        migration::get_table_info(&self.conn, table_name)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        migration::get_table_info(&conn, table_name)
     }
 
     /// メディアを作成
+    #[deprecated(note = "async API を使用してください (KijukuBackend::create_media)")]
     pub fn create_media(&self, input: &MediaInput) -> Result<Media> {
-        let result = crud::create_media(&self.conn, input)?;
+        let result = {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            crud::create_media(&conn, input)?
+        };
         self.record_operation();
         Ok(result)
     }
 
     /// IDでメディアを取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_media)")]
     pub fn get_media(&self, id: i64) -> Option<Media> {
-        crud::get_media(&self.conn, id)
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(_) => return None,
+        };
+        crud::get_media(&conn, id)
     }
 
     /// メディアを更新（部分更新）
     ///
     /// 指定されたフィールドのみ更新します。
+    #[deprecated(note = "async API を使用してください (KijukuBackend::update_media)")]
     pub fn update_media(&self, id: i64, input: &MediaUpdateInput) -> Result<()> {
-        crud::update_media(&self.conn, id, input)?;
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            crud::update_media(&conn, id, input)?;
+        }
         self.record_operation();
         Ok(())
     }
 
     /// メディアを削除
+    #[deprecated(note = "async API を使用してください (KijukuBackend::delete_media)")]
     pub fn delete_media(&self, id: i64) -> Result<()> {
-        crud::delete_media(&self.conn, id)?;
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            crud::delete_media(&conn, id)?;
+        }
         self.record_operation();
         Ok(())
     }
 
     /// メディアを検索
+    #[deprecated(note = "async API を使用してください (KijukuBackend::find_media)")]
     pub fn find_media(
         &self,
         filter: &MediaFilter,
         options: Option<&QueryOptions>,
     ) -> Result<Vec<Media>> {
-        search::find_media(&self.conn, filter, options)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        search::find_media(&conn, filter, options)
     }
 
     /// 指定したフィールド群の重複なしの値の組み合わせ一覧を取得する
     ///
     /// 戻り値の各要素は `fields` と同じ順序のフィールド値（NULL含む）。
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_distinct_values)")]
     pub fn get_distinct_values(
         &self,
         fields: &[&str],
         filter: &MediaFilter,
     ) -> Result<Vec<Vec<Option<String>>>> {
-        search::get_distinct_values(&self.conn, fields, filter)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        search::get_distinct_values(&conn, fields, filter)
     }
 
     /// フィルタで絞り込んだメディアのサムネイル状態をチェックする
@@ -230,7 +303,8 @@ impl KijukuDB {
         filter: &MediaFilter,
         options: Option<&QueryOptions>,
     ) -> Result<CheckThumbnailResult> {
-        thumbnail::check_thumbnail(&self.conn, filter, options)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        thumbnail::check_thumbnail(&conn, filter, options)
     }
 
     /// フィルタで絞り込んだメディアのサムネイルを生成・更新する
@@ -240,7 +314,10 @@ impl KijukuDB {
         options: Option<&QueryOptions>,
         thumbnail_options: &ThumbnailOptions,
     ) -> Result<UpdateThumbnailResult> {
-        let result = thumbnail::update_thumbnail(&self.conn, filter, options, thumbnail_options)?;
+        let result = {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            thumbnail::update_thumbnail(&conn, filter, options, thumbnail_options)?
+        };
         if result.generated > 0 {
             self.record_operation();
         }
@@ -254,7 +331,10 @@ impl KijukuDB {
         options: Option<&QueryOptions>,
         update_options: &UpdateExistOptions,
     ) -> Result<UpdateExistResult> {
-        let result = update_exist::update_exist(&self.conn, filter, options, update_options)?;
+        let result = {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            update_exist::update_exist(&conn, filter, options, update_options)?
+        };
         if result.updated > 0 {
             self.record_operation();
         }
@@ -262,73 +342,111 @@ impl KijukuDB {
     }
 
     /// 複数のメディアを一括作成
+    #[deprecated(note = "async API を使用してください (KijukuBackend::bulk_create_media)")]
     pub fn bulk_create_media(&self, data_list: &[MediaInput]) -> Result<Vec<Media>> {
-        let result = bulk::bulk_create_media(&self.conn, data_list)?;
+        let result = {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            bulk::bulk_create_media(&conn, data_list)?
+        };
         self.record_operation();
         Ok(result)
     }
 
     /// 複数のメディアを一括削除
+    #[deprecated(note = "async API を使用してください (KijukuBackend::bulk_delete_media)")]
     pub fn bulk_delete_media(&self, ids: &[i64]) -> Result<()> {
-        bulk::bulk_delete_media(&self.conn, ids)?;
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            bulk::bulk_delete_media(&conn, ids)?;
+        }
         self.record_operation();
         Ok(())
     }
 
     /// 複数のメディアを一括更新
+    #[deprecated(note = "async API を使用してください (KijukuBackend::bulk_update_media)")]
     pub fn bulk_update_media(&self, updates: &[BulkUpdateItem]) -> Result<()> {
-        bulk::bulk_update_media(&self.conn, updates)?;
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            bulk::bulk_update_media(&conn, updates)?;
+        }
         self.record_operation();
         Ok(())
     }
 
     /// タグを作成
+    #[deprecated(note = "async API を使用してください (KijukuBackend::create_tag)")]
     pub fn create_tag(&self, name: &str) -> Result<Tag> {
-        let result = tag::create_tag(&self.conn, name)?;
+        let result = {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            tag::create_tag(&conn, name)?
+        };
         self.record_operation();
         Ok(result)
     }
 
     /// タグ名でタグを取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_tag_by_name)")]
     pub fn get_tag_by_name(&self, name: &str) -> Option<Tag> {
-        tag::get_tag_by_name(&self.conn, name)
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(_) => return None,
+        };
+        tag::get_tag_by_name(&conn, name)
     }
 
     /// 全てのタグを取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_all_tags)")]
     pub fn get_all_tags(&self) -> Result<Vec<Tag>> {
-        tag::get_all_tags(&self.conn)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        tag::get_all_tags(&conn)
     }
 
     /// メディアにタグを追加
+    #[deprecated(note = "async API を使用してください (KijukuBackend::add_tag_to_media)")]
     pub fn add_tag_to_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
-        tag::add_tag_to_media(&self.conn, media_id, tag_id)?;
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            tag::add_tag_to_media(&conn, media_id, tag_id)?;
+        }
         self.record_operation();
         Ok(())
     }
 
     /// メディアからタグを削除
+    #[deprecated(note = "async API を使用してください (KijukuBackend::remove_tag_from_media)")]
     pub fn remove_tag_from_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
-        tag::remove_tag_from_media(&self.conn, media_id, tag_id)?;
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            tag::remove_tag_from_media(&conn, media_id, tag_id)?;
+        }
         self.record_operation();
         Ok(())
     }
 
     /// メディアに関連付けられたタグを取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_tags)")]
     pub fn get_media_tags(&self, media_id: i64) -> Result<Vec<Tag>> {
-        tag::get_media_tags(&self.conn, media_id)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        tag::get_media_tags(&conn, media_id)
     }
 
     /// タグの使用数統計を取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_tag_usage_stats)")]
     pub fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {
-        tag::get_tag_usage_stats(&self.conn)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        tag::get_tag_usage_stats(&conn)
     }
 
     /// 未使用のタグを取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::find_unused_tags)")]
     pub fn find_unused_tags(&self) -> Result<Vec<Tag>> {
-        tag::find_unused_tags(&self.conn)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        tag::find_unused_tags(&conn)
     }
 
     /// メディアに属性を設定
+    #[deprecated(note = "async API を使用してください (KijukuBackend::set_media_attribute)")]
     pub fn set_media_attribute(
         &self,
         media_id: i64,
@@ -336,7 +454,10 @@ impl KijukuDB {
         value: Option<&str>,
         value_type: Option<AttributeValueType>,
     ) -> Result<()> {
-        attribute::set_media_attribute(&self.conn, media_id, key, value, value_type)?;
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            attribute::set_media_attribute(&conn, media_id, key, value, value_type)?;
+        }
         self.record_operation();
         Ok(())
     }
@@ -344,51 +465,75 @@ impl KijukuDB {
     // ========== メディアハッシュ操作 ==========
 
     /// メディアハッシュを登録（単件）
+    #[deprecated(note = "async API を使用してください (KijukuBackend::add_media_hash)")]
     pub fn add_media_hash(&self, input: &MediaHashInput) -> Result<MediaHash> {
-        let result = hash::add_media_hash(&self.conn, input)?;
+        let result = {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            hash::add_media_hash(&conn, input)?
+        };
         self.record_operation();
         Ok(result)
     }
 
     /// メディアハッシュを一括登録
+    #[deprecated(note = "async API を使用してください (KijukuBackend::add_media_hashes)")]
     pub fn add_media_hashes(&self, inputs: &[MediaHashInput]) -> Result<Vec<MediaHash>> {
-        let result = hash::add_media_hashes(&self.conn, inputs)?;
+        let result = {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            hash::add_media_hashes(&conn, inputs)?
+        };
         self.record_operation();
         Ok(result)
     }
 
     /// 特定作品の全ハッシュを取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_hashes)")]
     pub fn get_media_hashes(&self, item_uuid: &str) -> Result<Vec<MediaHash>> {
-        hash::get_media_hashes(&self.conn, item_uuid)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        hash::get_media_hashes(&conn, item_uuid)
     }
 
     /// 特定位置のハッシュを取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_hash)")]
     pub fn get_media_hash(&self, item_uuid: &str, filename: &str, time_range: &str) -> Result<Option<MediaHash>> {
-        hash::get_media_hash(&self.conn, item_uuid, filename, time_range)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        hash::get_media_hash(&conn, item_uuid, filename, time_range)
     }
 
     /// SHA256による完全一致検索
+    #[deprecated(note = "async API を使用してください (KijukuBackend::find_by_content_hash)")]
     pub fn find_by_content_hash(&self, hash_bytes: &[u8]) -> Result<Vec<MediaHash>> {
-        hash::find_by_content_hash(&self.conn, hash_bytes)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        hash::find_by_content_hash(&conn, hash_bytes)
     }
 
     /// 特定位置のハッシュを削除（代替行の連鎖削除を含む）
+    #[deprecated(note = "async API を使用してください (KijukuBackend::delete_media_hash)")]
     pub fn delete_media_hash(&self, item_uuid: &str, filename: &str, time_range: &str) -> Result<()> {
-        hash::delete_media_hash(&self.conn, item_uuid, filename, time_range)?;
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            hash::delete_media_hash(&conn, item_uuid, filename, time_range)?;
+        }
         self.record_operation();
         Ok(())
     }
 
     /// 特定作品のハッシュを全削除
+    #[deprecated(note = "async API を使用してください (KijukuBackend::delete_media_hashes)")]
     pub fn delete_media_hashes(&self, item_uuid: &str) -> Result<()> {
-        hash::delete_media_hashes(&self.conn, item_uuid)?;
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            hash::delete_media_hashes(&conn, item_uuid)?;
+        }
         self.record_operation();
         Ok(())
     }
 
     /// 重複ハッシュの検出
+    #[deprecated(note = "async API を使用してください (KijukuBackend::find_duplicate_hashes)")]
     pub fn find_duplicate_hashes(&self) -> Result<Vec<(Vec<u8>, i64)>> {
-        hash::find_duplicate_hashes(&self.conn)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        hash::find_duplicate_hashes(&conn)
     }
 
     /// 特定のメディアのハッシュを計算・登録
@@ -399,7 +544,8 @@ impl KijukuDB {
         media_type: &str,
         duration_sec: Option<i32>,
     ) -> Result<hash::ComputeHashResult> {
-        hash::compute_media_hash(&self.conn, item_uuid, media_path, media_type, duration_sec)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        hash::compute_media_hash(&conn, item_uuid, media_path, media_type, duration_sec)
     }
 
     /// フィルタ条件でメディアを絞り込み、ハッシュを計算・登録
@@ -409,29 +555,42 @@ impl KijukuDB {
         options: Option<&QueryOptions>,
         force: bool,
     ) -> Result<Vec<hash::ComputeHashResult>> {
-        hash::compute_media_hashes(&self.conn, filter, options, force)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        hash::compute_media_hashes(&conn, filter, options, force)
     }
 
     /// メディアの属性を取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_attribute)")]
     pub fn get_media_attribute(&self, media_id: i64, key: &str) -> Result<Option<MediaAttribute>> {
-        attribute::get_media_attribute(&self.conn, media_id, key)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        attribute::get_media_attribute(&conn, media_id, key)
     }
 
     /// メディアの全ての属性を取得
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_attributes)")]
     pub fn get_media_attributes(&self, media_id: i64) -> Result<Vec<MediaAttribute>> {
-        attribute::get_media_attributes(&self.conn, media_id)
+        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        attribute::get_media_attributes(&conn, media_id)
     }
 
     /// メディアの属性を削除
+    #[deprecated(note = "async API を使用してください (KijukuBackend::delete_media_attribute)")]
     pub fn delete_media_attribute(&self, media_id: i64, key: &str) -> Result<()> {
-        attribute::delete_media_attribute(&self.conn, media_id, key)?;
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            attribute::delete_media_attribute(&conn, media_id, key)?;
+        }
         self.record_operation();
         Ok(())
     }
 
     /// メディアの全ての属性を削除
+    #[deprecated(note = "async API を使用してください (KijukuBackend::delete_all_media_attributes)")]
     pub fn delete_all_media_attributes(&self, media_id: i64) -> Result<()> {
-        attribute::delete_all_media_attributes(&self.conn, media_id)?;
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            attribute::delete_all_media_attributes(&conn, media_id)?;
+        }
         self.record_operation();
         Ok(())
     }
@@ -477,7 +636,13 @@ impl KijukuDB {
     /// バックアップマネージャーが設定されていない場合は何もしない。
     /// エラーはログ出力のみで、呼び出し元の操作は妨げない。
     fn record_operation(&self) {
-        if !self.conn.is_autocommit() {
+        // トランザクション中（autocommit=false）は記録しない
+        let autocommit = self
+            .conn
+            .lock()
+            .map(|c| c.is_autocommit())
+            .unwrap_or(true);
+        if !autocommit {
             return;
         }
         if let Some(manager) = &self.backup_manager {
@@ -491,16 +656,29 @@ impl KijukuDB {
     where
         F: FnOnce(&Self) -> Result<T>,
     {
-        self.conn.execute("BEGIN TRANSACTION", [])?;
+        // conn は Arc<Mutex> のため、BEGIN/COMMIT/ROLLBACK とクロージャ内の各操作は
+        // それぞれ独立してロックを取得・解放する。トランザクション状態は同一接続に維持され、
+        // クロージャ内の deprecated 同期メソッドが再ロックしてデッドロックすることはない。
+        {
+            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            conn.execute("BEGIN TRANSACTION", [])?;
+        }
 
         match f(self) {
             Ok(result) => {
-                self.conn.execute("COMMIT", [])?;
+                {
+                    let conn = self.conn.lock().map_err(Self::lock_err)?;
+                    conn.execute("COMMIT", [])?;
+                }
                 self.record_operation();
                 Ok(result)
             }
             Err(e) => {
-                let _ = self.conn.execute("ROLLBACK", []);
+                let _ = self
+                    .conn
+                    .lock()
+                    .map_err(Self::lock_err)
+                    .map(|conn| conn.execute("ROLLBACK", []));
                 Err(e)
             }
         }
@@ -561,7 +739,8 @@ impl KijukuDB {
             .backup_manager
             .as_ref()
             .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?;
-        manager.restore(&mut self.conn, selector)
+        let mut conn = self.conn.lock().map_err(Self::lock_err)?;
+        manager.restore(&mut conn, selector)
     }
 
     /// バックアップ一覧を取得
@@ -655,6 +834,7 @@ impl KijukuDB {
     }
 
     /// バックアップからIDでメディアを取得
+    #[allow(deprecated)]
     pub fn get_media_from_backup(
         &self,
         id: i64,
@@ -664,6 +844,7 @@ impl KijukuDB {
     }
 
     /// バックアップからメディアを検索
+    #[allow(deprecated)]
     pub fn find_media_from_backup(
         &self,
         filter: &MediaFilter,
@@ -674,6 +855,7 @@ impl KijukuDB {
     }
 
     /// バックアップからタグ名でタグを取得
+    #[allow(deprecated)]
     pub fn get_tag_by_name_from_backup(
         &self,
         name: &str,
@@ -683,11 +865,13 @@ impl KijukuDB {
     }
 
     /// バックアップから全てのタグを取得
+    #[allow(deprecated)]
     pub fn get_all_tags_from_backup(&self, selector: &BackupSelector) -> Result<Vec<Tag>> {
         self.with_backup_db(selector, |backup_db| backup_db.get_all_tags())
     }
 
     /// バックアップからメディアに関連付けられたタグを取得
+    #[allow(deprecated)]
     pub fn get_media_tags_from_backup(
         &self,
         media_id: i64,
@@ -697,6 +881,7 @@ impl KijukuDB {
     }
 
     /// バックアップからメディアの属性を取得
+    #[allow(deprecated)]
     pub fn get_media_attribute_from_backup(
         &self,
         media_id: i64,
@@ -707,12 +892,208 @@ impl KijukuDB {
     }
 
     /// バックアップからメディアの全ての属性を取得
+    #[allow(deprecated)]
     pub fn get_media_attributes_from_backup(
         &self,
         media_id: i64,
         selector: &BackupSelector,
     ) -> Result<Vec<MediaAttribute>> {
         self.with_backup_db(selector, |backup_db| backup_db.get_media_attributes(media_id))
+    }
+}
+
+#[async_trait::async_trait]
+impl KijukuBackend for KijukuDB {
+    async fn migrate(&self) -> Result<()> {
+        migration::migrate_async(&self.exec).await
+    }
+
+    async fn get_schema_version(&self) -> Result<i64> {
+        migration::get_schema_version_async(&self.exec).await
+    }
+
+    async fn get_tables(&self) -> Result<Vec<String>> {
+        migration::get_tables_async(&self.exec).await
+    }
+
+    async fn get_table_info(&self, table_name: &str) -> Result<Vec<TableColumnInfo>> {
+        migration::get_table_info_async(&self.exec, table_name).await
+    }
+
+    async fn create_media(&self, input: &MediaInput) -> Result<Media> {
+        let media = crud::create_media_async(&self.exec, input).await?;
+        self.record_operation();
+        Ok(media)
+    }
+
+    async fn get_media(&self, id: i64) -> Result<Option<Media>> {
+        crud::get_media_async(&self.exec, id).await
+    }
+
+    async fn update_media(&self, id: i64, input: &MediaUpdateInput) -> Result<()> {
+        crud::update_media_async(&self.exec, id, input).await?;
+        self.record_operation();
+        Ok(())
+    }
+
+    async fn delete_media(&self, id: i64) -> Result<()> {
+        crud::delete_media_async(&self.exec, id).await?;
+        self.record_operation();
+        Ok(())
+    }
+
+    async fn find_media(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+    ) -> Result<Vec<Media>> {
+        search::find_media_async(&self.exec, filter, options).await
+    }
+
+    async fn get_distinct_values(
+        &self,
+        fields: &[&str],
+        filter: &MediaFilter,
+    ) -> Result<Vec<Vec<Option<String>>>> {
+        search::get_distinct_values_async(&self.exec, fields, filter).await
+    }
+
+    async fn bulk_create_media(&self, data_list: &[MediaInput]) -> Result<Vec<Media>> {
+        let result = bulk::bulk_create_media_async(&self.exec, data_list).await?;
+        self.record_operation();
+        Ok(result)
+    }
+
+    async fn bulk_delete_media(&self, ids: &[i64]) -> Result<()> {
+        bulk::bulk_delete_media_async(&self.exec, ids).await?;
+        self.record_operation();
+        Ok(())
+    }
+
+    async fn bulk_update_media(&self, updates: &[BulkUpdateItem]) -> Result<()> {
+        bulk::bulk_update_media_async(&self.exec, updates).await?;
+        self.record_operation();
+        Ok(())
+    }
+
+    async fn create_tag(&self, name: &str) -> Result<Tag> {
+        let tag = tag::create_tag_async(&self.exec, name).await?;
+        self.record_operation();
+        Ok(tag)
+    }
+
+    async fn get_tag_by_name(&self, name: &str) -> Result<Option<Tag>> {
+        tag::get_tag_by_name_async(&self.exec, name).await
+    }
+
+    async fn get_all_tags(&self) -> Result<Vec<Tag>> {
+        tag::get_all_tags_async(&self.exec).await
+    }
+
+    async fn add_tag_to_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
+        tag::add_tag_to_media_async(&self.exec, media_id, tag_id).await?;
+        self.record_operation();
+        Ok(())
+    }
+
+    async fn remove_tag_from_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
+        tag::remove_tag_from_media_async(&self.exec, media_id, tag_id).await?;
+        self.record_operation();
+        Ok(())
+    }
+
+    async fn get_media_tags(&self, media_id: i64) -> Result<Vec<Tag>> {
+        tag::get_media_tags_async(&self.exec, media_id).await
+    }
+
+    async fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {
+        tag::get_tag_usage_stats_async(&self.exec).await
+    }
+
+    async fn find_unused_tags(&self) -> Result<Vec<Tag>> {
+        tag::find_unused_tags_async(&self.exec).await
+    }
+
+    async fn set_media_attribute(
+        &self,
+        media_id: i64,
+        key: &str,
+        value: Option<&str>,
+        value_type: Option<AttributeValueType>,
+    ) -> Result<()> {
+        attribute::set_media_attribute_async(&self.exec, media_id, key, value, value_type).await?;
+        self.record_operation();
+        Ok(())
+    }
+
+    async fn get_media_attribute(&self, media_id: i64, key: &str) -> Result<Option<MediaAttribute>> {
+        attribute::get_media_attribute_async(&self.exec, media_id, key).await
+    }
+
+    async fn get_media_attributes(&self, media_id: i64) -> Result<Vec<MediaAttribute>> {
+        attribute::get_media_attributes_async(&self.exec, media_id).await
+    }
+
+    async fn delete_media_attribute(&self, media_id: i64, key: &str) -> Result<()> {
+        attribute::delete_media_attribute_async(&self.exec, media_id, key).await?;
+        self.record_operation();
+        Ok(())
+    }
+
+    async fn delete_all_media_attributes(&self, media_id: i64) -> Result<()> {
+        attribute::delete_all_media_attributes_async(&self.exec, media_id).await?;
+        self.record_operation();
+        Ok(())
+    }
+
+    async fn add_media_hash(&self, input: &MediaHashInput) -> Result<MediaHash> {
+        let hash = hash::add_media_hash_async(&self.exec, input).await?;
+        self.record_operation();
+        Ok(hash)
+    }
+
+    async fn add_media_hashes(&self, inputs: &[MediaHashInput]) -> Result<Vec<MediaHash>> {
+        let hashes = hash::add_media_hashes_async(&self.exec, inputs).await?;
+        self.record_operation();
+        Ok(hashes)
+    }
+
+    async fn get_media_hashes(&self, item_uuid: &str) -> Result<Vec<MediaHash>> {
+        hash::get_media_hashes_async(&self.exec, item_uuid).await
+    }
+
+    async fn get_media_hash(
+        &self,
+        item_uuid: &str,
+        filename: &str,
+        time_range: &str,
+    ) -> Result<Option<MediaHash>> {
+        hash::get_media_hash_async(&self.exec, item_uuid, filename, time_range).await
+    }
+
+    async fn find_by_content_hash(&self, hash_bytes: &[u8]) -> Result<Vec<MediaHash>> {
+        hash::find_by_content_hash_async(&self.exec, hash_bytes).await
+    }
+
+    async fn delete_media_hash(
+        &self,
+        item_uuid: &str,
+        filename: &str,
+        time_range: &str,
+    ) -> Result<()> {
+        hash::delete_media_hash_async(&self.exec, item_uuid, filename, time_range).await?;
+        self.record_operation();
+        Ok(())
+    }
+
+    async fn delete_media_hashes(&self, item_uuid: &str) -> Result<()> {
+        hash::delete_media_hashes_async(&self.exec, item_uuid).await?;
+        self.record_operation();
+        Ok(())
+    }
+
+    async fn find_duplicate_hashes(&self) -> Result<Vec<(Vec<u8>, i64)>> {
+        hash::find_duplicate_hashes_async(&self.exec).await
     }
 }
 
@@ -756,6 +1137,7 @@ impl Default for MediaInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{MediaFilter, MediaHashInput};
 
     #[test]
     fn test_open_in_memory() {
@@ -776,5 +1158,144 @@ mod tests {
         assert_eq!(MediaType::Comic.as_str(), "comic");
         assert_eq!(MediaType::Video.as_str(), "video");
         assert_eq!(MediaType::Music.as_str(), "music");
+    }
+
+    #[tokio::test]
+    async fn test_kijukudb_backend_async() {
+        // KijukuDB の impl KijukuBackend（async trait）経由で純DB操作が動くこと
+        let db = KijukuDB::open_in_memory().unwrap();
+        KijukuBackend::migrate(&db).await.unwrap();
+
+        let media = KijukuBackend::create_media(
+            &db,
+            &MediaInput {
+                title: "テスト".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(media.title, "テスト");
+
+        let got = KijukuBackend::get_media(&db, media.id).await.unwrap().unwrap();
+        assert_eq!(got.id, media.id);
+
+        let found = KijukuBackend::find_media(&db, &MediaFilter::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+
+        // tag・attribute・distinct も async trait 経由で
+        let tag = KijukuBackend::create_tag(&db, "tag1").await.unwrap();
+        KijukuBackend::add_tag_to_media(&db, media.id, tag.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            KijukuBackend::get_media_tags(&db, media.id).await.unwrap().len(),
+            1
+        );
+
+        KijukuBackend::set_media_attribute(&db, media.id, "k", Some("v"), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            KijukuBackend::get_media_attribute(&db, media.id, "k")
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
+            Some("v".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_kijukudb_backend_hash_async() {
+        let db = KijukuDB::open_in_memory().unwrap();
+        KijukuBackend::migrate(&db).await.unwrap();
+        let media = KijukuBackend::create_media(
+            &db,
+            &MediaInput {
+                title: "h".to_string(),
+                media_type: MediaType::Music,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let input = MediaHashInput {
+            item_uuid: media.uuid.clone(),
+            filename: String::new(),
+            time_range: String::new(),
+            content_hash: vec![0xABu8; 32],
+            alternative_of: None,
+        };
+        let h = KijukuBackend::add_media_hash(&db, &input).await.unwrap();
+        assert_eq!(h.content_hash, vec![0xABu8; 32]);
+
+        let found = KijukuBackend::find_by_content_hash(&db, &vec![0xABu8; 32])
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_kijukudb_backend_update_delete_async() {
+        let db = KijukuDB::open_in_memory().unwrap();
+        KijukuBackend::migrate(&db).await.unwrap();
+        let media = KijukuBackend::create_media(
+            &db,
+            &MediaInput {
+                title: "元".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        KijukuBackend::update_media(
+            &db,
+            media.id,
+            &MediaUpdateInput {
+                title: Some("更新後".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let got = KijukuBackend::get_media(&db, media.id).await.unwrap().unwrap();
+        assert_eq!(got.title, "更新後");
+
+        KijukuBackend::delete_media(&db, media.id).await.unwrap();
+        assert!(KijukuBackend::get_media(&db, media.id).await.unwrap().is_none());
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn test_kijukudb_transaction_sync_still_works() {
+        // conn の Arc<Mutex> 化後も、deprecated 同期 API + transaction が動くこと
+        // （BEGIN/COMMIT/各操作とも per-op でロック取得・解放 → デッドロックしない）
+        let db = KijukuDB::open_in_memory().unwrap();
+        db.migrate().unwrap();
+
+        let result = db.transaction(|db| {
+            db.create_media(&MediaInput {
+                title: "m1".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            })?;
+            db.create_media(&MediaInput {
+                title: "m2".to_string(),
+                media_type: MediaType::Video,
+                ..Default::default()
+            })?;
+            Ok::<_, KijukuError>(())
+        });
+        assert!(result.is_ok());
+
+        let found = db.find_media(&MediaFilter::default(), None).unwrap();
+        assert_eq!(found.len(), 2);
     }
 }

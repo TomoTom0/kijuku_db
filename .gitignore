@@ -27,6 +27,9 @@ backups/
 .env
 .env.local
 
+# Cloudflare wrangler local cache (contains account id / OAuth token)
+.wrangler/
+
 # OS files
 .DS_Store
 Thumbs.db

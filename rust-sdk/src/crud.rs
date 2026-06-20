@@ -1,4 +1,6 @@
+use crate::db_value::{SqlParam, SqlRow};
 use crate::error::{KijukuError, Result};
+use crate::exec::SqlExec;
 use crate::types::{Media, MediaInput, MediaType, MediaUpdateInput};
 use rusqlite::{params, Connection, Row};
 
@@ -58,6 +60,47 @@ pub(crate) fn row_to_media(row: &Row) -> rusqlite::Result<Media> {
         title_pron: row.get("title_pron")?,
         artist_pron: row.get("artist_pron")?,
         series_pron: row.get("series_pron")?,
+    })
+}
+
+/// SqlRow から Media へ変換（Local/D1 の async バックエンド共通）
+pub(crate) fn row_to_media_from_sqlrow(row: &SqlRow) -> Result<Media> {
+    let type_str = row.get_text("media_type")?;
+    let media_type = MediaType::from_str(&type_str)
+        .ok_or_else(|| KijukuError::Parse(format!("Invalid media_type: {}", type_str)))?;
+    Ok(Media {
+        id: row.get_int("id")?,
+        uuid: row.get_text("uuid")?,
+        title: row.get_text("title")?,
+        title_id: row.get_opt_text("title_id")?,
+        path: row.get_opt_text("path")?,
+        media_type,
+        thumbnail_path: row.get_opt_text("thumbnail_path")?,
+        artist: row.get_opt_text("artist")?,
+        artist_id: row.get_opt_text("artist_id")?,
+        description: row.get_opt_text("description")?,
+        file_size: row.get_opt_int("file_size")?,
+        duration_sec: row.get_opt_i32("duration_sec")?,
+        page_count: row.get_opt_i32("page_count")?,
+        series: row.get_opt_text("series")?,
+        volume_number: row.get_opt_i32("volume_number")?,
+        volume_text: row.get_opt_text("volume_text")?,
+        volume_title: row.get_opt_text("volume_title")?,
+        magazine: row.get_opt_text("magazine")?,
+        magazine_id: row.get_opt_text("magazine_id")?,
+        language: row.get_opt_text("language")?,
+        source: row.get_opt_text("source")?,
+        external_id: row.get_opt_text("external_id")?,
+        artist_en: row.get_opt_text("artist_en")?,
+        title_en: row.get_opt_text("title_en")?,
+        chapters: row.get_opt_text("chapters")?,
+        extension: row.get_opt_text("extension")?,
+        flag_exist: row.get_bool("flag_exist")?,
+        created_at: row.get_datetime("created_at")?,
+        updated_at: row.get_datetime("updated_at")?,
+        title_pron: row.get_opt_text("title_pron")?,
+        artist_pron: row.get_opt_text("artist_pron")?,
+        series_pron: row.get_opt_text("series_pron")?,
     })
 }
 
@@ -341,6 +384,247 @@ pub fn delete_media(conn: &Connection, id: i64) -> Result<()> {
     }
 
     conn.execute("DELETE FROM media WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+// ========== async バックエンド（SqlExec）用 ==========
+//
+// 同期版（`create_media(conn, ...)` 等）は現状維持。async 版は `build_*_sql` 純粋関数で
+// SQL とパラメータを組み立て、`&dyn SqlExec` で実行する。Local と D1 がこの組み立て層を
+// 共有し、D1 互換SQL を自動生成する（クエリ再実装の回避）。
+// `INSERT ... RETURNING *` で挿入行を1往復で取得（D1 で last_insert_rowid が信頼できないため）。
+
+/// `create_media` の SQL とパラメータを構築（`RETURNING *`）
+pub fn build_create_media_sql(input: &MediaInput) -> (String, Vec<SqlParam>) {
+    let flag_exist = if input.flag_exist.unwrap_or(false) {
+        1i64
+    } else {
+        0
+    };
+    let volume_number = calculate_volume_number(input.volume_text.as_deref());
+    let uuid = input
+        .uuid
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let params = vec![
+        SqlParam::Text(uuid),
+        SqlParam::Text(input.title.clone()),
+        SqlParam::from_opt_str(&input.title_id),
+        SqlParam::from_opt_str(&input.path),
+        SqlParam::Text(input.media_type.as_str().to_string()),
+        SqlParam::from_opt_str(&input.thumbnail_path),
+        SqlParam::from_opt_str(&input.artist),
+        SqlParam::from_opt_str(&input.artist_id),
+        SqlParam::from_opt_str(&input.description),
+        SqlParam::from_opt_i64(input.file_size),
+        SqlParam::from_opt_i64(input.duration_sec.map(|i| i as i64)),
+        SqlParam::from_opt_i64(input.page_count.map(|i| i as i64)),
+        SqlParam::from_opt_str(&input.series),
+        SqlParam::from_opt_i64(volume_number.map(|i| i as i64)),
+        SqlParam::from_opt_str(&input.volume_text),
+        SqlParam::from_opt_str(&input.volume_title),
+        SqlParam::from_opt_str(&input.magazine),
+        SqlParam::from_opt_str(&input.magazine_id),
+        SqlParam::from_opt_str(&input.language),
+        SqlParam::from_opt_str(&input.source),
+        SqlParam::from_opt_str(&input.external_id),
+        SqlParam::from_opt_str(&input.artist_en),
+        SqlParam::from_opt_str(&input.title_en),
+        SqlParam::from_opt_str(&input.chapters),
+        SqlParam::from_opt_str(&input.extension),
+        SqlParam::Int(flag_exist),
+        SqlParam::from_opt_str(&input.title_pron),
+        SqlParam::from_opt_str(&input.artist_pron),
+        SqlParam::from_opt_str(&input.series_pron),
+    ];
+
+    let sql = "INSERT INTO media (
+        uuid, title, title_id, path, media_type, thumbnail_path,
+        artist, artist_id, description, file_size, duration_sec,
+        page_count, series, volume_number, volume_text, volume_title,
+        magazine, magazine_id, language, source, external_id,
+        artist_en, title_en, chapters, extension, flag_exist,
+        title_pron, artist_pron, series_pron
+    ) VALUES (
+        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+        ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
+        ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
+    ) RETURNING *";
+
+    (sql.to_string(), params)
+}
+
+/// async バックエンド経由でメディアを作成
+pub async fn create_media_async(exec: &dyn SqlExec, input: &MediaInput) -> Result<Media> {
+    let (sql, params) = build_create_media_sql(input);
+    let rows = exec.query(&sql, &params).await?;
+    rows.into_iter()
+        .next()
+        .ok_or_else(|| KijukuError::NotFound("作成されたメディアが見つかりません".to_string()))
+        .and_then(|row| row_to_media_from_sqlrow(&row))
+}
+
+/// async バックエンド経由で ID からメディアを取得
+pub async fn get_media_async(exec: &dyn SqlExec, id: i64) -> Result<Option<Media>> {
+    let sql = "SELECT * FROM media WHERE id = ?1";
+    let params = vec![SqlParam::Int(id)];
+    let rows = exec.query(sql, &params).await?;
+    match rows.into_iter().next() {
+        Some(row) => Ok(Some(row_to_media_from_sqlrow(&row)?)),
+        None => Ok(None),
+    }
+}
+
+/// async バックエンド経由でメディアを削除
+pub async fn delete_media_async(exec: &dyn SqlExec, id: i64) -> Result<()> {
+    if get_media_async(exec, id).await?.is_none() {
+        return Err(KijukuError::NotFound(format!(
+            "メディアが見つかりません: id={}",
+            id
+        )));
+    }
+    let sql = "DELETE FROM media WHERE id = ?1";
+    let params = vec![SqlParam::Int(id)];
+    exec.execute(sql, &params).await?;
+    Ok(())
+}
+
+/// `update_media` の SQL とパラメータを構築。更新フィールドが1つも無い場合は None。
+///
+/// 同期版 `update_media(conn, ...)` と同じ意味論（NOT NULL 項目の NULL 拒否、
+/// volume_text 更新時の volume_number 再計算、空入力は何もしない）。
+pub fn build_update_media_sql(
+    id: i64,
+    input: &MediaUpdateInput,
+) -> Result<Option<(String, Vec<SqlParam>)>> {
+    let mut fields: Vec<String> = Vec::new();
+    let mut params: Vec<SqlParam> = Vec::new();
+    let mut idx = 1usize;
+
+    // NULLable 文字列（Option<Option<String>>）の共通処理
+    macro_rules! push_str_field {
+        ($name:literal, $opt:expr) => {
+            if let Some(ref opt_val) = $opt {
+                fields.push(format!("{} = ?{}", $name, idx));
+                params.push(SqlParam::from_opt_str(opt_val));
+                idx += 1;
+            }
+        };
+    }
+
+    // NOT NULL: uuid（Some(None) はエラー）
+    if let Some(ref opt_val) = input.uuid {
+        match opt_val {
+            Some(val) => {
+                fields.push(format!("uuid = ?{}", idx));
+                params.push(SqlParam::Text(val.clone()));
+                idx += 1;
+            }
+            None => {
+                return Err(KijukuError::Validation(
+                    "UUID cannot be set to null.".to_string(),
+                ));
+            }
+        }
+    }
+    // NOT NULL: title, media_type
+    if let Some(ref val) = input.title {
+        fields.push(format!("title = ?{}", idx));
+        params.push(SqlParam::Text(val.clone()));
+        idx += 1;
+    }
+    if let Some(ref val) = input.media_type {
+        fields.push(format!("media_type = ?{}", idx));
+        params.push(SqlParam::Text(val.as_str().to_string()));
+        idx += 1;
+    }
+
+    push_str_field!("title_id", input.title_id);
+    push_str_field!("path", input.path);
+    push_str_field!("thumbnail_path", input.thumbnail_path);
+    push_str_field!("artist", input.artist);
+    push_str_field!("artist_id", input.artist_id);
+    push_str_field!("description", input.description);
+
+    // 整数系（Option<Option<i64>> / Option<Option<i32>>）
+    if let Some(ref opt_val) = input.file_size {
+        fields.push(format!("file_size = ?{}", idx));
+        params.push(SqlParam::from_opt_i64(*opt_val));
+        idx += 1;
+    }
+    if let Some(ref opt_val) = input.duration_sec {
+        fields.push(format!("duration_sec = ?{}", idx));
+        params.push(SqlParam::from_opt_i64(opt_val.map(|i| i as i64)));
+        idx += 1;
+    }
+    if let Some(ref opt_val) = input.page_count {
+        fields.push(format!("page_count = ?{}", idx));
+        params.push(SqlParam::from_opt_i64(opt_val.map(|i| i as i64)));
+        idx += 1;
+    }
+
+    push_str_field!("series", input.series);
+
+    // volume_text 更新時は volume_number も再計算
+    if let Some(ref opt_val) = input.volume_text {
+        let volume_number =
+            opt_val.as_ref().and_then(|v| calculate_volume_number(Some(v.as_str())));
+        fields.push(format!("volume_text = ?{}", idx));
+        params.push(SqlParam::from_opt_str(opt_val));
+        idx += 1;
+        fields.push(format!("volume_number = ?{}", idx));
+        params.push(SqlParam::from_opt_i64(volume_number.map(|i| i as i64)));
+        idx += 1;
+    }
+
+    push_str_field!("volume_title", input.volume_title);
+    push_str_field!("magazine", input.magazine);
+    push_str_field!("magazine_id", input.magazine_id);
+    push_str_field!("language", input.language);
+    push_str_field!("source", input.source);
+    push_str_field!("external_id", input.external_id);
+    push_str_field!("artist_en", input.artist_en);
+    push_str_field!("title_en", input.title_en);
+    push_str_field!("chapters", input.chapters);
+    push_str_field!("extension", input.extension);
+
+    // NOT NULL: flag_exist（Option<bool>）
+    if let Some(val) = input.flag_exist {
+        fields.push(format!("flag_exist = ?{}", idx));
+        params.push(SqlParam::Int(if val { 1 } else { 0 }));
+        idx += 1;
+    }
+
+    push_str_field!("title_pron", input.title_pron);
+    push_str_field!("artist_pron", input.artist_pron);
+    push_str_field!("series_pron", input.series_pron);
+
+    if fields.is_empty() {
+        return Ok(None);
+    }
+
+    let sql = format!("UPDATE media SET {} WHERE id = ?{}", fields.join(", "), idx);
+    params.push(SqlParam::Int(id));
+
+    Ok(Some((sql, params)))
+}
+
+/// async バックエンド経由でメディアを更新（部分更新）
+pub async fn update_media_async(
+    exec: &dyn SqlExec,
+    id: i64,
+    input: &MediaUpdateInput,
+) -> Result<()> {
+    if get_media_async(exec, id).await?.is_none() {
+        return Err(KijukuError::NotFound(format!(
+            "メディアが見つかりません: id={}",
+            id
+        )));
+    }
+    if let Some((sql, params)) = build_update_media_sql(id, input)? {
+        exec.execute(&sql, &params).await?;
+    }
     Ok(())
 }
 

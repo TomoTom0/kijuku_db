@@ -2,13 +2,20 @@
 //!
 //! JSON形式の入出力でリモート操作を可能にするCLIツール
 //! Version: 0.1.0
+//!
+//! NOTE: CLI のハンドラ群は Phase 3 で async 化（KijukuBackend 経由）する予定。
+//! それまで KijukuDB の deprecated 同期メソッドを使用するため、移行完了まで一時的に許容する。
+
+// ハンドラの async 化（Phase 3）までの間、deprecated 同期 API の使用を一時的に許容
+#![allow(deprecated)]
 
 use clap::Parser;
 use include_dir::{include_dir, Dir};
 use kijuku_db::{
     AttributeValueType, BackupInfo, BackupKind, BackupOptions, BackupScope, BackupSelector,
-    BulkUpdateItem, DBOptions, KijukuDB, MediaFilter, MediaInput, MediaHashInput,
-    MediaUpdateInput, QueryOptions, ThumbnailOptions, UpdateExistOptions,
+    BulkUpdateItem, D1Config, D1KijukuDB, DBOptions, KijukuBackend, KijukuDB, MediaFilter,
+    MediaInput, MediaHashInput, MediaUpdateInput, QueryOptions, ThumbnailOptions,
+    TransferOptions, UpdateExistOptions, transfer, verify,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read};
@@ -58,16 +65,6 @@ impl CommandResponse {
                 Err(e) => Self::error(format!("レスポンスのシリアライズに失敗: {}", e)),
             },
             Err(e) => Self::error(format!("{}{}", error_prefix, e)),
-        }
-    }
-
-    fn from_option<T: serde::Serialize>(option: Option<T>) -> Self {
-        match option {
-            Some(data) => match serde_json::to_value(data) {
-                Ok(v) => Self::success(v),
-                Err(e) => Self::error(format!("レスポンスのシリアライズに失敗: {}", e)),
-            },
-            None => Self::success(serde_json::Value::Null),
         }
     }
 }
@@ -318,10 +315,96 @@ struct RestoreParams {
     selector: Option<BackupSelectorJson>,
 }
 
+/// バックエンド種別
+#[derive(Clone, Debug, clap::ValueEnum, PartialEq, Eq)]
+enum BackendKind {
+    /// ローカル SQLite
+    Local,
+    /// Cloudflare D1（REST）
+    D1,
+}
+
+/// CLI が操作するバックエンド（Local / D1）
+enum Backend {
+    Local(KijukuDB),
+    D1(D1KijukuDB),
+}
+
+impl Backend {
+    /// 純 DB 操作用の trait オブジェクト
+    fn as_backend(&self) -> &dyn KijukuBackend {
+        match self {
+            Backend::Local(d) => d,
+            Backend::D1(d) => d,
+        }
+    }
+
+    /// Local 固有操作（&self）。D1 は None。
+    fn as_local(&self) -> Option<&KijukuDB> {
+        match self {
+            Backend::Local(d) => Some(d),
+            Backend::D1(_) => None,
+        }
+    }
+
+    /// Local 固有操作（&mut self）。D1 は None。
+    fn as_local_mut(&mut self) -> Option<&mut KijukuDB> {
+        match self {
+            Backend::Local(d) => Some(d),
+            Backend::D1(_) => None,
+        }
+    }
+}
+
+fn not_supported(op: &str) -> CommandResponse {
+    CommandResponse::error(format!(
+        "操作 '{}' は現在のバックエンドではサポートされていません",
+        op
+    ))
+}
+
+/// ctx と backend 種別から Backend を構築
+fn build_backend(ctx: &CliContext) -> Result<Backend, CommandResponse> {
+    match ctx.backend {
+        BackendKind::Local => {
+            let db = KijukuDB::open_with_options(
+                &ctx.db_path,
+                DBOptions {
+                    backup: Some(BackupOptions::default()),
+                    verbose: ctx.verbose,
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| CommandResponse::error(format!("データベースのオープンに失敗: {}", e)))?;
+            Ok(Backend::Local(db))
+        }
+        BackendKind::D1 => {
+            let account_id = std::env::var("D1_ACCOUNT_ID").map_err(|_| {
+                CommandResponse::error("D1_ACCOUNT_ID 環境変数が設定されていません".to_string())
+            })?;
+            let database_id = std::env::var("D1_DATABASE_ID").map_err(|_| {
+                CommandResponse::error("D1_DATABASE_ID 環境変数が設定されていません".to_string())
+            })?;
+            let db = D1KijukuDB::from_wrangler(D1Config {
+                account_id,
+                database_id,
+            })
+            .map_err(|e| {
+                CommandResponse::error(format!(
+                    "D1 接続に失敗: {}（wrangler login 済みか確認してください）",
+                    e
+                ))
+            })?;
+            Ok(Backend::D1(db))
+        }
+    }
+}
+
 /// CLIのグローバルコンテキスト
 struct CliContext {
     db_path: String,
     verbose: bool,
+    backend: BackendKind,
 }
 
 /// BackupInfoをJSON Valueに変換
@@ -407,6 +490,10 @@ struct Cli {
     #[arg(long)]
     verbose: bool,
 
+    /// バックエンド（local / d1）。d1 は D1_ACCOUNT_ID / D1_DATABASE_ID 環境変数が必要
+    #[arg(long, value_enum, default_value_t = BackendKind::Local)]
+    backend: BackendKind,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -474,6 +561,17 @@ enum Commands {
     Hash {
         #[command(subcommand)]
         hash_command: HashCommands,
+    },
+    /// ローカルDB（--db）の全データを D1 へバルクロード（移行）し、件数・内容一致を検証する
+    ///
+    /// `--backend d1` が必要。source は `--db` のローカル SQLite、dest は D1。
+    BulkLoad {
+        /// source の media 読み出しページサイズ（省略時 500）
+        #[arg(long)]
+        chunk_size: Option<usize>,
+        /// 転送せず、既存の dest に対する検証のみ行う
+        #[arg(long)]
+        verify_only: bool,
     },
 }
 
@@ -614,7 +712,7 @@ fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>) {
     }
 }
 
-fn handle_stdin(ctx: &CliContext) {
+async fn handle_stdin(ctx: &CliContext) {
     // 標準入力からJSONコマンドを読み取る
     let mut input = String::new();
     if let Err(e) = io::stdin().read_to_string(&mut input) {
@@ -633,32 +731,24 @@ fn handle_stdin(ctx: &CliContext) {
         }
     };
 
-    // データベースを開く（バックアップ有効）
-    let mut db = match KijukuDB::open_with_options(
-        &ctx.db_path,
-        DBOptions {
-            backup: Some(BackupOptions::default()),
-            verbose: ctx.verbose,
-            ..Default::default()
-        },
-    ) {
-        Ok(db) => db,
-        Err(e) => {
-            let response = CommandResponse::error(format!("データベースのオープンに失敗: {}", e));
-            output_response(&response);
+    // バックエンドを構築（Local / D1）
+    let mut backend = match build_backend(ctx) {
+        Ok(b) => b,
+        Err(resp) => {
+            output_response(&resp);
             return;
         }
     };
 
-    // マイグレーションを実行
-    if let Err(e) = db.migrate() {
+    // マイグレーションを実行（Local は schema.sql、D1 は schema.d1.sql が自動選択される）
+    if let Err(e) = backend.as_backend().migrate().await {
         let response = CommandResponse::error(format!("マイグレーションに失敗: {}", e));
         output_response(&response);
         return;
     }
 
     // コマンドを実行
-    let response = execute_command(&mut db, &request);
+    let response = execute_command(&mut backend, &request).await;
     output_response(&response);
 }
 
@@ -668,7 +758,30 @@ async fn main() {
     let ctx = CliContext {
         db_path: cli.db.clone(),
         verbose: cli.verbose,
+        backend: cli.backend.clone(),
     };
+
+    // バックエンド種別とサブコマンドの整合性チェック
+    match (&ctx.backend, &cli.command) {
+        // D1 バックエンド: stdin プロトコル・Docs・BulkLoad のみ対応
+        (BackendKind::D1, None)
+        | (BackendKind::D1, Some(Commands::Docs { .. }))
+        | (BackendKind::D1, Some(Commands::BulkLoad { .. })) => {}
+        (BackendKind::D1, _) => {
+            eprintln!(
+                "エラー: --backend d1 では stdin プロトコル・docs・bulk-load のみ利用可能です"
+            );
+            std::process::exit(1);
+        }
+        // Local バックエンド: bulk-load は不可（D1 宛先が必要）
+        (BackendKind::Local, Some(Commands::BulkLoad { .. })) => {
+            eprintln!(
+                "エラー: bulk-load には --backend d1 が必要です（ローカル→D1 への移行ツール）"
+            );
+            std::process::exit(1);
+        }
+        _ => {}
+    }
 
     match &cli.command {
         Some(Commands::Docs { doc_type }) => {
@@ -698,13 +811,16 @@ async fn main() {
         Some(Commands::Hash { hash_command }) => {
             handle_hash_subcommand(&ctx, hash_command);
         }
+        Some(Commands::BulkLoad { chunk_size, verify_only }) => {
+            handle_bulk_load_subcommand(&ctx, *chunk_size, *verify_only).await;
+        }
         None => {
-            handle_stdin(&ctx);
+            handle_stdin(&ctx).await;
         }
     }
 }
 
-fn handle_backup(db: &mut KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_backup(db: &mut KijukuDB, params: &serde_json::Value) -> CommandResponse {
     let params: BackupParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
@@ -721,7 +837,7 @@ fn handle_backup(db: &mut KijukuDB, params: &serde_json::Value) -> CommandRespon
     }
 }
 
-fn handle_list_backups(db: &KijukuDB) -> CommandResponse {
+async fn handle_list_backups(db: &KijukuDB) -> CommandResponse {
     match db.list_backups() {
         Ok(backups) => {
             let json_backups: Vec<serde_json::Value> =
@@ -732,7 +848,7 @@ fn handle_list_backups(db: &KijukuDB) -> CommandResponse {
     }
 }
 
-fn handle_restore(db: &mut KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_restore(db: &mut KijukuDB, params: &serde_json::Value) -> CommandResponse {
     let params: RestoreParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
@@ -748,128 +864,159 @@ fn handle_restore(db: &mut KijukuDB, params: &serde_json::Value) -> CommandRespo
     }
 }
 
-fn execute_command(db: &mut KijukuDB, request: &CommandRequest) -> CommandResponse {
+async fn execute_command(backend: &mut Backend, request: &CommandRequest) -> CommandResponse {
     match request.operation.as_str() {
-        "migrate" => handle_migrate(db),
-        "getSchemaVersion" => handle_get_schema_version(db),
-        "getTables" => handle_get_tables(db),
-        "getTableInfo" => handle_get_table_info(db, &request.params),
-        "createMedia" => handle_create_media(db, &request.params),
-        "getMedia" => handle_get_media(db, &request.params),
-        "updateMedia" => handle_update_media(db, &request.params),
-        "deleteMedia" => handle_delete_media(db, &request.params),
-        "findMedia" => handle_find_media(db, &request.params),
-        "getDistinctValues" => handle_get_distinct_values(db, &request.params),
-        "bulkCreateMedia" => handle_bulk_create_media(db, &request.params),
-        "bulkDeleteMedia" => handle_bulk_delete_media(db, &request.params),
-        "bulkUpdateMedia" => handle_bulk_update_media(db, &request.params),
-        "createTag" => handle_create_tag(db, &request.params),
-        "getTagByName" => handle_get_tag_by_name(db, &request.params),
-        "getAllTags" => handle_get_all_tags(db),
-        "addTagToMedia" => handle_add_tag_to_media(db, &request.params),
-        "removeTagFromMedia" => handle_remove_tag_from_media(db, &request.params),
-        "getMediaTags" => handle_get_media_tags(db, &request.params),
-        "getTagUsageStats" => handle_get_tag_usage_stats(db),
-        "findUnusedTags" => handle_find_unused_tags(db),
-        "setMediaAttribute" => handle_set_media_attribute(db, &request.params),
-        "getMediaAttribute" => handle_get_media_attribute(db, &request.params),
-        "getMediaAttributes" => handle_get_media_attributes(db, &request.params),
-        "deleteMediaAttribute" => handle_delete_media_attribute(db, &request.params),
-        "deleteAllMediaAttributes" => handle_delete_all_media_attributes(db, &request.params),
-        "updateExist" => handle_update_exist(db, &request.params),
-        "checkThumbnail" => handle_check_thumbnail(db, &request.params),
-        "updateThumbnail" => handle_update_thumbnail(db, &request.params),
-        "addMediaHash" => handle_add_media_hash(db, &request.params),
-        "addMediaHashes" => handle_add_media_hashes(db, &request.params),
-        "getMediaHashes" => handle_get_media_hashes(db, &request.params),
-        "getMediaHash" => handle_get_media_hash(db, &request.params),
-        "findByContentHash" => handle_find_by_content_hash(db, &request.params),
-        "deleteMediaHash" => handle_delete_media_hash(db, &request.params),
-        "deleteMediaHashes" => handle_delete_media_hashes(db, &request.params),
-        "findDuplicateHashes" => handle_find_duplicate_hashes(db),
-        "computeMediaHash" => handle_compute_media_hash(db, &request.params),
-        "computeMediaHashes" => handle_compute_media_hashes(db, &request.params),
-        "backup" => handle_backup(db, &request.params),
-        "listBackups" => handle_list_backups(db),
-        "restore" => handle_restore(db, &request.params),
+        "migrate" => handle_migrate(backend.as_backend()).await,
+        "getSchemaVersion" => handle_get_schema_version(backend.as_backend()).await,
+        "getTables" => handle_get_tables(backend.as_backend()).await,
+        "getTableInfo" => handle_get_table_info(backend.as_backend(), &request.params).await,
+        "createMedia" => handle_create_media(backend.as_backend(), &request.params).await,
+        "getMedia" => handle_get_media(backend.as_backend(), &request.params).await,
+        "updateMedia" => handle_update_media(backend.as_backend(), &request.params).await,
+        "deleteMedia" => handle_delete_media(backend.as_backend(), &request.params).await,
+        "findMedia" => handle_find_media(backend.as_backend(), &request.params).await,
+        "getDistinctValues" => handle_get_distinct_values(backend.as_backend(), &request.params).await,
+        "bulkCreateMedia" => handle_bulk_create_media(backend.as_backend(), &request.params).await,
+        "bulkDeleteMedia" => handle_bulk_delete_media(backend.as_backend(), &request.params).await,
+        "bulkUpdateMedia" => handle_bulk_update_media(backend.as_backend(), &request.params).await,
+        "createTag" => handle_create_tag(backend.as_backend(), &request.params).await,
+        "getTagByName" => handle_get_tag_by_name(backend.as_backend(), &request.params).await,
+        "getAllTags" => handle_get_all_tags(backend.as_backend()).await,
+        "addTagToMedia" => handle_add_tag_to_media(backend.as_backend(), &request.params).await,
+        "removeTagFromMedia" => handle_remove_tag_from_media(backend.as_backend(), &request.params).await,
+        "getMediaTags" => handle_get_media_tags(backend.as_backend(), &request.params).await,
+        "getTagUsageStats" => handle_get_tag_usage_stats(backend.as_backend()).await,
+        "findUnusedTags" => handle_find_unused_tags(backend.as_backend()).await,
+        "setMediaAttribute" => handle_set_media_attribute(backend.as_backend(), &request.params).await,
+        "getMediaAttribute" => handle_get_media_attribute(backend.as_backend(), &request.params).await,
+        "getMediaAttributes" => handle_get_media_attributes(backend.as_backend(), &request.params).await,
+        "deleteMediaAttribute" => handle_delete_media_attribute(backend.as_backend(), &request.params).await,
+        "deleteAllMediaAttributes" => handle_delete_all_media_attributes(backend.as_backend(), &request.params).await,
+        "updateExist" => match backend.as_local() {
+            Some(local) => handle_update_exist(local, &request.params).await,
+            None => not_supported("updateExist"),
+        },
+        "checkThumbnail" => match backend.as_local() {
+            Some(local) => handle_check_thumbnail(local, &request.params).await,
+            None => not_supported("checkThumbnail"),
+        },
+        "updateThumbnail" => match backend.as_local() {
+            Some(local) => handle_update_thumbnail(local, &request.params).await,
+            None => not_supported("updateThumbnail"),
+        },
+        "addMediaHash" => handle_add_media_hash(backend.as_backend(), &request.params).await,
+        "addMediaHashes" => handle_add_media_hashes(backend.as_backend(), &request.params).await,
+        "getMediaHashes" => handle_get_media_hashes(backend.as_backend(), &request.params).await,
+        "getMediaHash" => handle_get_media_hash(backend.as_backend(), &request.params).await,
+        "findByContentHash" => handle_find_by_content_hash(backend.as_backend(), &request.params).await,
+        "deleteMediaHash" => handle_delete_media_hash(backend.as_backend(), &request.params).await,
+        "deleteMediaHashes" => handle_delete_media_hashes(backend.as_backend(), &request.params).await,
+        "findDuplicateHashes" => handle_find_duplicate_hashes(backend.as_backend()).await,
+        "computeMediaHash" => match backend.as_local() {
+            Some(local) => handle_compute_media_hash(local, &request.params).await,
+            None => not_supported("computeMediaHash"),
+        },
+        "computeMediaHashes" => match backend.as_local() {
+            Some(local) => handle_compute_media_hashes(local, &request.params).await,
+            None => not_supported("computeMediaHashes"),
+        },
+        "backup" => match backend.as_local_mut() {
+            Some(local) => handle_backup(local, &request.params).await,
+            None => not_supported("backup"),
+        },
+        "listBackups" => match backend.as_local() {
+            Some(local) => handle_list_backups(local).await,
+            None => not_supported("listBackups"),
+        },
+        "restore" => match backend.as_local_mut() {
+            Some(local) => handle_restore(local, &request.params).await,
+            None => not_supported("restore"),
+        },
         _ => CommandResponse::error(format!("不明な操作: {}", request.operation)),
     }
 }
 
-fn handle_migrate(db: &KijukuDB) -> CommandResponse {
-    match db.migrate() {
+async fn handle_migrate(db: &dyn KijukuBackend) -> CommandResponse {
+    match db.migrate().await {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("マイグレーションエラー: {}", e)),
     }
 }
 
-fn handle_get_schema_version(db: &KijukuDB) -> CommandResponse {
-    match db.get_schema_version() {
+async fn handle_get_schema_version(db: &dyn KijukuBackend) -> CommandResponse {
+    match db.get_schema_version().await {
         Ok(version) => CommandResponse::success(serde_json::json!({"version": version})),
         Err(e) => CommandResponse::error(format!("スキーマバージョン取得エラー: {}", e)),
     }
 }
 
-fn handle_get_tables(db: &KijukuDB) -> CommandResponse {
-    CommandResponse::from_result(db.get_tables(), "テーブル一覧取得エラー: ")
+async fn handle_get_tables(db: &dyn KijukuBackend) -> CommandResponse {
+    CommandResponse::from_result(db.get_tables().await, "テーブル一覧取得エラー: ")
 }
 
-fn handle_get_table_info(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_get_table_info(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params = match deserialize_params::<GetTableInfoParams>(params) {
         Ok(p) => p, Err(e) => return e,
     };
-    CommandResponse::from_result(db.get_table_info(&params.table_name), "テーブル情報取得エラー: ")
+    CommandResponse::from_result(db.get_table_info(&params.table_name).await, "テーブル情報取得エラー: ")
 }
 
-fn handle_create_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_create_media(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params = match deserialize_params::<CreateMediaParams>(params) {
         Ok(p) => p, Err(e) => return e,
     };
-    CommandResponse::from_result(db.create_media(&params.data), "メディア作成エラー: ")
+    CommandResponse::from_result(db.create_media(&params.data).await, "メディア作成エラー: ")
 }
 
-fn handle_get_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_get_media(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params = match deserialize_params::<GetMediaParams>(params) {
         Ok(p) => p, Err(e) => return e,
     };
-    CommandResponse::from_option(db.get_media(params.id))
+    match db.get_media(params.id).await {
+        Ok(Some(m)) => match serde_json::to_value(m) {
+            Ok(v) => CommandResponse::success(v),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
+        Ok(None) => CommandResponse::success(serde_json::Value::Null),
+        Err(e) => CommandResponse::error(format!("メディア取得エラー: {}", e)),
+    }
 }
 
-fn handle_update_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_update_media(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params = match deserialize_params::<UpdateMediaParams>(params) {
         Ok(p) => p, Err(e) => return e,
     };
-    match db.update_media(params.id, &params.data) {
+    match db.update_media(params.id, &params.data).await {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("メディア更新エラー: {}", e)),
     }
 }
 
-fn handle_delete_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_delete_media(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params = match deserialize_params::<DeleteMediaParams>(params) {
         Ok(p) => p, Err(e) => return e,
     };
-    match db.delete_media(params.id) {
+    match db.delete_media(params.id).await {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("メディア削除エラー: {}", e)),
     }
 }
 
-fn handle_find_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_find_media(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params = match deserialize_params::<FindMediaParams>(params) {
         Ok(p) => p, Err(e) => return e,
     };
-    CommandResponse::from_result(db.find_media(&params.filter, params.options.as_ref()), "メディア検索エラー: ")
+    CommandResponse::from_result(db.find_media(&params.filter, params.options.as_ref()).await, "メディア検索エラー: ")
 }
 
-fn handle_get_distinct_values(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_get_distinct_values(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: GetDistinctValuesParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
     let fields: Vec<&str> = params.fields.iter().map(|s| s.as_str()).collect();
-    match db.get_distinct_values(&fields, &params.filter) {
+    match db.get_distinct_values(&fields, &params.filter).await {
         Ok(values) => {
             let data = serde_json::to_value(values).unwrap();
             CommandResponse::success(data)
@@ -878,13 +1025,13 @@ fn handle_get_distinct_values(db: &KijukuDB, params: &serde_json::Value) -> Comm
     }
 }
 
-fn handle_bulk_create_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_bulk_create_media(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: BulkCreateMediaParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.bulk_create_media(&params.data_list) {
+    match db.bulk_create_media(&params.data_list).await {
         Ok(media_list) => match serde_json::to_value(media_list) {
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
@@ -893,37 +1040,37 @@ fn handle_bulk_create_media(db: &KijukuDB, params: &serde_json::Value) -> Comman
     }
 }
 
-fn handle_bulk_delete_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_bulk_delete_media(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: BulkDeleteMediaParams = match BulkDeleteMediaParams::deserialize(params) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.bulk_delete_media(&params.ids) {
+    match db.bulk_delete_media(&params.ids).await {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("一括削除エラー: {}", e)),
     }
 }
 
-fn handle_bulk_update_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_bulk_update_media(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: BulkUpdateMediaParams = match BulkUpdateMediaParams::deserialize(params) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.bulk_update_media(&params.updates) {
+    match db.bulk_update_media(&params.updates).await {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("一括更新エラー: {}", e)),
     }
 }
 
-fn handle_create_tag(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_create_tag(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: CreateTagParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.create_tag(&params.name) {
+    match db.create_tag(&params.name).await {
         Ok(tag) => match serde_json::to_value(tag) {
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
@@ -932,23 +1079,24 @@ fn handle_create_tag(db: &KijukuDB, params: &serde_json::Value) -> CommandRespon
     }
 }
 
-fn handle_get_tag_by_name(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_get_tag_by_name(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: GetTagByNameParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.get_tag_by_name(&params.name) {
-        Some(tag) => match serde_json::to_value(tag) {
+    match db.get_tag_by_name(&params.name).await {
+        Ok(Some(tag)) => match serde_json::to_value(tag) {
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
         },
-        None => CommandResponse::success(serde_json::Value::Null),
+        Ok(None) => CommandResponse::success(serde_json::Value::Null),
+        Err(e) => CommandResponse::error(format!("タグ取得エラー: {}", e)),
     }
 }
 
-fn handle_get_all_tags(db: &KijukuDB) -> CommandResponse {
-    match db.get_all_tags() {
+async fn handle_get_all_tags(db: &dyn KijukuBackend) -> CommandResponse {
+    match db.get_all_tags().await {
         Ok(tags) => match serde_json::to_value(tags) {
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
@@ -957,37 +1105,37 @@ fn handle_get_all_tags(db: &KijukuDB) -> CommandResponse {
     }
 }
 
-fn handle_add_tag_to_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_add_tag_to_media(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: AddTagToMediaParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.add_tag_to_media(params.media_id, params.tag_id) {
+    match db.add_tag_to_media(params.media_id, params.tag_id).await {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("タグ追加エラー: {}", e)),
     }
 }
 
-fn handle_remove_tag_from_media(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_remove_tag_from_media(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: RemoveTagFromMediaParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.remove_tag_from_media(params.media_id, params.tag_id) {
+    match db.remove_tag_from_media(params.media_id, params.tag_id).await {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("タグ削除エラー: {}", e)),
     }
 }
 
-fn handle_get_media_tags(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_get_media_tags(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: GetMediaTagsParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.get_media_tags(params.media_id) {
+    match db.get_media_tags(params.media_id).await {
         Ok(tags) => match serde_json::to_value(tags) {
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
@@ -996,8 +1144,8 @@ fn handle_get_media_tags(db: &KijukuDB, params: &serde_json::Value) -> CommandRe
     }
 }
 
-fn handle_get_tag_usage_stats(db: &KijukuDB) -> CommandResponse {
-    match db.get_tag_usage_stats() {
+async fn handle_get_tag_usage_stats(db: &dyn KijukuBackend) -> CommandResponse {
+    match db.get_tag_usage_stats().await {
         Ok(stats) => match serde_json::to_value(stats) {
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
@@ -1006,17 +1154,17 @@ fn handle_get_tag_usage_stats(db: &KijukuDB) -> CommandResponse {
     }
 }
 
-fn handle_find_unused_tags(db: &KijukuDB) -> CommandResponse {
-    match db.find_unused_tags() {
+async fn handle_find_unused_tags(db: &dyn KijukuBackend) -> CommandResponse {
+    match db.find_unused_tags().await {
         Ok(tags) => match serde_json::to_value(tags) {
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
         },
-        Err(e) => CommandResponse::error(format!("未使用タグ取得エラー: {}", e)),
+        Err(e) => CommandResponse::error(format!("未使用タスク取得エラー: {}", e)),
     }
 }
 
-fn handle_set_media_attribute(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_set_media_attribute(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: SetMediaAttributeParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
@@ -1033,19 +1181,21 @@ fn handle_set_media_attribute(db: &KijukuDB, params: &serde_json::Value) -> Comm
         &params.key,
         params.value.as_deref(),
         value_type,
-    ) {
+    )
+    .await
+    {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("属性設定エラー: {}", e)),
     }
 }
 
-fn handle_get_media_attribute(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_get_media_attribute(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: GetMediaAttributeParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.get_media_attribute(params.media_id, &params.key) {
+    match db.get_media_attribute(params.media_id, &params.key).await {
         Ok(Some(attr)) => match serde_json::to_value(attr) {
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
@@ -1055,13 +1205,13 @@ fn handle_get_media_attribute(db: &KijukuDB, params: &serde_json::Value) -> Comm
     }
 }
 
-fn handle_get_media_attributes(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_get_media_attributes(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: GetMediaAttributesParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.get_media_attributes(params.media_id) {
+    match db.get_media_attributes(params.media_id).await {
         Ok(attrs) => match serde_json::to_value(attrs) {
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
@@ -1070,20 +1220,20 @@ fn handle_get_media_attributes(db: &KijukuDB, params: &serde_json::Value) -> Com
     }
 }
 
-fn handle_delete_media_attribute(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_delete_media_attribute(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: DeleteMediaAttributeParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.delete_media_attribute(params.media_id, &params.key) {
+    match db.delete_media_attribute(params.media_id, &params.key).await {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("属性削除エラー: {}", e)),
     }
 }
 
-fn handle_delete_all_media_attributes(
-    db: &KijukuDB,
+async fn handle_delete_all_media_attributes(
+    db: &dyn KijukuBackend,
     params: &serde_json::Value,
 ) -> CommandResponse {
     let params: DeleteAllMediaAttributesParams = match serde_json::from_value(params.clone()) {
@@ -1091,13 +1241,13 @@ fn handle_delete_all_media_attributes(
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
 
-    match db.delete_all_media_attributes(params.media_id) {
+    match db.delete_all_media_attributes(params.media_id).await {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("全属性削除エラー: {}", e)),
     }
 }
 
-fn handle_update_exist(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_update_exist(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
     let params: UpdateExistParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
@@ -1150,7 +1300,7 @@ fn handle_update_exist_subcommand(ctx: &CliContext, dry_run: bool, filter_json: 
     }
 }
 
-fn handle_check_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_check_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
     let params: ThumbnailParams = match ThumbnailParams::deserialize(params) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
@@ -1164,7 +1314,7 @@ fn handle_check_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> CommandR
     }
 }
 
-fn handle_update_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_update_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
     let params: ThumbnailParams = match ThumbnailParams::deserialize(params) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
@@ -1260,23 +1410,23 @@ fn media_hash_to_json(hash: &kijuku_db::MediaHash) -> serde_json::Value {
     })
 }
 
-fn handle_add_media_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_add_media_hash(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: AddMediaHashParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
-    match db.add_media_hash(&params.input) {
+    match db.add_media_hash(&params.input).await {
         Ok(hash) => CommandResponse::success(media_hash_to_json(&hash)),
         Err(e) => CommandResponse::error(format!("ハッシュ追加エラー: {}", e)),
     }
 }
 
-fn handle_add_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_add_media_hashes(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: AddMediaHashesParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
-    match db.add_media_hashes(&params.inputs) {
+    match db.add_media_hashes(&params.inputs).await {
         Ok(hashes) => {
             let json: Vec<_> = hashes.iter().map(media_hash_to_json).collect();
             CommandResponse::success(serde_json::Value::Array(json))
@@ -1285,12 +1435,12 @@ fn handle_add_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> Command
     }
 }
 
-fn handle_get_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_get_media_hashes(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: GetMediaHashesParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
-    match db.get_media_hashes(&params.item_uuid) {
+    match db.get_media_hashes(&params.item_uuid).await {
         Ok(hashes) => {
             let json: Vec<_> = hashes.iter().map(media_hash_to_json).collect();
             CommandResponse::success(serde_json::Value::Array(json))
@@ -1299,19 +1449,19 @@ fn handle_get_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> Command
     }
 }
 
-fn handle_get_media_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_get_media_hash(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: GetMediaHashParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
-    match db.get_media_hash(&params.item_uuid, &params.filename, &params.time_range) {
+    match db.get_media_hash(&params.item_uuid, &params.filename, &params.time_range).await {
         Ok(Some(hash)) => CommandResponse::success(media_hash_to_json(&hash)),
         Ok(None) => CommandResponse::success(serde_json::Value::Null),
         Err(e) => CommandResponse::error(format!("ハッシュ取得エラー: {}", e)),
     }
 }
 
-fn handle_find_by_content_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_find_by_content_hash(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: FindByContentHashParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
@@ -1320,7 +1470,7 @@ fn handle_find_by_content_hash(db: &KijukuDB, params: &serde_json::Value) -> Com
         Ok(b) => b,
         Err(e) => return CommandResponse::error(format!("ハッシュ値エラー: {}", e)),
     };
-    match db.find_by_content_hash(&hash_bytes) {
+    match db.find_by_content_hash(&hash_bytes).await {
         Ok(hashes) => {
             let json: Vec<_> = hashes.iter().map(media_hash_to_json).collect();
             CommandResponse::success(serde_json::Value::Array(json))
@@ -1329,30 +1479,30 @@ fn handle_find_by_content_hash(db: &KijukuDB, params: &serde_json::Value) -> Com
     }
 }
 
-fn handle_delete_media_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_delete_media_hash(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: DeleteMediaHashParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
-    match db.delete_media_hash(&params.item_uuid, &params.filename, &params.time_range) {
+    match db.delete_media_hash(&params.item_uuid, &params.filename, &params.time_range).await {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("ハッシュ削除エラー: {}", e)),
     }
 }
 
-fn handle_delete_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_delete_media_hashes(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
     let params: DeleteMediaHashesParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
-    match db.delete_media_hashes(&params.item_uuid) {
+    match db.delete_media_hashes(&params.item_uuid).await {
         Ok(_) => CommandResponse::ack(),
         Err(e) => CommandResponse::error(format!("ハッシュ全削除エラー: {}", e)),
     }
 }
 
-fn handle_find_duplicate_hashes(db: &KijukuDB) -> CommandResponse {
-    match db.find_duplicate_hashes() {
+async fn handle_find_duplicate_hashes(db: &dyn KijukuBackend) -> CommandResponse {
+    match db.find_duplicate_hashes().await {
         Ok(dupes) => {
             use kijuku_db::hash::bytes_to_hex;
             let json: Vec<_> = dupes.iter().map(|(hash, count)| {
@@ -1367,7 +1517,7 @@ fn handle_find_duplicate_hashes(db: &KijukuDB) -> CommandResponse {
     }
 }
 
-fn handle_compute_media_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_compute_media_hash(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
     let params: ComputeMediaHashParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
@@ -1386,7 +1536,7 @@ fn handle_compute_media_hash(db: &KijukuDB, params: &serde_json::Value) -> Comma
     }
 }
 
-fn handle_compute_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+async fn handle_compute_media_hashes(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
     let params: ComputeMediaHashesParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
@@ -1515,6 +1665,89 @@ fn handle_hash_subcommand(ctx: &CliContext, cmd: &HashCommands) {
             }
         }
     }
+}
+
+/// bulk-load サブコマンド: ローカルDB（`--db`）を source、D1 を dest として
+/// 全データ（media/tags/media_tags/attributes/hashes）を完全移行し、件数・内容一致を検証する。
+/// SDK の `transfer` / `verify` を呼ぶだけの薄いラッパ。
+async fn handle_bulk_load_subcommand(ctx: &CliContext, chunk_size: Option<usize>, verify_only: bool) {
+    // source: ローカル SQLite（--db）
+    let source = match KijukuDB::open_with_options(
+        &ctx.db_path,
+        DBOptions {
+            verbose: ctx.verbose,
+            ..Default::default()
+        },
+    ) {
+        Ok(db) => db,
+        Err(e) => {
+            output_response(&CommandResponse::error(format!("元DBのオープンに失敗: {}", e)));
+            return;
+        }
+    };
+    let src: &dyn KijukuBackend = &source;
+    if let Err(e) = src.migrate().await {
+        output_response(&CommandResponse::error(format!(
+            "元DBのマイグレーションに失敗: {}",
+            e
+        )));
+        return;
+    }
+
+    // dest: D1（環境変数 + wrangler キャッシュの OAuth トークン）
+    let dest = {
+        let account_id = match std::env::var("D1_ACCOUNT_ID") {
+            Ok(v) => v,
+            Err(_) => {
+                output_response(&CommandResponse::error(
+                    "D1_ACCOUNT_ID 環境変数が設定されていません".to_string(),
+                ));
+                return;
+            }
+        };
+        let database_id = match std::env::var("D1_DATABASE_ID") {
+            Ok(v) => v,
+            Err(_) => {
+                output_response(&CommandResponse::error(
+                    "D1_DATABASE_ID 環境変数が設定されていません".to_string(),
+                ));
+                return;
+            }
+        };
+        match D1KijukuDB::from_wrangler(D1Config {
+            account_id,
+            database_id,
+        }) {
+            Ok(d) => d,
+            Err(e) => {
+                output_response(&CommandResponse::error(format!(
+                    "D1 接続に失敗: {}（wrangler login 済みか確認してください）",
+                    e
+                )));
+                return;
+            }
+        }
+    };
+
+    let opts = TransferOptions {
+        chunk_size: chunk_size.unwrap_or(500),
+        verbose: ctx.verbose,
+    };
+
+    let result = if verify_only {
+        verify(src, &dest).await
+    } else {
+        transfer(src, &dest, &opts).await
+    };
+
+    let response = match result {
+        Ok(report) => match serde_json::to_value(&report) {
+            Ok(v) => CommandResponse::success(v),
+            Err(e) => CommandResponse::error(format!("結果のシリアライズに失敗: {}", e)),
+        },
+        Err(e) => CommandResponse::error(format!("バルクロードエラー: {}", e)),
+    };
+    output_response(&response);
 }
 
 fn output_response(response: &CommandResponse) {
