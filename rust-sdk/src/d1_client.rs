@@ -59,25 +59,29 @@ impl D1Client {
             .await
             .map_err(KijukuError::Http)?;
         let status = resp.status();
-        // ボディは text で受け取り、status チェック後に JSON へパースする。
-        // 非 2xx で HTML/プレーンテキスト（WAF・ゲートウェイ障害・レート制限）が返っても、
-        // JSON パースエラーに埋もれず本来の HTTP ステータスとボディ断片を伝えるため。
+        // ボディは text で受け取り、JSON パースを先に試みる。
+        // 先に status で弾くと、D1 の正常 API エラー（400 + JSON でエラー詳細を返す）まで
+        // HTML スニペット扱いになり本来のエラー詳細が隠蔽されるため、パース成否で分岐する。
+        // パース失敗時のみ非 2xx を理由に HTTP ステータス + ボディ断片（WAF / ゲートウェイ
+        // 障害 / レート制限で HTML やプレーンテキストが返るケース）を伝える。
         let body_text = resp.text().await.map_err(KijukuError::Http)?;
 
-        if !status.is_success() {
-            let snippet: String = body_text.chars().take(300).collect();
-            return Err(KijukuError::D1(format!(
-                "D1 query failed (HTTP {}): {}",
-                status, snippet
-            )));
-        }
-
-        let parsed: D1Response = serde_json::from_str(&body_text).map_err(|e| {
-            KijukuError::D1(format!(
-                "D1 response parse failed (HTTP {}): {}",
-                status, e
-            ))
-        })?;
+        let parsed: D1Response = match serde_json::from_str(&body_text) {
+            Ok(p) => p,
+            Err(e) => {
+                if !status.is_success() {
+                    let snippet: String = body_text.chars().take(300).collect();
+                    return Err(KijukuError::D1(format!(
+                        "D1 query failed (HTTP {}): {}",
+                        status, snippet
+                    )));
+                }
+                return Err(KijukuError::D1(format!(
+                    "D1 response parse failed (HTTP {}): {}",
+                    status, e
+                )));
+            }
+        };
 
         if !parsed.success {
             let msg = if parsed.errors.is_empty() {
@@ -163,7 +167,12 @@ fn read_wrangler_token() -> Result<String> {
 
 /// wrangler のキャッシュパス（`~/.config/.wrangler/config/default.toml`）
 fn wrangler_config_path() -> Result<PathBuf> {
+    // HOME は Unix 系のみ。Windows では HOME が未設定で USERPROFILE が使われるため
+    // フォールバックする（Windows 向け .config/.wrangler/config/default.toml も同位置）。
     let home = std::env::var("HOME")
-        .map_err(|_| KijukuError::Other("HOME 環境変数が設定されていません".to_string()))?;
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| {
+            KijukuError::Other("HOME または USERPROFILE 環境変数が設定されていません".to_string())
+        })?;
     Ok(PathBuf::from(home).join(".config/.wrangler/config/default.toml"))
 }

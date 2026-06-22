@@ -1160,7 +1160,7 @@ async fn handle_find_unused_tags(db: &dyn KijukuBackend) -> CommandResponse {
             Ok(data) => CommandResponse::success(data),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
         },
-        Err(e) => CommandResponse::error(format!("未使用タスク取得エラー: {}", e)),
+        Err(e) => CommandResponse::error(format!("未使用タグ取得エラー: {}", e)),
     }
 }
 

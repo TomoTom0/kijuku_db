@@ -134,13 +134,19 @@ pub async fn transfer(
     // ---- Pass A: tags ----
     // タグは media_tags より先に作成する。get-or-create で部分的な再実行にも耐える。
     let src_tags = source.get_all_tags().await?;
-    let mut tag_name_to_id: HashMap<String, i64> = HashMap::new();
+    // dest の全タグを一括取得してキャッシュ。タグごとに get_tag_by_name で存在確認すると
+    // タグ数 N 回の HTTP ラウンドトリップが発生し D1 バックエンドで劇的に低速化するため、
+    // 最初に 1 回取得して HashMap を作り、未登録タグのみ create_tag で作成する。
+    let dst_tags = dest.get_all_tags().await?;
+    let mut tag_name_to_id: HashMap<String, i64> = dst_tags
+        .into_iter()
+        .map(|t| (t.name, t.id))
+        .collect();
     for t in &src_tags {
-        let new_id = match dest.get_tag_by_name(&t.name).await? {
-            Some(existing) => existing.id,
-            None => dest.create_tag(&t.name).await?.id,
-        };
-        tag_name_to_id.insert(t.name.clone(), new_id);
+        if !tag_name_to_id.contains_key(&t.name) {
+            let new_tag = dest.create_tag(&t.name).await?;
+            tag_name_to_id.insert(t.name.clone(), new_tag.id);
+        }
     }
     report.tags = src_tags.len();
     log_verbose(opts, &format!("tags: {} 件転送", report.tags));
