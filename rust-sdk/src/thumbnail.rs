@@ -482,6 +482,11 @@ pub fn update_thumbnail(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // std::env::set_var("PATH") はプロセス全体に影響し、テスト並列実行で競合する。
+    // PATH を操作するテスト同士をこの Mutex で直列化し、フル並列実行時の非決定な失敗を防ぐ。
+    // （将来的な DI 化で set_var 自体を廃止するのが望ましい＝技術的負債として記録）
+    static PATH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use crate::crud::{create_media, get_media};
     use crate::migration;
     use crate::types::{MediaInput, MediaType};
@@ -791,6 +796,7 @@ mod tests {
 
     #[test]
     fn test_update_thumbnail_success_generates_and_updates_db() {
+        let _path_guard = PATH_TEST_LOCK.lock().unwrap();
         // fake convertスクリプトを作成してPATHに追加
         let fake_bin_dir = TempDir::new().unwrap();
         let fake_convert = fake_bin_dir.path().join("convert");
@@ -944,6 +950,7 @@ mod tests {
 
     #[test]
     fn test_update_thumbnail_video_success() {
+        let _path_guard = PATH_TEST_LOCK.lock().unwrap();
         let fake_bin_dir = TempDir::new().unwrap();
         let fake_ffmpeg = fake_bin_dir.path().join("ffmpeg");
         fs::write(

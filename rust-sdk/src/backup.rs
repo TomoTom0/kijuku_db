@@ -700,7 +700,11 @@ impl BackupManager {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
             if let Some(parsed) = parse_backup_filename(&name, &self.db_stem) {
-                if parsed.id == id {
+                // フルバックアップ(.db)のみを基底候補とする。フル({stem}.{ts}.db)と
+                // 差分({stem}.{ts}.diff)が同一タイムスタンプになる場合があり、拡張子で
+                // 区別しないと差分ファイル(.diff = SQLite DB ではない)が誤って基底に選ばれ、
+                // 復元時に SQLITE_NOTADB で失敗する（read_dir 順序依存で非決定に発生）。
+                if parsed.id == id && parsed.extension == "db" {
                     let path = entry.path();
                     let metadata = fs::metadata(&path)?;
                     return Ok(Some(BackupInfo {
@@ -1791,6 +1795,43 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM test", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2, "フル+差分適用後の2レコードが復元されているべき");
+    }
+
+    #[test]
+    fn test_find_backup_by_id_prefers_full_over_diff() {
+        // 同一タイムスタンプのフル(.db)と差分(.diff)が共存する場合、
+        // find_backup_by_id_in_scope は基底としてフル(.db)を返すべき。
+        // 旧実装は拡張子を区別せず、read_dir 順序で非決定に差分(.diff = SQLite DB ではない)
+        // を返し、復元時に SQLITE_NOTADB で失敗していた。
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = create_test_db(temp_dir.path());
+        let backup_dir = temp_dir.path().join("backups");
+        let auto_dir = backup_dir.join("auto");
+        fs::create_dir_all(&auto_dir).unwrap();
+
+        let options = BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let manager = BackupManager::new(&db_path, options).unwrap();
+
+        // 同一タイムスタンプのフル(.db)と差分(.diff)を手動で配置
+        let ts = "20260622120000-123";
+        fs::write(auto_dir.join(format!("test.{}.db", ts)), b"dummy full").unwrap();
+        fs::write(auto_dir.join(format!("test.{}.diff", ts)), b"dummy diff").unwrap();
+
+        let found = manager
+            .find_backup_by_id_in_scope(ts, BackupScope::Auto)
+            .unwrap();
+        assert!(found.is_some(), "基底フルが見つかるべき");
+        let found = found.unwrap();
+        assert!(
+            found.path.to_string_lossy().ends_with(".db"),
+            "フル(.db)が基底に選ばれるべき: {:?}",
+            found.path
+        );
+        assert!(matches!(found.kind, BackupKind::Full), "kind は Full のべき");
     }
 
     #[test]
