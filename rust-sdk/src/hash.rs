@@ -747,7 +747,8 @@ mod tests {
     use crate::exec_local::LocalExec;
     use crate::migration;
     use crate::types::{MediaInput, MediaFilter, MediaType};
-    use std::sync::{Arc, Mutex};
+    use parking_lot::ReentrantMutex;
+    use std::sync::Arc;
 
     fn setup_async() -> (LocalExec, String) {
         let conn = Connection::open_in_memory().unwrap();
@@ -761,7 +762,7 @@ mod tests {
             },
         )
         .unwrap();
-        let exec = LocalExec::new(Arc::new(Mutex::new(conn)));
+        let exec = LocalExec::new(Arc::new(ReentrantMutex::new(conn)));
         (exec, media.uuid)
     }
 

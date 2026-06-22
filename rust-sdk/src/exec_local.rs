@@ -1,33 +1,30 @@
 //! Local（rusqlite）バックエンドの `SqlExec` 実装
 //!
-//! `Arc<Mutex<Connection>>` を持ち、各操作を `spawn_blocking` で_blocking_ スレッドプールで
+//! `Arc<ReentrantMutex<Connection>>` を持ち、各操作を `spawn_blocking` で_blocking_ スレッドプールで
 //! 実行する。async コンテキストから呼んでもランタイムスレッドを占有しない。
 
 use crate::db_value::{sql_param_from_value_ref, to_rusqlite_refs, SqlParam, SqlRow};
 use crate::error::{KijukuError, Result};
 use crate::exec::SqlExec;
 use async_trait::async_trait;
+use parking_lot::ReentrantMutex;
 use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// rusqlite `Connection` を包んだ Local 実行バックエンド
 pub struct LocalExec {
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<ReentrantMutex<Connection>>,
 }
 
 impl LocalExec {
-    pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
+    pub fn new(conn: Arc<ReentrantMutex<Connection>>) -> Self {
         Self { conn }
     }
 
     /// 内部の `Connection` を指す `Arc` を取得（KijukuDB と共有するため）
-    pub fn conn_handle(&self) -> Arc<Mutex<Connection>> {
+    pub fn conn_handle(&self) -> Arc<ReentrantMutex<Connection>> {
         Arc::clone(&self.conn)
     }
-}
-
-fn lock_err<E: std::fmt::Display>(e: E) -> KijukuError {
-    KijukuError::Other(format!("connection lock error: {}", e))
 }
 
 #[async_trait]
@@ -37,7 +34,7 @@ impl SqlExec for LocalExec {
         let sql = sql.to_string();
         let params = params.to_vec();
         tokio::task::spawn_blocking(move || -> Result<Vec<SqlRow>> {
-            let conn = conn.lock().map_err(lock_err)?;
+            let conn = conn.lock();
             let mut stmt = conn.prepare(&sql)?;
             let col_names: Vec<String> =
                 stmt.column_names().iter().map(|s| s.to_string()).collect();
@@ -65,7 +62,7 @@ impl SqlExec for LocalExec {
         let sql = sql.to_string();
         let params = params.to_vec();
         tokio::task::spawn_blocking(move || -> Result<usize> {
-            let conn = conn.lock().map_err(lock_err)?;
+            let conn = conn.lock();
             let refs = to_rusqlite_refs(&params);
             let refs_dyn: Vec<&dyn rusqlite::ToSql> = refs.iter().map(|r| r.as_ref()).collect();
             let n = conn.execute(&sql, refs_dyn.as_slice())?;
@@ -78,12 +75,15 @@ impl SqlExec for LocalExec {
     async fn execute_batch(&self, stmts: Vec<(String, Vec<SqlParam>)>) -> Result<()> {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let mut conn = conn.lock().map_err(lock_err)?;
-            // 可視性の問題で borrow checker を満たすため、transaction は unchecked で取得
-            let tx = conn.transaction()?;
+            let conn = conn.lock();
+            // unchecked_transaction を使用する: &mut を必要とせず ReentrantMutex の
+            // guard から直接取得できる。またエラーやパニック発生時は Transaction の Drop
+            // により自動的に ROLLBACK され、接続がトランザクション状態で残留するのを防ぐ。
+            let tx = conn.unchecked_transaction()?;
             for (sql, params) in &stmts {
                 let refs = to_rusqlite_refs(params);
-                let refs_dyn: Vec<&dyn rusqlite::ToSql> = refs.iter().map(|r| r.as_ref()).collect();
+                let refs_dyn: Vec<&dyn rusqlite::ToSql> =
+                    refs.iter().map(|r| r.as_ref()).collect();
                 tx.execute(sql, refs_dyn.as_slice())?;
             }
             tx.commit()?;
@@ -97,7 +97,7 @@ impl SqlExec for LocalExec {
         let conn = Arc::clone(&self.conn);
         let sql = sql.to_string();
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let conn = conn.lock().map_err(lock_err)?;
+            let conn = conn.lock();
             conn.execute_batch(&sql)?;
             Ok(())
         })
