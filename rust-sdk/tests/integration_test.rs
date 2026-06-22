@@ -475,3 +475,64 @@ fn test_transaction_rollback_isolation() {
     );
     handle.join().unwrap();
 }
+
+#[test]
+fn test_transaction_panic_rolls_back() {
+    // クロージャ内でパニックが発生した場合、Transaction の Drop により自動的に
+    // ROLLBACK され、接続がトランザクション状態で残留しないことを検証する。
+    // 手動 SQL の BEGIN/COMMIT/ROLLBACK ではパニック経路を捕捉できず、接続が
+    // トランザクション開いたまま残留し、以後の操作が失敗する問題があった。
+    let temp_file = NamedTempFile::new().unwrap();
+    let db = KijukuDB::open(temp_file.path()).unwrap();
+    db.migrate().unwrap();
+
+    // 事前に1件コミットしておく
+    db.create_media(&MediaInput {
+        title: "committed".to_string(),
+        media_type: MediaType::Comic,
+        ..Default::default()
+    })
+    .unwrap();
+
+    // トランザクション内で2件目を作成してからパニック
+    let result: Result<Result<(), KijukuError>, _> =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            db.transaction(|db| {
+                db.create_media(&MediaInput {
+                    title: "panicked".to_string(),
+                    media_type: MediaType::Comic,
+                    ..Default::default()
+                })?;
+                panic!("intentional panic inside transaction");
+            })
+        }));
+    assert!(result.is_err(), "クロージャ内のパニックは伝播するべき");
+
+    // パニック後: 未コミットのメディアはロールバックされ、コミット済み1件のみ残る
+    let all_media = db.find_media(&MediaFilter::default(), None).unwrap();
+    assert_eq!(
+        all_media.len(),
+        1,
+        "パニック時の未コミット内容はロールバックされるべき"
+    );
+    assert_eq!(all_media[0].title, "committed");
+
+    // 接続がトランザクション状態で残留していないことの検証:
+    // 残留していた場合、新規トランザクション開始で SQLite エラーになる。
+    let r = db.transaction(|db| {
+        db.create_media(&MediaInput {
+            title: "after_panic".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        })?;
+        Ok::<_, KijukuError>(())
+    });
+    assert!(
+        r.is_ok(),
+        "パニック後に新規トランザクションが開始できるべき: {:?}",
+        r.err()
+    );
+
+    let all_media = db.find_media(&MediaFilter::default(), None).unwrap();
+    assert_eq!(all_media.len(), 2);
+}

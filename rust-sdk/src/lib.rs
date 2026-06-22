@@ -656,18 +656,22 @@ impl KijukuDB {
         // conn をトランザクション全体でロック保持。ReentrantMutex により同一スレッドの
         // 再入（クロージャ内の同期メソッド）が許可され、他スレッドは COMMIT/ROLLBACK
         // までブロックされる。これによりトランザクション中の並行競合を完全に防ぐ。
+        //
+        // unchecked_transaction を使用することで、クロージャ内でパニックが発生して
+        // アンワインドが起きても、Transaction の Drop により自動的に ROLLBACK される。
+        // 手動 SQL の BEGIN/COMMIT/ROLLBACK ではパニック経路を捕捉できずトランザクション
+        // が開いたまま残留するリスクがあった。
         let conn = self.conn.lock();
-        conn.execute("BEGIN TRANSACTION", [])?;
+        let tx = conn.unchecked_transaction()?;
         match f(self) {
             Ok(result) => {
-                conn.execute("COMMIT", [])?;
+                tx.commit()?;
                 drop(conn);
                 self.record_operation();
                 Ok(result)
             }
             Err(e) => {
-                let _ = conn.execute("ROLLBACK", []);
-                drop(conn);
+                // tx がスコープを抜ける際（conn より先に）Drop して自動 ROLLBACK される。
                 Err(e)
             }
         }

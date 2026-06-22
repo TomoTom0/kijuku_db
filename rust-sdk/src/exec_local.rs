@@ -76,29 +76,18 @@ impl SqlExec for LocalExec {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || -> Result<()> {
             let conn = conn.lock();
-            // ReentrantMutex の guard は &mut を提供しないため、rusqlite::Connection::transaction
-            // （&mut self 必要）の代わりに SQL の BEGIN/COMMIT/ROLLBACK で原子性を保証する。
-            // エラー時は必ず ROLLBACK し、接続がトランザクション状態で残留するのを防ぐ。
-            conn.execute("BEGIN", [])?;
-            let exec_result: Result<()> = (|| {
-                for (sql, params) in &stmts {
-                    let refs = to_rusqlite_refs(params);
-                    let refs_dyn: Vec<&dyn rusqlite::ToSql> =
-                        refs.iter().map(|r| r.as_ref()).collect();
-                    conn.execute(sql, refs_dyn.as_slice())?;
-                }
-                Ok(())
-            })();
-            match exec_result {
-                Ok(()) => {
-                    conn.execute("COMMIT", [])?;
-                    Ok(())
-                }
-                Err(e) => {
-                    let _ = conn.execute("ROLLBACK", []);
-                    Err(e)
-                }
+            // unchecked_transaction を使用する: &mut を必要とせず ReentrantMutex の
+            // guard から直接取得できる。またエラーやパニック発生時は Transaction の Drop
+            // により自動的に ROLLBACK され、接続がトランザクション状態で残留するのを防ぐ。
+            let tx = conn.unchecked_transaction()?;
+            for (sql, params) in &stmts {
+                let refs = to_rusqlite_refs(params);
+                let refs_dyn: Vec<&dyn rusqlite::ToSql> =
+                    refs.iter().map(|r| r.as_ref()).collect();
+                tx.execute(sql, refs_dyn.as_slice())?;
             }
+            tx.commit()?;
+            Ok(())
         })
         .await
         .map_err(|e| KijukuError::Other(format!("spawn_blocking join error: {}", e)))?
