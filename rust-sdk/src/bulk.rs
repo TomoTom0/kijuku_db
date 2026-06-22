@@ -1,5 +1,7 @@
-use crate::crud::{create_media, delete_media, update_media};
+use crate::crud::{build_update_media_sql, create_media, create_media_async, delete_media, update_media};
+use crate::db_value::SqlParam;
 use crate::error::Result;
+use crate::exec::SqlExec;
 use crate::types::{BulkUpdateItem, Media, MediaInput};
 use rusqlite::Connection;
 
@@ -68,11 +70,226 @@ pub fn bulk_update_media(conn: &Connection, updates: &[BulkUpdateItem]) -> Resul
     Ok(())
 }
 
+// ========== async バックエンド（SqlExec）用 ==========
+//
+// Local と D1 が共有。D1 は REST でトランザクションを開けないため、`execute_batch`
+// でチャンク単位に実行する（Local は原子的・D1 は順次実行で近似）。作成（`create`）は戻り値の行が必要なため
+// 件ごとに `create_media_async`（`RETURNING *`）を呼ぶ。delete/update は存在確認を
+// 省略したバッチ実行とし、対象なき id は無視される（バッチ近似の制約）。
+
+/// async バックエンド経由で複数のメディアを一括作成。
+///
+/// 作成された `Media`（id/uuid 含む）を返す必要があるため、件ごとに `create_media_async`
+/// を呼ぶ。D1 では件数分の往復になるが、作成行の取得には `RETURNING *` が必須。
+pub async fn bulk_create_media_async(
+    exec: &dyn SqlExec,
+    data_list: &[MediaInput],
+) -> Result<Vec<Media>> {
+    if data_list.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::with_capacity(data_list.len());
+    for data in data_list {
+        results.push(create_media_async(exec, data).await?);
+    }
+    Ok(results)
+}
+
+/// async バックエンド経由で複数のメディアを一括削除。
+///
+/// `DEFAULT_MAX_BATCH_SIZE` 件ごとに `execute_batch`（Local はチャンク単位で原子的、D1 は順次実行）。
+/// バッチ DELETE は存在確認を行わないため、存在しない id は無視される
+/// （同期版 `delete_media` の存在確認エラーとは挙動が異なる・バッチ近似の制約）。
+pub async fn bulk_delete_media_async(exec: &dyn SqlExec, ids: &[i64]) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in ids.chunks(DEFAULT_MAX_BATCH_SIZE) {
+        let stmts: Vec<(String, Vec<SqlParam>)> = chunk
+            .iter()
+            .map(|id| {
+                (
+                    "DELETE FROM media WHERE id = ?1".to_string(),
+                    vec![SqlParam::Int(*id)],
+                )
+            })
+            .collect();
+        exec.execute_batch(stmts).await?;
+    }
+
+    Ok(())
+}
+
+/// async バックエンド経由で複数のメディアを一括更新（部分更新）。
+///
+/// `DEFAULT_MAX_BATCH_SIZE` 件ごとに `execute_batch`（Local はチャンク単位で原子的、D1 は順次実行）。
+/// 各件の SQL を `build_update_media_sql` で組み立て、更新フィールドなしはスキップ。
+/// ビルド時のバリデーションエラー（例: uuid への NULL）はチャンク実行前に伝播し、
+/// そのチャンクは実行されない。対象なき id は無視される（バッチ近似の制約）。
+pub async fn bulk_update_media_async(
+    exec: &dyn SqlExec,
+    updates: &[BulkUpdateItem],
+) -> Result<()> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in updates.chunks(DEFAULT_MAX_BATCH_SIZE) {
+        let mut stmts: Vec<(String, Vec<SqlParam>)> = Vec::new();
+        for item in chunk {
+            if let Some((sql, params)) = build_update_media_sql(item.id, &item.data)? {
+                stmts.push((sql, params));
+            }
+        }
+        if !stmts.is_empty() {
+            exec.execute_batch(stmts).await?;
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crud::get_media_async;
+    use crate::exec_local::LocalExec;
     use crate::migration;
     use crate::types::MediaType;
+    use std::sync::{Arc, Mutex};
+
+    fn setup_async() -> LocalExec {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+        LocalExec::new(Arc::new(Mutex::new(conn)))
+    }
+
+    #[tokio::test]
+    async fn test_bulk_create_media_async() {
+        let exec = setup_async();
+        let data_list = vec![
+            MediaInput {
+                title: "メディア1".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+            MediaInput {
+                title: "メディア2".to_string(),
+                media_type: MediaType::Video,
+                ..Default::default()
+            },
+        ];
+
+        let results = bulk_create_media_async(&exec, &data_list).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "メディア1");
+        assert_eq!(results[1].title, "メディア2");
+    }
+
+    #[tokio::test]
+    async fn test_bulk_create_empty_async() {
+        let exec = setup_async();
+        let results = bulk_create_media_async(&exec, &[]).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_bulk_delete_media_async() {
+        let exec = setup_async();
+        let results = bulk_create_media_async(
+            &exec,
+            &[
+                MediaInput {
+                    title: "m1".to_string(),
+                    media_type: MediaType::Comic,
+                    ..Default::default()
+                },
+                MediaInput {
+                    title: "m2".to_string(),
+                    media_type: MediaType::Video,
+                    ..Default::default()
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let ids: Vec<i64> = results.iter().map(|m| m.id).collect();
+        bulk_delete_media_async(&exec, &ids).await.unwrap();
+
+        for m in &results {
+            let got = get_media_async(&exec, m.id).await.unwrap();
+            assert!(got.is_none(), "id={} should be deleted", m.id);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bulk_update_media_async() {
+        use crate::types::MediaUpdateInput;
+
+        let exec = setup_async();
+        let results = bulk_create_media_async(
+            &exec,
+            &[
+                MediaInput {
+                    title: "元1".to_string(),
+                    media_type: MediaType::Comic,
+                    ..Default::default()
+                },
+                MediaInput {
+                    title: "元2".to_string(),
+                    media_type: MediaType::Video,
+                    ..Default::default()
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+        let updates = vec![
+            BulkUpdateItem {
+                id: results[0].id,
+                data: MediaUpdateInput {
+                    title: Some("更新1".to_string()),
+                    ..Default::default()
+                },
+            },
+            BulkUpdateItem {
+                id: results[1].id,
+                data: MediaUpdateInput {
+                    artist: Some(Some("作家2".to_string())),
+                    ..Default::default()
+                },
+            },
+        ];
+        bulk_update_media_async(&exec, &updates).await.unwrap();
+
+        let m1 = get_media_async(&exec, results[0].id).await.unwrap().unwrap();
+        assert_eq!(m1.title, "更新1");
+        assert_eq!(m1.media_type, MediaType::Comic); // 未指定はそのまま
+
+        let m2 = get_media_async(&exec, results[1].id).await.unwrap().unwrap();
+        assert_eq!(m2.artist, Some("作家2".to_string()));
+        assert_eq!(m2.title, "元2"); // 未指定はそのまま
+    }
+
+    #[tokio::test]
+    async fn test_bulk_create_chunking_async() {
+        // DEFAULT_MAX_BATCH_SIZE(500) を超えても正常に作成できる
+        let exec = setup_async();
+        let data_list: Vec<MediaInput> = (0..600)
+            .map(|i| MediaInput {
+                title: format!("m{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            })
+            .collect();
+
+        let results = bulk_create_media_async(&exec, &data_list).await.unwrap();
+        assert_eq!(results.len(), 600);
+    }
 
     #[test]
     fn test_bulk_create_media() {

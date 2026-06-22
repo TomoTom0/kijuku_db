@@ -1,6 +1,8 @@
 //! メディア追加属性の操作
 
 use rusqlite::{params, Connection, Result};
+use crate::db_value::{SqlParam, SqlRow};
+use crate::exec::SqlExec;
 use crate::types::{MediaAttribute, AttributeValueType};
 use crate::error::KijukuError;
 
@@ -125,6 +127,105 @@ pub fn delete_all_media_attributes(
         params![media_id],
     )?;
 
+    Ok(())
+}
+
+// ========== async バックエンド（SqlExec）用 ==========
+
+fn row_to_media_attribute(row: &SqlRow) -> Result<MediaAttribute, KijukuError> {
+    let value_type_str = row.get_text("value_type")?;
+    let value_type = match value_type_str.as_str() {
+        "integer" => AttributeValueType::Integer,
+        "boolean" => AttributeValueType::Boolean,
+        _ => AttributeValueType::String,
+    };
+    Ok(MediaAttribute {
+        media_id: row.get_int("media_id")?,
+        key: row.get_text("key")?,
+        value: row.get_opt_text("value")?,
+        value_type,
+    })
+}
+
+/// async バックエンド経由でメディア属性を設定（UPSERT）
+pub async fn set_media_attribute_async(
+    exec: &dyn SqlExec,
+    media_id: i64,
+    key: &str,
+    value: Option<&str>,
+    value_type: Option<AttributeValueType>,
+) -> Result<(), KijukuError> {
+    let value_type_str = match value_type.unwrap_or(AttributeValueType::String) {
+        AttributeValueType::String => "string",
+        AttributeValueType::Integer => "integer",
+        AttributeValueType::Boolean => "boolean",
+    };
+    let sql = "INSERT INTO media_attributes (media_id, key, value, value_type)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(media_id, key) DO UPDATE SET
+           value = ?3,
+           value_type = ?4";
+    let params = vec![
+        SqlParam::Int(media_id),
+        SqlParam::Text(key.to_string()),
+        SqlParam::from_opt_str_ref(value),
+        SqlParam::Text(value_type_str.to_string()),
+    ];
+    exec.execute(sql, &params).await?;
+    Ok(())
+}
+
+/// async バックエンド経由でメディア属性を1件取得
+pub async fn get_media_attribute_async(
+    exec: &dyn SqlExec,
+    media_id: i64,
+    key: &str,
+) -> Result<Option<MediaAttribute>, KijukuError> {
+    let sql = "SELECT media_id, key, value, value_type
+         FROM media_attributes
+         WHERE media_id = ?1 AND key = ?2";
+    let params = vec![SqlParam::Int(media_id), SqlParam::Text(key.to_string())];
+    let rows = exec.query(sql, &params).await?;
+    match rows.into_iter().next() {
+        Some(row) => Ok(Some(row_to_media_attribute(&row)?)),
+        None => Ok(None),
+    }
+}
+
+/// async バックエンド経由でメディアの全属性を取得
+pub async fn get_media_attributes_async(
+    exec: &dyn SqlExec,
+    media_id: i64,
+) -> Result<Vec<MediaAttribute>, KijukuError> {
+    let sql = "SELECT media_id, key, value, value_type
+         FROM media_attributes
+         WHERE media_id = ?1
+         ORDER BY key";
+    let params = vec![SqlParam::Int(media_id)];
+    let rows = exec.query(sql, &params).await?;
+    rows.iter().map(row_to_media_attribute).collect()
+}
+
+/// async バックエンド経由でメディア属性を削除
+pub async fn delete_media_attribute_async(
+    exec: &dyn SqlExec,
+    media_id: i64,
+    key: &str,
+) -> Result<(), KijukuError> {
+    let sql = "DELETE FROM media_attributes WHERE media_id = ?1 AND key = ?2";
+    let params = vec![SqlParam::Int(media_id), SqlParam::Text(key.to_string())];
+    exec.execute(sql, &params).await?;
+    Ok(())
+}
+
+/// async バックエンド経由でメディアの全属性を削除
+pub async fn delete_all_media_attributes_async(
+    exec: &dyn SqlExec,
+    media_id: i64,
+) -> Result<(), KijukuError> {
+    let sql = "DELETE FROM media_attributes WHERE media_id = ?1";
+    let params = vec![SqlParam::Int(media_id)];
+    exec.execute(sql, &params).await?;
     Ok(())
 }
 

@@ -1,4 +1,5 @@
-use crate::{BackupInfo, BulkUpdateItem, CheckThumbnailResult, KijukuError, Media, MediaAttribute, MediaFilter, MediaHash, MediaHashInput, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats, ThumbnailOptions, UpdateExistOptions, UpdateExistResult, UpdateThumbnailResult};
+use crate::{AttributeValueType, BackupInfo, BulkUpdateItem, CheckThumbnailResult, KijukuBackend, KijukuError, Media, MediaAttribute, MediaFilter, MediaHash, MediaHashInput, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats, ThumbnailOptions, UpdateExistOptions, UpdateExistResult, UpdateThumbnailResult};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
 use ssh2_config::{ParseRule, SshConfig};
@@ -53,6 +54,7 @@ struct CommandResponse {
 }
 
 /// リモートKijuku DB操作クラス
+#[derive(Clone)]
 pub struct RemoteKijukuDB {
     config: RemoteConfig,
 }
@@ -787,6 +789,226 @@ impl RemoteKijukuDB {
         })?;
 
         self.check_response(response)
+    }
+}
+
+/// SSH/ネットワーク I/O を伴う同期 RPC をブロッキングスレッドプールに逃すヘルパ。
+/// `RemoteKijukuDB` は `Clone` 可能（`RemoteConfig` のみ保持）で、各 RPC は毎回新規 SSH
+/// セッションを張るため、呼び出しごとに複製して `spawn_blocking` に渡す。
+async fn spawn_remote<F, T>(this: RemoteKijukuDB, f: F) -> Result<T>
+where
+    F: FnOnce(RemoteKijukuDB) -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || f(this))
+        .await
+        .map_err(|e| KijukuError::Other(format!("remote spawn_blocking join error: {}", e)))?
+}
+
+#[async_trait]
+impl KijukuBackend for RemoteKijukuDB {
+    async fn migrate(&self) -> Result<()> {
+        spawn_remote(self.clone(), |this| this.migrate()).await
+    }
+
+    async fn get_schema_version(&self) -> Result<i64> {
+        spawn_remote(self.clone(), |this| this.get_schema_version()).await
+    }
+
+    async fn get_tables(&self) -> Result<Vec<String>> {
+        spawn_remote(self.clone(), |this| this.get_tables()).await
+    }
+
+    async fn get_table_info(&self, table_name: &str) -> Result<Vec<TableColumnInfo>> {
+        let table_name = table_name.to_string();
+        spawn_remote(self.clone(), move |this| this.get_table_info(&table_name)).await
+    }
+
+    async fn create_media(&self, data: &MediaInput) -> Result<Media> {
+        let data = data.clone();
+        spawn_remote(self.clone(), move |this| this.create_media(&data)).await
+    }
+
+    async fn get_media(&self, id: i64) -> Result<Option<Media>> {
+        spawn_remote(self.clone(), move |this| this.get_media(id)).await
+    }
+
+    async fn update_media(&self, id: i64, input: &MediaUpdateInput) -> Result<()> {
+        let input = input.clone();
+        spawn_remote(self.clone(), move |this| this.update_media(id, &input)).await
+    }
+
+    async fn delete_media(&self, id: i64) -> Result<()> {
+        spawn_remote(self.clone(), move |this| this.delete_media(id)).await
+    }
+
+    async fn find_media(
+        &self,
+        filter: &MediaFilter,
+        options: Option<&QueryOptions>,
+    ) -> Result<Vec<Media>> {
+        let filter = filter.clone();
+        let options = options.cloned();
+        spawn_remote(self.clone(), move |this| {
+            this.find_media(&filter, options.as_ref())
+        })
+        .await
+    }
+
+    async fn get_distinct_values(
+        &self,
+        fields: &[&str],
+        filter: &MediaFilter,
+    ) -> Result<Vec<Vec<Option<String>>>> {
+        let fields: Vec<String> = fields.iter().map(|s| s.to_string()).collect();
+        let filter = filter.clone();
+        spawn_remote(self.clone(), move |this| {
+            let fields_ref: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
+            this.get_distinct_values(&fields_ref, &filter)
+        })
+        .await
+    }
+
+    async fn bulk_create_media(&self, data_list: &[MediaInput]) -> Result<Vec<Media>> {
+        let data_list = data_list.to_vec();
+        spawn_remote(self.clone(), move |this| this.bulk_create_media(&data_list)).await
+    }
+
+    async fn bulk_delete_media(&self, ids: &[i64]) -> Result<()> {
+        let ids = ids.to_vec();
+        spawn_remote(self.clone(), move |this| this.bulk_delete_media(&ids)).await
+    }
+
+    async fn bulk_update_media(&self, updates: &[BulkUpdateItem]) -> Result<()> {
+        let updates = updates.to_vec();
+        spawn_remote(self.clone(), move |this| this.bulk_update_media(&updates)).await
+    }
+
+    async fn create_tag(&self, name: &str) -> Result<Tag> {
+        let name = name.to_string();
+        spawn_remote(self.clone(), move |this| this.create_tag(&name)).await
+    }
+
+    async fn get_tag_by_name(&self, name: &str) -> Result<Option<Tag>> {
+        let name = name.to_string();
+        spawn_remote(self.clone(), move |this| this.get_tag_by_name(&name)).await
+    }
+
+    async fn get_all_tags(&self) -> Result<Vec<Tag>> {
+        spawn_remote(self.clone(), |this| this.get_all_tags()).await
+    }
+
+    async fn add_tag_to_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
+        spawn_remote(self.clone(), move |this| this.add_tag_to_media(media_id, tag_id)).await
+    }
+
+    async fn remove_tag_from_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
+        spawn_remote(self.clone(), move |this| this.remove_tag_from_media(media_id, tag_id)).await
+    }
+
+    async fn get_media_tags(&self, media_id: i64) -> Result<Vec<Tag>> {
+        spawn_remote(self.clone(), move |this| this.get_media_tags(media_id)).await
+    }
+
+    async fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {
+        spawn_remote(self.clone(), |this| this.get_tag_usage_stats()).await
+    }
+
+    async fn find_unused_tags(&self) -> Result<Vec<Tag>> {
+        spawn_remote(self.clone(), |this| this.find_unused_tags()).await
+    }
+
+    async fn set_media_attribute(
+        &self,
+        media_id: i64,
+        key: &str,
+        value: Option<&str>,
+        value_type: Option<AttributeValueType>,
+    ) -> Result<()> {
+        let key = key.to_string();
+        let value = value.map(|s| s.to_string());
+        spawn_remote(self.clone(), move |this| {
+            // RemoteKijukuDB::set_media_attribute は value_type を文字列で受け取るため変換
+            this.set_media_attribute(media_id, &key, value.as_deref(), value_type.map(|t| t.as_str()))
+        })
+        .await
+    }
+
+    async fn get_media_attribute(&self, media_id: i64, key: &str) -> Result<Option<MediaAttribute>> {
+        let key = key.to_string();
+        spawn_remote(self.clone(), move |this| this.get_media_attribute(media_id, &key)).await
+    }
+
+    async fn get_media_attributes(&self, media_id: i64) -> Result<Vec<MediaAttribute>> {
+        spawn_remote(self.clone(), move |this| this.get_media_attributes(media_id)).await
+    }
+
+    async fn delete_media_attribute(&self, media_id: i64, key: &str) -> Result<()> {
+        let key = key.to_string();
+        spawn_remote(self.clone(), move |this| this.delete_media_attribute(media_id, &key)).await
+    }
+
+    async fn delete_all_media_attributes(&self, media_id: i64) -> Result<()> {
+        spawn_remote(self.clone(), move |this| this.delete_all_media_attributes(media_id)).await
+    }
+
+    async fn add_media_hash(&self, input: &MediaHashInput) -> Result<MediaHash> {
+        let input = input.clone();
+        spawn_remote(self.clone(), move |this| this.add_media_hash(&input)).await
+    }
+
+    async fn add_media_hashes(&self, inputs: &[MediaHashInput]) -> Result<Vec<MediaHash>> {
+        let inputs = inputs.to_vec();
+        spawn_remote(self.clone(), move |this| this.add_media_hashes(&inputs)).await
+    }
+
+    async fn get_media_hashes(&self, item_uuid: &str) -> Result<Vec<MediaHash>> {
+        let item_uuid = item_uuid.to_string();
+        spawn_remote(self.clone(), move |this| this.get_media_hashes(&item_uuid)).await
+    }
+
+    async fn get_media_hash(
+        &self,
+        item_uuid: &str,
+        filename: &str,
+        time_range: &str,
+    ) -> Result<Option<MediaHash>> {
+        let item_uuid = item_uuid.to_string();
+        let filename = filename.to_string();
+        let time_range = time_range.to_string();
+        spawn_remote(self.clone(), move |this| {
+            this.get_media_hash(&item_uuid, &filename, &time_range)
+        })
+        .await
+    }
+
+    async fn find_by_content_hash(&self, hash: &[u8]) -> Result<Vec<MediaHash>> {
+        let hash = hash.to_vec();
+        spawn_remote(self.clone(), move |this| this.find_by_content_hash(&hash)).await
+    }
+
+    async fn delete_media_hash(
+        &self,
+        item_uuid: &str,
+        filename: &str,
+        time_range: &str,
+    ) -> Result<()> {
+        let item_uuid = item_uuid.to_string();
+        let filename = filename.to_string();
+        let time_range = time_range.to_string();
+        spawn_remote(self.clone(), move |this| {
+            this.delete_media_hash(&item_uuid, &filename, &time_range)
+        })
+        .await
+    }
+
+    async fn delete_media_hashes(&self, item_uuid: &str) -> Result<()> {
+        let item_uuid = item_uuid.to_string();
+        spawn_remote(self.clone(), move |this| this.delete_media_hashes(&item_uuid)).await
+    }
+
+    async fn find_duplicate_hashes(&self) -> Result<Vec<(Vec<u8>, i64)>> {
+        spawn_remote(self.clone(), |this| this.find_duplicate_hashes()).await
     }
 }
 

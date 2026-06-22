@@ -1,5 +1,7 @@
-use crate::crud::row_to_media;
+use crate::crud::{row_to_media, row_to_media_from_sqlrow};
+use crate::db_value::SqlParam;
 use crate::error::{KijukuError, Result};
+use crate::exec::SqlExec;
 use crate::types::{Media, MediaFilter, QueryOptions};
 use rusqlite::Connection;
 
@@ -324,6 +326,268 @@ fn build_where_clause(main_condition: &Option<String>, or_conditions: &[String])
     } else {
         format!("WHERE {}", all_conditions.join(" OR "))
     }
+}
+
+// ========== async バックエンド（SqlExec）用 ==========
+//
+// 同期版（`find_media(conn, ...)` 等）と同じ SQL/パラメータを `SqlParam` ベースで組み立て、
+// `&dyn SqlExec` で実行する。Local と D1 がこれを共有する（クエリ再実装回避）。
+
+fn add_like_filter_sql(
+    where_clauses: &mut Vec<String>,
+    params: &mut Vec<SqlParam>,
+    column_name: &str,
+    value: &Option<String>,
+) {
+    if let Some(ref val) = value {
+        where_clauses.push(format!("m.{} LIKE ?", column_name));
+        params.push(SqlParam::Text(format!("%{}%", val)));
+    }
+}
+
+/// `SqlParam` ベースのフィルタ条件構築結果
+struct FilterConditionsSql {
+    condition: Option<String>,
+    params: Vec<SqlParam>,
+    needs_tag_join: bool,
+}
+
+/// 単一の MediaFilter から条件を構築（SqlParam 版）
+fn build_filter_conditions_sql(filter: &MediaFilter) -> FilterConditionsSql {
+    let mut where_clauses = Vec::new();
+    let mut params: Vec<SqlParam> = Vec::new();
+    let mut needs_tag_join = false;
+
+    add_like_filter_sql(&mut where_clauses, &mut params, "title", &filter.title);
+    if let Some(ref title_id) = filter.title_id {
+        where_clauses.push("m.title_id = ?".to_string());
+        params.push(SqlParam::Text(title_id.clone()));
+    }
+    add_like_filter_sql(&mut where_clauses, &mut params, "artist", &filter.artist);
+    if let Some(ref artist_id) = filter.artist_id {
+        where_clauses.push("m.artist_id = ?".to_string());
+        params.push(SqlParam::Text(artist_id.clone()));
+    }
+    if let Some(ref media_type) = filter.media_type {
+        where_clauses.push("m.media_type = ?".to_string());
+        params.push(SqlParam::Text(media_type.as_str().to_string()));
+    }
+    add_like_filter_sql(&mut where_clauses, &mut params, "series", &filter.series);
+    if let Some(ref source) = filter.source {
+        where_clauses.push("m.source = ?".to_string());
+        params.push(SqlParam::Text(source.clone()));
+    }
+    if let Some(flag_exist) = filter.flag_exist {
+        where_clauses.push("m.flag_exist = ?".to_string());
+        params.push(SqlParam::Int(if flag_exist { 1 } else { 0 }));
+    }
+    if let Some(ref language) = filter.language {
+        where_clauses.push("m.language = ?".to_string());
+        params.push(SqlParam::Text(language.clone()));
+    }
+    add_like_filter_sql(&mut where_clauses, &mut params, "magazine", &filter.magazine);
+    if let Some(ref magazine_id) = filter.magazine_id {
+        where_clauses.push("m.magazine_id = ?".to_string());
+        params.push(SqlParam::Text(magazine_id.clone()));
+    }
+    if let Some(ref extension) = filter.extension {
+        where_clauses.push("m.extension = ?".to_string());
+        params.push(SqlParam::Text(extension.clone()));
+    }
+    if let Some(ref external_id) = filter.external_id {
+        where_clauses.push("m.external_id = ?".to_string());
+        params.push(SqlParam::Text(external_id.clone()));
+    }
+    add_like_filter_sql(&mut where_clauses, &mut params, "volume_title", &filter.volume_title);
+    add_like_filter_sql(&mut where_clauses, &mut params, "title_en", &filter.title_en);
+    add_like_filter_sql(&mut where_clauses, &mut params, "artist_en", &filter.artist_en);
+
+    // id_in（SQLite のパラメータ数上限 999 を考慮してチャンク分割）
+    if let Some(ref ids) = filter.id_in {
+        if !ids.is_empty() {
+            const CHUNK_SIZE: usize = 999;
+            let in_clauses: Vec<String> = ids
+                .chunks(CHUNK_SIZE)
+                .map(|chunk| format!("m.id IN ({})", vec!["?"; chunk.len()].join(", ")))
+                .collect();
+            where_clauses.push(format!("({})", in_clauses.join(" OR ")));
+            for id in ids {
+                params.push(SqlParam::Int(*id));
+            }
+        }
+    }
+
+    // タグフィルタ
+    if let Some(ref tag_ids) = filter.tag_ids {
+        if !tag_ids.is_empty() {
+            needs_tag_join = true;
+            let placeholders: Vec<String> = tag_ids.iter().map(|_| "?".to_string()).collect();
+            where_clauses.push(format!("mt.tag_id IN ({})", placeholders.join(", ")));
+            for tag_id in tag_ids {
+                params.push(SqlParam::Int(*tag_id));
+            }
+        }
+    }
+
+    let condition = if !where_clauses.is_empty() {
+        Some(where_clauses.join(" AND "))
+    } else {
+        None
+    };
+
+    FilterConditionsSql {
+        condition,
+        params,
+        needs_tag_join,
+    }
+}
+
+/// `find_media` の SQL とパラメータを構築
+pub fn build_find_media_sql(
+    filter: &MediaFilter,
+    options: Option<&QueryOptions>,
+) -> (String, Vec<SqlParam>) {
+    let main = build_filter_conditions_sql(filter);
+    let mut needs_tag_join = main.needs_tag_join;
+    let mut all_params = main.params;
+
+    let mut or_conditions: Vec<String> = Vec::new();
+    if let Some(ref or_filters) = filter.or_filters {
+        for or_filter in or_filters {
+            let c = build_filter_conditions_sql(or_filter);
+            if c.needs_tag_join {
+                needs_tag_join = true;
+            }
+            all_params.extend(c.params);
+            if let Some(cond) = c.condition {
+                or_conditions.push(cond);
+            }
+        }
+    }
+
+    let where_clause = build_where_clause(&main.condition, &or_conditions);
+
+    let from_clause = if needs_tag_join {
+        "FROM media m INNER JOIN media_tags mt ON m.id = mt.media_id"
+    } else {
+        "FROM media m"
+    };
+    let group_by_clause = if needs_tag_join { "GROUP BY m.id" } else { "" };
+
+    let order_by_clause = if let Some(opts) = options {
+        if !opts.sort_keys.is_empty() {
+            let parts: Vec<String> = opts
+                .sort_keys
+                .iter()
+                .map(|sk| format!("m.{} {}", sk.field, sk.order.as_str()))
+                .collect();
+            format!("ORDER BY {}", parts.join(", "))
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    let limit_clause = if let Some(opts) = options {
+        let mut clause = String::new();
+        if let Some(limit) = opts.limit {
+            clause.push_str(&format!("LIMIT {}", limit));
+            if let Some(offset) = opts.offset {
+                clause.push_str(&format!(" OFFSET {}", offset));
+            }
+        } else if let Some(offset) = opts.offset {
+            clause.push_str(&format!("LIMIT -1 OFFSET {}", offset));
+        }
+        clause
+    } else {
+        String::new()
+    };
+
+    let sql = format!(
+        "SELECT m.* {} {} {} {} {}",
+        from_clause, where_clause, group_by_clause, order_by_clause, limit_clause
+    );
+    (sql, all_params)
+}
+
+/// async バックエンド経由でメディアを検索
+pub async fn find_media_async(
+    exec: &dyn SqlExec,
+    filter: &MediaFilter,
+    options: Option<&QueryOptions>,
+) -> Result<Vec<Media>> {
+    let (sql, params) = build_find_media_sql(filter, options);
+    let rows = exec.query(&sql, &params).await?;
+    rows.iter().map(row_to_media_from_sqlrow).collect()
+}
+
+/// async バックエンド経由で指定フィールド群の重複なし値の組み合わせを取得
+pub async fn get_distinct_values_async(
+    exec: &dyn SqlExec,
+    fields: &[&str],
+    filter: &MediaFilter,
+) -> Result<Vec<Vec<Option<String>>>> {
+    if fields.is_empty() {
+        return Err(KijukuError::Validation(
+            "fieldsは1つ以上指定してください".to_string(),
+        ));
+    }
+    for field in fields {
+        if !ALLOWED_DISTINCT_FIELDS.contains(field) {
+            return Err(KijukuError::Validation(format!(
+                "無効なフィールド: {}。使用可能: {}",
+                field,
+                ALLOWED_DISTINCT_FIELDS.join(", ")
+            )));
+        }
+    }
+
+    let main = build_filter_conditions_sql(filter);
+    let mut needs_tag_join = main.needs_tag_join;
+    let mut all_params = main.params;
+
+    let mut or_conditions: Vec<String> = Vec::new();
+    if let Some(ref or_filters) = filter.or_filters {
+        for or_filter in or_filters {
+            let c = build_filter_conditions_sql(or_filter);
+            if c.needs_tag_join {
+                needs_tag_join = true;
+            }
+            all_params.extend(c.params);
+            if let Some(cond) = c.condition {
+                or_conditions.push(cond);
+            }
+        }
+    }
+    let filter_where = build_where_clause(&main.condition, &or_conditions);
+
+    let from_clause = if needs_tag_join {
+        "FROM media m INNER JOIN media_tags mt ON m.id = mt.media_id"
+    } else {
+        "FROM media m"
+    };
+
+    let select_cols: Vec<String> = fields.iter().map(|f| format!("m.{}", f)).collect();
+    let order_cols: Vec<String> = fields.iter().map(|f| format!("m.{} ASC", f)).collect();
+    let sql = format!(
+        "SELECT DISTINCT {} {} {} ORDER BY {}",
+        select_cols.join(", "),
+        from_clause,
+        filter_where,
+        order_cols.join(", ")
+    );
+
+    let rows = exec.query(&sql, &all_params).await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let mut values = Vec::with_capacity(fields.len());
+        for f in fields {
+            values.push(row.get_opt_text(f)?);
+        }
+        out.push(values);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -1,3 +1,6 @@
+// HTTP サーバー層は現状同期（KijukuDB の deprecated メソッド使用）。async 移行は別工程。
+#![allow(deprecated)]
+
 pub mod auth;
 
 use crate::{KijukuDB, MediaFilter, MediaType, QueryOptions, SortKey, SortOrder};

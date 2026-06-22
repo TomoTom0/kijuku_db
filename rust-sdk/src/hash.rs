@@ -1,5 +1,7 @@
 use rusqlite::{params, Connection};
-use crate::error::Result;
+use crate::db_value::{SqlParam, SqlRow};
+use crate::error::{KijukuError, Result};
+use crate::exec::SqlExec;
 use crate::types::{MediaHash, MediaHashInput};
 
 fn row_to_media_hash(row: &rusqlite::Row) -> rusqlite::Result<MediaHash> {
@@ -173,6 +175,200 @@ pub fn find_duplicate_hashes(conn: &Connection) -> Result<Vec<(Vec<u8>, i64)>> {
         Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+// ========== async バックエンド（SqlExec）用 ==========
+//
+// `compute_media_hash(s)` はファイルシステム・外部コマンド依存のため Local/Remote 専用（除外）。
+// 純DB操作（add/get/find/delete/find_duplicate）のみ async 化し、Local と D1 が組み立て層を共有。
+// `content_hash` / `embedding` は BLOB。Local はそのまま、D1 は hex 文字列で送受信
+// （`SqlParam::Blob` / `SqlRow::get_blob` が相互変換）。
+
+/// `SqlRow` から `MediaHash` へ変換
+fn row_to_media_hash_from_sqlrow(row: &SqlRow) -> Result<MediaHash> {
+    Ok(MediaHash {
+        item_uuid: row.get_text("item_uuid")?,
+        filename: row.get_text("filename")?,
+        time_range: row.get_text("time_range")?,
+        content_hash: row.get_blob("content_hash")?,
+        alternative_of: row.get_opt_text("alternative_of")?,
+        embedding: row.get_opt_blob("embedding")?,
+        created_at: row.get_text("created_at")?,
+        updated_at: row.get_text("updated_at")?,
+    })
+}
+
+/// `add_media_hash` の upsert SQL（`RETURNING` 無し）とパラメータを構築。
+/// `execute_batch` で一括実行する際は `RETURNING` を付けられない
+/// （rusqlite `execute` は行を返す文を受け付けない）ため、この core を使う。
+fn upsert_media_hash_stmt(input: &MediaHashInput) -> (String, Vec<SqlParam>) {
+    let params = vec![
+        SqlParam::Text(input.item_uuid.clone()),
+        SqlParam::Text(input.filename.clone()),
+        SqlParam::Text(input.time_range.clone()),
+        SqlParam::Blob(input.content_hash.clone()),
+        SqlParam::from_opt_str(&input.alternative_of),
+    ];
+
+    let sql = "INSERT INTO media_hashes (item_uuid, filename, time_range, content_hash, alternative_of)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(item_uuid, filename, time_range) DO UPDATE SET
+           content_hash = ?4,
+           alternative_of = ?5";
+
+    (sql.to_string(), params)
+}
+
+/// `add_media_hash` の upsert SQL とパラメータを構築（`RETURNING *`）。
+/// 同期版と同じ ON CONFLICT(upsert) だが、挿入/更新行を1往復で取得するため RETURNING を付ける。
+pub fn build_add_media_hash_sql(input: &MediaHashInput) -> (String, Vec<SqlParam>) {
+    let (sql, params) = upsert_media_hash_stmt(input);
+    (format!("{} RETURNING *", sql), params)
+}
+
+/// async バックエンド経由でメディアハッシュを登録（upsert・`RETURNING`）
+pub async fn add_media_hash_async(exec: &dyn SqlExec, input: &MediaHashInput) -> Result<MediaHash> {
+    let (sql, params) = build_add_media_hash_sql(input);
+    let rows = exec.query(&sql, &params).await?;
+    rows.into_iter()
+        .next()
+        .ok_or_else(|| KijukuError::Other("Failed to read inserted hash".to_string()))
+        .and_then(|row| row_to_media_hash_from_sqlrow(&row))
+}
+
+/// async バックエンド経由でメディアハッシュを一括登録。
+/// `execute_batch` で upsert したのち、登録結果を再取得する（Local は原子的・D1 は順次実行、batch は RETURNING 行を返さないため）。
+pub async fn add_media_hashes_async(
+    exec: &dyn SqlExec,
+    inputs: &[MediaHashInput],
+) -> Result<Vec<MediaHash>> {
+    if inputs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let stmts: Vec<(String, Vec<SqlParam>)> =
+        inputs.iter().map(upsert_media_hash_stmt).collect();
+    exec.execute_batch(stmts).await?;
+
+    let mut results = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        if let Some(hash) =
+            get_media_hash_async(exec, &input.item_uuid, &input.filename, &input.time_range).await?
+        {
+            results.push(hash);
+        }
+    }
+    Ok(results)
+}
+
+/// async バックエンド経由で特定作品の全ハッシュを取得
+pub async fn get_media_hashes_async(exec: &dyn SqlExec, item_uuid: &str) -> Result<Vec<MediaHash>> {
+    let sql = "SELECT * FROM media_hashes
+         WHERE item_uuid = ?1
+         ORDER BY filename, time_range";
+    let params = vec![SqlParam::Text(item_uuid.to_string())];
+    let rows = exec.query(sql, &params).await?;
+    rows.iter().map(row_to_media_hash_from_sqlrow).collect()
+}
+
+/// async バックエンド経由で特定位置のハッシュを取得
+pub async fn get_media_hash_async(
+    exec: &dyn SqlExec,
+    item_uuid: &str,
+    filename: &str,
+    time_range: &str,
+) -> Result<Option<MediaHash>> {
+    let sql = "SELECT * FROM media_hashes
+         WHERE item_uuid = ?1 AND filename = ?2 AND time_range = ?3";
+    let params = vec![
+        SqlParam::Text(item_uuid.to_string()),
+        SqlParam::Text(filename.to_string()),
+        SqlParam::Text(time_range.to_string()),
+    ];
+    let rows = exec.query(sql, &params).await?;
+    match rows.into_iter().next() {
+        Some(row) => Ok(Some(row_to_media_hash_from_sqlrow(&row)?)),
+        None => Ok(None),
+    }
+}
+
+/// async バックエンド経由の SHA256 完全一致検索
+pub async fn find_by_content_hash_async(
+    exec: &dyn SqlExec,
+    hash: &[u8],
+) -> Result<Vec<MediaHash>> {
+    let sql = "SELECT * FROM media_hashes WHERE content_hash = ?1";
+    let params = vec![SqlParam::Blob(hash.to_vec())];
+    let rows = exec.query(sql, &params).await?;
+    rows.iter().map(row_to_media_hash_from_sqlrow).collect()
+}
+
+/// async バックエンド経由で特定位置のハッシュを削除（代替行の連鎖削除を含む）。
+/// 同期版の3ステップ（原本削除時に代替行も削除）を `execute_batch` で実行
+/// （Local は原子的・D1 は順次実行のため、代替削除→本体削除の途中失敗に注意）。
+pub async fn delete_media_hash_async(
+    exec: &dyn SqlExec,
+    item_uuid: &str,
+    filename: &str,
+    time_range: &str,
+) -> Result<()> {
+    let mut stmts: Vec<(String, Vec<SqlParam>)> = Vec::new();
+
+    // 削除対象が原本の場合、その代替行も削除（空文字では alternative_of を検索しない）
+    if !filename.is_empty() {
+        stmts.push((
+            "DELETE FROM media_hashes WHERE item_uuid = ?1 AND alternative_of = ?2".to_string(),
+            vec![
+                SqlParam::Text(item_uuid.to_string()),
+                SqlParam::Text(filename.to_string()),
+            ],
+        ));
+    }
+    if !time_range.is_empty() {
+        stmts.push((
+            "DELETE FROM media_hashes WHERE item_uuid = ?1 AND alternative_of = ?2".to_string(),
+            vec![
+                SqlParam::Text(item_uuid.to_string()),
+                SqlParam::Text(time_range.to_string()),
+            ],
+        ));
+    }
+    // 最後に指定行を削除
+    stmts.push((
+        "DELETE FROM media_hashes
+         WHERE item_uuid = ?1 AND filename = ?2 AND time_range = ?3"
+            .to_string(),
+        vec![
+            SqlParam::Text(item_uuid.to_string()),
+            SqlParam::Text(filename.to_string()),
+            SqlParam::Text(time_range.to_string()),
+        ],
+    ));
+
+    exec.execute_batch(stmts).await?;
+    Ok(())
+}
+
+/// async バックエンド経由で特定作品のハッシュを全削除
+pub async fn delete_media_hashes_async(exec: &dyn SqlExec, item_uuid: &str) -> Result<()> {
+    let sql = "DELETE FROM media_hashes WHERE item_uuid = ?1";
+    let params = vec![SqlParam::Text(item_uuid.to_string())];
+    exec.execute(sql, &params).await?;
+    Ok(())
+}
+
+/// async バックエンド経由で重複ハッシュを検出
+pub async fn find_duplicate_hashes_async(
+    exec: &dyn SqlExec,
+) -> Result<Vec<(Vec<u8>, i64)>> {
+    let sql = "SELECT content_hash, COUNT(*) as cnt
+         FROM media_hashes
+         GROUP BY content_hash
+         HAVING cnt > 1";
+    let rows = exec.query(sql, &[]).await?;
+    rows.iter()
+        .map(|row| Ok((row.get_blob("content_hash")?, row.get_int("cnt")?)))
+        .collect()
 }
 
 /// compute結果の1エントリ
@@ -548,8 +744,152 @@ pub fn compute_media_hashes(
 mod tests {
     use super::*;
     use crate::crud::create_media;
+    use crate::exec_local::LocalExec;
     use crate::migration;
     use crate::types::{MediaInput, MediaFilter, MediaType};
+    use std::sync::{Arc, Mutex};
+
+    fn setup_async() -> (LocalExec, String) {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+        let media = create_media(
+            &conn,
+            &MediaInput {
+                title: "test".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let exec = LocalExec::new(Arc::new(Mutex::new(conn)));
+        (exec, media.uuid)
+    }
+
+    #[tokio::test]
+    async fn test_add_and_get_media_hash_async() {
+        let (exec, uuid) = setup_async();
+        let mut input = make_hash(&uuid, "001.jpg", "");
+        input.content_hash = vec![1u8; 32];
+
+        let hash = add_media_hash_async(&exec, &input).await.unwrap();
+        assert_eq!(hash.filename, "001.jpg");
+        assert_eq!(hash.content_hash, vec![1u8; 32]);
+        // embedding は NULL → None
+        assert_eq!(hash.embedding, None);
+
+        let got = get_media_hash_async(&exec, &uuid, "001.jpg", "")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.content_hash, vec![1u8; 32]);
+    }
+
+    #[tokio::test]
+    async fn test_add_media_hashes_bulk_async() {
+        let (exec, uuid) = setup_async();
+        let inputs = vec![
+            {
+                let mut h = make_hash(&uuid, "001.jpg", "");
+                h.content_hash = vec![1u8; 32];
+                h
+            },
+            {
+                let mut h = make_hash(&uuid, "002.jpg", "");
+                h.content_hash = vec![2u8; 32];
+                h
+            },
+        ];
+        let results = add_media_hashes_async(&exec, &inputs).await.unwrap();
+        assert_eq!(results.len(), 2);
+
+        let all = get_media_hashes_async(&exec, &uuid).await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_find_by_content_hash_async() {
+        let (exec, uuid) = setup_async();
+        let mut input = make_hash(&uuid, "", "");
+        input.content_hash = vec![0xABu8; 32];
+        add_media_hash_async(&exec, &input).await.unwrap();
+
+        let found = find_by_content_hash_async(&exec, &vec![0xABu8; 32])
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].item_uuid, uuid);
+
+        let not_found = find_by_content_hash_async(&exec, &vec![0xCDu8; 32])
+            .await
+            .unwrap();
+        assert!(not_found.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_media_hash_cascade_alternatives_async() {
+        let (exec, uuid) = setup_async();
+        // original
+        let mut orig = make_hash(&uuid, "001.jpg", "");
+        orig.content_hash = vec![1u8; 32];
+        add_media_hash_async(&exec, &orig).await.unwrap();
+        // alternative (alternative_of = "001.jpg")
+        let mut alt = make_hash(&uuid, "001.png", "");
+        alt.content_hash = vec![2u8; 32];
+        alt.alternative_of = Some("001.jpg".to_string());
+        add_media_hash_async(&exec, &alt).await.unwrap();
+
+        assert_eq!(get_media_hashes_async(&exec, &uuid).await.unwrap().len(), 2);
+
+        // 原本を削除 → 代替も削除される
+        delete_media_hash_async(&exec, &uuid, "001.jpg", "")
+            .await
+            .unwrap();
+        assert!(get_media_hashes_async(&exec, &uuid).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_find_duplicate_hashes_async() {
+        let (exec, uuid1) = setup_async();
+        // 同じ content_hash で2件
+        let mut h1 = make_hash(&uuid1, "", "");
+        h1.content_hash = vec![0xFFu8; 32];
+        add_media_hash_async(&exec, &h1).await.unwrap();
+
+        // 同一 item_uuid だとPK競合するので別 filename で2件目
+        let mut h2 = make_hash(&uuid1, "dup.jpg", "");
+        h2.content_hash = vec![0xFFu8; 32];
+        add_media_hash_async(&exec, &h2).await.unwrap();
+
+        // ユニークなhash
+        let mut h3 = make_hash(&uuid1, "uniq.jpg", "");
+        h3.content_hash = vec![0xAAu8; 32];
+        add_media_hash_async(&exec, &h3).await.unwrap();
+
+        let dupes = find_duplicate_hashes_async(&exec).await.unwrap();
+        assert_eq!(dupes.len(), 1);
+        assert_eq!(dupes[0].0, vec![0xFFu8; 32]);
+        assert_eq!(dupes[0].1, 2);
+    }
+
+    #[tokio::test]
+    async fn test_upsert_on_conflict_async() {
+        let (exec, uuid) = setup_async();
+        let mut input = make_hash(&uuid, "", "");
+        input.content_hash = vec![1u8; 32];
+        add_media_hash_async(&exec, &input).await.unwrap();
+
+        // 同じPKで別のhash値 → upsert
+        let mut input2 = make_hash(&uuid, "", "");
+        input2.content_hash = vec![2u8; 32];
+        add_media_hash_async(&exec, &input2).await.unwrap();
+
+        let got = get_media_hash_async(&exec, &uuid, "", "")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.content_hash, vec![2u8; 32]);
+        assert_eq!(get_media_hashes_async(&exec, &uuid).await.unwrap().len(), 1);
+    }
 
     fn setup() -> (Connection, String) {
         let conn = Connection::open_in_memory().unwrap();
