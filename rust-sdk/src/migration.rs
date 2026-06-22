@@ -625,11 +625,12 @@ pub async fn get_table_info_async(
 mod tests {
     use super::*;
     use crate::exec_local::LocalExec;
-    use std::sync::{Arc, Mutex};
+    use parking_lot::ReentrantMutex;
+    use std::sync::Arc;
 
     fn setup_exec() -> LocalExec {
         let conn = Connection::open_in_memory().unwrap();
-        LocalExec::new(Arc::new(Mutex::new(conn)))
+        LocalExec::new(Arc::new(ReentrantMutex::new(conn)))
     }
 
     #[tokio::test]

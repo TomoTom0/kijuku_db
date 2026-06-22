@@ -158,12 +158,13 @@ mod tests {
     use crate::exec_local::LocalExec;
     use crate::migration;
     use crate::types::MediaType;
-    use std::sync::{Arc, Mutex};
+    use parking_lot::ReentrantMutex;
+    use std::sync::Arc;
 
     fn setup_async() -> LocalExec {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
-        LocalExec::new(Arc::new(Mutex::new(conn)))
+        LocalExec::new(Arc::new(ReentrantMutex::new(conn)))
     }
 
     #[tokio::test]

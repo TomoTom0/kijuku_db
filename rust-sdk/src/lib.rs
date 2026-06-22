@@ -83,18 +83,20 @@ pub use thumbnail::{
 };
 pub use update_exist::{UpdateExistItemResult, UpdateExistOptions, UpdateExistResult};
 
+use parking_lot::ReentrantMutex;
 use rusqlite::Connection;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// きじゅくDBのメインクラス（Local バックエンド）
 ///
-/// 接続は `Arc<Mutex<Connection>>` で持ち、async 操作は共有 `LocalExec` 経由で
+/// 接続は `Arc<ReentrantMutex<Connection>>` で持ち、async 操作は共有 `LocalExec` 経由で
 /// `spawn_blocking` に乗せる。既存の同期メソッドは deprecated だが後方互換のため維持され、
-/// 内部で接続を都度ロックして動作する（`transaction` 内でのデッドロックを避けるため、
-/// ロックは各操作ごとに取得・解放し、トランザクション状態は同一接続に維持される）。
+/// 内部で接続を都度ロックして動作する。`ReentrantMutex` により同一スレッドからの再入が
+/// 許可されるため、`transaction` は接続ロックをトランザクション全体で保持しつつ、
+/// クロージャ内の同期メソッドを安全に呼び出せる（他スレッドは COMMIT/ROLLBACK までブロック）。
 pub struct KijukuDB {
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<ReentrantMutex<Connection>>,
     exec: LocalExec,
     options: DBOptions,
     backup_manager: Option<BackupManager>,
@@ -113,7 +115,7 @@ impl KijukuDB {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        let conn = Arc::new(Mutex::new(conn));
+        let conn = Arc::new(ReentrantMutex::new(conn));
         let exec = LocalExec::new(Arc::clone(&conn));
         Ok(Self {
             conn,
@@ -152,7 +154,7 @@ impl KijukuDB {
             None
         };
 
-        let conn = Arc::new(Mutex::new(conn));
+        let conn = Arc::new(ReentrantMutex::new(conn));
         let exec = LocalExec::new(Arc::clone(&conn));
         Ok(Self {
             conn,
@@ -166,7 +168,7 @@ impl KijukuDB {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        let conn = Arc::new(Mutex::new(conn));
+        let conn = Arc::new(ReentrantMutex::new(conn));
         let exec = LocalExec::new(Arc::clone(&conn));
         Ok(Self {
             conn,
@@ -178,9 +180,9 @@ impl KijukuDB {
 
     /// 接続の `Arc` ハンドルを取得（同プロセス内で `LocalExec` 等と共有する用途・内部用）。
     ///
-    /// NOTE: `connection()`（`&Connection` 直接取得）は conn の `Arc<Mutex>` 化に伴い廃止。
+    /// NOTE: `connection()`（`&Connection` 直接取得）は conn の `Arc<ReentrantMutex>` 化に伴い廃止。
     /// 直接 SQL 実行が必要な呼び出し側は公開メソッド経由か async trait（`KijukuBackend`）へ移行。
-    pub fn conn_handle(&self) -> Arc<Mutex<Connection>> {
+    pub fn conn_handle(&self) -> Arc<ReentrantMutex<Connection>> {
         Arc::clone(&self.conn)
     }
 
@@ -189,42 +191,37 @@ impl KijukuDB {
         &self.options
     }
 
-    /// Mutex ロック失敗を KijukuError へ変換
-    fn lock_err<E: std::fmt::Display>(e: E) -> KijukuError {
-        KijukuError::Other(format!("connection lock error: {}", e))
-    }
-
     /// マイグレーションを実行
     #[deprecated(note = "async API を使用してください (KijukuBackend::migrate)")]
     pub fn migrate(&self) -> Result<()> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         migration::migrate(&conn)
     }
 
     /// スキーマバージョンを取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_schema_version)")]
     pub fn get_schema_version(&self) -> Result<i64> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         migration::get_schema_version(&conn)
     }
 
     /// テーブル一覧を取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_tables)")]
     pub fn get_tables(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         migration::get_tables(&conn)
     }
 
     /// 外部キー制約が有効かチェック
     pub fn is_foreign_keys_enabled(&self) -> Result<bool> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         migration::is_foreign_keys_enabled(&conn)
     }
 
     /// 特定テーブルのカラム情報を取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_table_info)")]
     pub fn get_table_info(&self, table_name: &str) -> Result<Vec<TableColumnInfo>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         migration::get_table_info(&conn, table_name)
     }
 
@@ -232,7 +229,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::create_media)")]
     pub fn create_media(&self, input: &MediaInput) -> Result<Media> {
         let result = {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             crud::create_media(&conn, input)?
         };
         self.record_operation();
@@ -242,10 +239,7 @@ impl KijukuDB {
     /// IDでメディアを取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_media)")]
     pub fn get_media(&self, id: i64) -> Option<Media> {
-        let conn = match self.conn.lock() {
-            Ok(g) => g,
-            Err(_) => return None,
-        };
+        let conn = self.conn.lock();
         crud::get_media(&conn, id)
     }
 
@@ -255,7 +249,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::update_media)")]
     pub fn update_media(&self, id: i64, input: &MediaUpdateInput) -> Result<()> {
         {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             crud::update_media(&conn, id, input)?;
         }
         self.record_operation();
@@ -266,7 +260,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::delete_media)")]
     pub fn delete_media(&self, id: i64) -> Result<()> {
         {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             crud::delete_media(&conn, id)?;
         }
         self.record_operation();
@@ -280,7 +274,7 @@ impl KijukuDB {
         filter: &MediaFilter,
         options: Option<&QueryOptions>,
     ) -> Result<Vec<Media>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         search::find_media(&conn, filter, options)
     }
 
@@ -293,7 +287,7 @@ impl KijukuDB {
         fields: &[&str],
         filter: &MediaFilter,
     ) -> Result<Vec<Vec<Option<String>>>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         search::get_distinct_values(&conn, fields, filter)
     }
 
@@ -303,7 +297,7 @@ impl KijukuDB {
         filter: &MediaFilter,
         options: Option<&QueryOptions>,
     ) -> Result<CheckThumbnailResult> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         thumbnail::check_thumbnail(&conn, filter, options)
     }
 
@@ -315,7 +309,7 @@ impl KijukuDB {
         thumbnail_options: &ThumbnailOptions,
     ) -> Result<UpdateThumbnailResult> {
         let result = {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             thumbnail::update_thumbnail(&conn, filter, options, thumbnail_options)?
         };
         if result.generated > 0 {
@@ -332,7 +326,7 @@ impl KijukuDB {
         update_options: &UpdateExistOptions,
     ) -> Result<UpdateExistResult> {
         let result = {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             update_exist::update_exist(&conn, filter, options, update_options)?
         };
         if result.updated > 0 {
@@ -345,7 +339,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::bulk_create_media)")]
     pub fn bulk_create_media(&self, data_list: &[MediaInput]) -> Result<Vec<Media>> {
         let result = {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             bulk::bulk_create_media(&conn, data_list)?
         };
         self.record_operation();
@@ -356,7 +350,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::bulk_delete_media)")]
     pub fn bulk_delete_media(&self, ids: &[i64]) -> Result<()> {
         {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             bulk::bulk_delete_media(&conn, ids)?;
         }
         self.record_operation();
@@ -367,7 +361,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::bulk_update_media)")]
     pub fn bulk_update_media(&self, updates: &[BulkUpdateItem]) -> Result<()> {
         {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             bulk::bulk_update_media(&conn, updates)?;
         }
         self.record_operation();
@@ -378,7 +372,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::create_tag)")]
     pub fn create_tag(&self, name: &str) -> Result<Tag> {
         let result = {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             tag::create_tag(&conn, name)?
         };
         self.record_operation();
@@ -388,17 +382,14 @@ impl KijukuDB {
     /// タグ名でタグを取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_tag_by_name)")]
     pub fn get_tag_by_name(&self, name: &str) -> Option<Tag> {
-        let conn = match self.conn.lock() {
-            Ok(g) => g,
-            Err(_) => return None,
-        };
+        let conn = self.conn.lock();
         tag::get_tag_by_name(&conn, name)
     }
 
     /// 全てのタグを取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_all_tags)")]
     pub fn get_all_tags(&self) -> Result<Vec<Tag>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         tag::get_all_tags(&conn)
     }
 
@@ -406,7 +397,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::add_tag_to_media)")]
     pub fn add_tag_to_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
         {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             tag::add_tag_to_media(&conn, media_id, tag_id)?;
         }
         self.record_operation();
@@ -417,7 +408,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::remove_tag_from_media)")]
     pub fn remove_tag_from_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
         {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             tag::remove_tag_from_media(&conn, media_id, tag_id)?;
         }
         self.record_operation();
@@ -427,21 +418,21 @@ impl KijukuDB {
     /// メディアに関連付けられたタグを取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_tags)")]
     pub fn get_media_tags(&self, media_id: i64) -> Result<Vec<Tag>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         tag::get_media_tags(&conn, media_id)
     }
 
     /// タグの使用数統計を取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_tag_usage_stats)")]
     pub fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         tag::get_tag_usage_stats(&conn)
     }
 
     /// 未使用のタグを取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::find_unused_tags)")]
     pub fn find_unused_tags(&self) -> Result<Vec<Tag>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         tag::find_unused_tags(&conn)
     }
 
@@ -455,7 +446,7 @@ impl KijukuDB {
         value_type: Option<AttributeValueType>,
     ) -> Result<()> {
         {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             attribute::set_media_attribute(&conn, media_id, key, value, value_type)?;
         }
         self.record_operation();
@@ -468,7 +459,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::add_media_hash)")]
     pub fn add_media_hash(&self, input: &MediaHashInput) -> Result<MediaHash> {
         let result = {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             hash::add_media_hash(&conn, input)?
         };
         self.record_operation();
@@ -479,7 +470,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::add_media_hashes)")]
     pub fn add_media_hashes(&self, inputs: &[MediaHashInput]) -> Result<Vec<MediaHash>> {
         let result = {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             hash::add_media_hashes(&conn, inputs)?
         };
         self.record_operation();
@@ -489,21 +480,21 @@ impl KijukuDB {
     /// 特定作品の全ハッシュを取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_hashes)")]
     pub fn get_media_hashes(&self, item_uuid: &str) -> Result<Vec<MediaHash>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         hash::get_media_hashes(&conn, item_uuid)
     }
 
     /// 特定位置のハッシュを取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_hash)")]
     pub fn get_media_hash(&self, item_uuid: &str, filename: &str, time_range: &str) -> Result<Option<MediaHash>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         hash::get_media_hash(&conn, item_uuid, filename, time_range)
     }
 
     /// SHA256による完全一致検索
     #[deprecated(note = "async API を使用してください (KijukuBackend::find_by_content_hash)")]
     pub fn find_by_content_hash(&self, hash_bytes: &[u8]) -> Result<Vec<MediaHash>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         hash::find_by_content_hash(&conn, hash_bytes)
     }
 
@@ -511,7 +502,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::delete_media_hash)")]
     pub fn delete_media_hash(&self, item_uuid: &str, filename: &str, time_range: &str) -> Result<()> {
         {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             hash::delete_media_hash(&conn, item_uuid, filename, time_range)?;
         }
         self.record_operation();
@@ -522,7 +513,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::delete_media_hashes)")]
     pub fn delete_media_hashes(&self, item_uuid: &str) -> Result<()> {
         {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             hash::delete_media_hashes(&conn, item_uuid)?;
         }
         self.record_operation();
@@ -532,7 +523,7 @@ impl KijukuDB {
     /// 重複ハッシュの検出
     #[deprecated(note = "async API を使用してください (KijukuBackend::find_duplicate_hashes)")]
     pub fn find_duplicate_hashes(&self) -> Result<Vec<(Vec<u8>, i64)>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         hash::find_duplicate_hashes(&conn)
     }
 
@@ -544,7 +535,7 @@ impl KijukuDB {
         media_type: &str,
         duration_sec: Option<i32>,
     ) -> Result<hash::ComputeHashResult> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         hash::compute_media_hash(&conn, item_uuid, media_path, media_type, duration_sec)
     }
 
@@ -555,21 +546,21 @@ impl KijukuDB {
         options: Option<&QueryOptions>,
         force: bool,
     ) -> Result<Vec<hash::ComputeHashResult>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         hash::compute_media_hashes(&conn, filter, options, force)
     }
 
     /// メディアの属性を取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_attribute)")]
     pub fn get_media_attribute(&self, media_id: i64, key: &str) -> Result<Option<MediaAttribute>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         attribute::get_media_attribute(&conn, media_id, key)
     }
 
     /// メディアの全ての属性を取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_attributes)")]
     pub fn get_media_attributes(&self, media_id: i64) -> Result<Vec<MediaAttribute>> {
-        let conn = self.conn.lock().map_err(Self::lock_err)?;
+        let conn = self.conn.lock();
         attribute::get_media_attributes(&conn, media_id)
     }
 
@@ -577,7 +568,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::delete_media_attribute)")]
     pub fn delete_media_attribute(&self, media_id: i64, key: &str) -> Result<()> {
         {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             attribute::delete_media_attribute(&conn, media_id, key)?;
         }
         self.record_operation();
@@ -588,7 +579,7 @@ impl KijukuDB {
     #[deprecated(note = "async API を使用してください (KijukuBackend::delete_all_media_attributes)")]
     pub fn delete_all_media_attributes(&self, media_id: i64) -> Result<()> {
         {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
+            let conn = self.conn.lock();
             attribute::delete_all_media_attributes(&conn, media_id)?;
         }
         self.record_operation();
@@ -637,11 +628,7 @@ impl KijukuDB {
     /// エラーはログ出力のみで、呼び出し元の操作は妨げない。
     fn record_operation(&self) {
         // トランザクション中（autocommit=false）は記録しない
-        let autocommit = self
-            .conn
-            .lock()
-            .map(|c| c.is_autocommit())
-            .unwrap_or(true);
+        let autocommit = self.conn.lock().is_autocommit();
         if !autocommit {
             return;
         }
@@ -654,44 +641,33 @@ impl KijukuDB {
 
     /// 複数の操作を単一のトランザクションで実行する（同期 API）。
     ///
-    /// # 並行安全性についての警告
+    /// # 並行安全性
     ///
-    /// 内部接続は `Arc<Mutex<Connection>>` で共有されるため `KijukuDB` は `Sync` となり、
-    /// 複数スレッド間で共有できます。ただし本メソッドはトランザクション実行中も
-    /// クロージャ内の各操作ごとにロックを取得・解放します（クロージャ内の同期メソッドが
-    /// 再ロックしてデッドロックするのを避けるため）。そのためトランザクション実行中に
-    /// **別スレッドから同一インスタンスへクエリを投げると、そのクエリが同一トランザクション内で
-    /// 実行されたりロールバックに巻き込まれたりする競合状態** が発生します。
-    ///
-    /// 複数スレッドから並行利用する場合は、呼び出し側で外部 `Mutex` 等による排他制御を行うか、
-    /// async API（`KijukuBackend`）の利用を推奨します。単一スレッドでの逐次利用では安全です。
+    /// 内部接続は `Arc<ReentrantMutex<Connection>>` で共有されます。本メソッドは
+    /// トランザクション実行中（BEGIN〜COMMIT/ROLLBACK）接続ロックを保持し続けます。
+    /// `ReentrantMutex` により同一スレッドからの再入のみ許可されるため、クロージャ内の
+    /// 同期メソッド（`create_media` 等）は安全に呼び出せます。他スレッドからのクエリは
+    /// COMMIT/ROLLBACK までブロックされ、トランザクション中に別スレッドのクエリが
+    /// 同一トランザクションやロールバックに巻き込まれる競合状態は発生しません。
     pub fn transaction<F, T>(&self, f: F) -> Result<T>
     where
         F: FnOnce(&Self) -> Result<T>,
     {
-        // conn は Arc<Mutex> のため、BEGIN/COMMIT/ROLLBACK とクロージャ内の各操作は
-        // それぞれ独立してロックを取得・解放する。トランザクション状態は同一接続に維持され、
-        // クロージャ内の deprecated 同期メソッドが再ロックしてデッドロックすることはない。
-        {
-            let conn = self.conn.lock().map_err(Self::lock_err)?;
-            conn.execute("BEGIN TRANSACTION", [])?;
-        }
-
+        // conn をトランザクション全体でロック保持。ReentrantMutex により同一スレッドの
+        // 再入（クロージャ内の同期メソッド）が許可され、他スレッドは COMMIT/ROLLBACK
+        // までブロックされる。これによりトランザクション中の並行競合を完全に防ぐ。
+        let conn = self.conn.lock();
+        conn.execute("BEGIN TRANSACTION", [])?;
         match f(self) {
             Ok(result) => {
-                {
-                    let conn = self.conn.lock().map_err(Self::lock_err)?;
-                    conn.execute("COMMIT", [])?;
-                }
+                conn.execute("COMMIT", [])?;
+                drop(conn);
                 self.record_operation();
                 Ok(result)
             }
             Err(e) => {
-                let _ = self
-                    .conn
-                    .lock()
-                    .map_err(Self::lock_err)
-                    .map(|conn| conn.execute("ROLLBACK", []));
+                let _ = conn.execute("ROLLBACK", []);
+                drop(conn);
                 Err(e)
             }
         }
@@ -752,8 +728,21 @@ impl KijukuDB {
             .backup_manager
             .as_ref()
             .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?;
-        let mut conn = self.conn.lock().map_err(Self::lock_err)?;
-        manager.restore(&mut conn, selector)
+        // restore は &mut Connection を要求するが、ReentrantMutex の guard は &mut を提供しない。
+        // self.exec（同じ Arc を共有）をダミーに差し替えて self.conn の Arc 参照カウントを 1 にし、
+        // Arc::get_mut + ReentrantMutex::get_mut で &mut Connection を得る。
+        // ※ conn_handle 等で外部に Arc が漏れている場合は get_mut が失敗しエラー。
+        let dummy = Arc::new(ReentrantMutex::new(Connection::open_in_memory()?));
+        self.exec = LocalExec::new(dummy);
+        let restore_result = match Arc::get_mut(&mut self.conn) {
+            Some(re_mutex) => manager.restore(ReentrantMutex::get_mut(re_mutex), selector),
+            None => Err(KijukuError::Other(
+                "cannot restore: connection is shared with other owners".to_string(),
+            )),
+        };
+        // 成功/失敗問わず self.exec を self.conn と再共有して一貫状態に戻す
+        self.exec = LocalExec::new(Arc::clone(&self.conn));
+        restore_result
     }
 
     /// バックアップ一覧を取得
@@ -1288,8 +1277,9 @@ mod tests {
     #[allow(deprecated)]
     #[test]
     fn test_kijukudb_transaction_sync_still_works() {
-        // conn の Arc<Mutex> 化後も、deprecated 同期 API + transaction が動くこと
-        // （BEGIN/COMMIT/各操作とも per-op でロック取得・解放 → デッドロックしない）
+        // conn の Arc<ReentrantMutex> 化後も、deprecated 同期 API + transaction が動くこと
+        // （transaction が接続ロックを保持しつつ、クロージャ内の同期メソッドは同一スレッドの
+        // 再入で通過 → デッドロックせず、他スレッドは COMMIT/ROLLBACK までブロックされる）
         let db = KijukuDB::open_in_memory().unwrap();
         db.migrate().unwrap();
 

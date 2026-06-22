@@ -1,7 +1,11 @@
 // 結合テストは意図的に deprecated 同期 API を検証（後方互換の保証）
 #![allow(deprecated)]
 
-use kijuku_db::{KijukuDB, MediaInput, MediaUpdateInput, MediaType, MediaFilter, QueryOptions, SortKey, SortOrder};
+use kijuku_db::{KijukuDB, KijukuError, MediaInput, MediaUpdateInput, MediaType, MediaFilter, QueryOptions, SortKey, SortOrder};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::{Duration, Instant};
 use tempfile::NamedTempFile;
 
 #[test]
@@ -391,4 +395,83 @@ fn test_close_method() {
     let media = db2.get_media(1);
     assert!(media.is_some());
     assert_eq!(media.unwrap().title, "テストメディア");
+}
+
+#[test]
+fn test_transaction_serializes_concurrent_access() {
+    // トランザクション実行中、別スレッドからのクエリは COMMIT/ROLLBACK までブロックされる。
+    // ReentrantMutex による接続ロック保持で直列化されることを検証する。
+    let temp_file = NamedTempFile::new().unwrap();
+    let db = Arc::new(KijukuDB::open(temp_file.path()).unwrap());
+    db.migrate().unwrap();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let db2 = Arc::clone(&db);
+    let barrier2 = Arc::clone(&barrier);
+
+    // スレッド A: トランザクション内で barrier で待ち合わせし、ロックを保持したまま待機
+    let handle = thread::spawn(move || {
+        db2.transaction(|db| {
+            db.create_media(&MediaInput {
+                title: "tx".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            })?;
+            barrier2.wait(); // トランザクション保持中にスレッド B へ通知
+            thread::sleep(Duration::from_millis(200)); // ロックを保持したまま待機
+            Ok::<_, KijukuError>(())
+        })
+        .unwrap();
+    });
+
+    barrier.wait(); // スレッド A がトランザクションを開始するまで待機
+    let start = Instant::now();
+    // 主スレッドからのクエリはトランザクション終了までブロックされるはず
+    let _found = db.find_media(&MediaFilter::default(), None).unwrap();
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(150),
+        "他スレッドのトランザクション中はブロックされるべき: {:?}",
+        elapsed
+    );
+    handle.join().unwrap();
+}
+
+#[test]
+fn test_transaction_rollback_isolation() {
+    // ロールバックされるトランザクションの未コミット内容は他スレッドから見えないことを検証。
+    // 旧実装では BEGIN〜ROLLBACK 間に別スレッドのクエリが巻き込まれる競合があった。
+    let temp_file = NamedTempFile::new().unwrap();
+    let db = Arc::new(KijukuDB::open(temp_file.path()).unwrap());
+    db.migrate().unwrap();
+
+    let started = Arc::new(AtomicBool::new(false));
+    let db2 = Arc::clone(&db);
+    let started2 = Arc::clone(&started);
+    let handle = thread::spawn(move || {
+        let _ = db2.transaction(|db| {
+            db.create_media(&MediaInput {
+                title: "m1".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            })?;
+            started2.store(true, Ordering::SeqCst); // トランザクション開始を通知
+            thread::sleep(Duration::from_millis(300)); // ロック保持して待機
+            Err::<(), KijukuError>(KijukuError::Other("intentional rollback".to_string()))
+        });
+    });
+
+    // スレッド A がトランザクションを開始するまで待機
+    while !started.load(Ordering::SeqCst) {
+        thread::sleep(Duration::from_millis(10));
+    }
+    // このクエリはトランザクションの ROLLBACK が終わるまでブロックされ、
+    // ロールバック後は空（未コミット内容は見えない）
+    let found = db.find_media(&MediaFilter::default(), None).unwrap();
+    assert_eq!(
+        found.len(),
+        0,
+        "ロールバックされたトランザクションの内容は見えないべき"
+    );
+    handle.join().unwrap();
 }
