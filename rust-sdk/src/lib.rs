@@ -85,6 +85,7 @@ pub use update_exist::{UpdateExistItemResult, UpdateExistOptions, UpdateExistRes
 
 use parking_lot::ReentrantMutex;
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -1012,6 +1013,13 @@ impl KijukuBackend for KijukuDB {
         tag::get_media_tags_async(&self.exec, media_id).await
     }
 
+    async fn get_media_tags_bulk(
+        &self,
+        media_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<Tag>>> {
+        tag::get_media_tags_bulk_async(&self.exec, media_ids).await
+    }
+
     async fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {
         tag::get_tag_usage_stats_async(&self.exec).await
     }
@@ -1213,6 +1221,81 @@ mod tests {
                 .value,
             Some("v".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_media_tags_bulk_async() {
+        // get_media_tags_bulk: JOIN 1発で複数メディアのタグを取得（N+1回避）
+        let db = KijukuDB::open_in_memory().unwrap();
+        KijukuBackend::migrate(&db).await.unwrap();
+
+        let m1 = KijukuBackend::create_media(
+            &db,
+            &MediaInput {
+                title: "作品1".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let m2 = KijukuBackend::create_media(
+            &db,
+            &MediaInput {
+                title: "作品2".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let m3 = KijukuBackend::create_media(
+            &db,
+            &MediaInput {
+                title: "作品3".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let t1 = KijukuBackend::create_tag(&db, "tag-a").await.unwrap();
+        let t2 = KijukuBackend::create_tag(&db, "tag-b").await.unwrap();
+
+        // m1: tag-a, tag-b / m2: tag-a / m3: タグなし
+        KijukuBackend::add_tag_to_media(&db, m1.id, t1.id).await.unwrap();
+        KijukuBackend::add_tag_to_media(&db, m1.id, t2.id).await.unwrap();
+        KijukuBackend::add_tag_to_media(&db, m2.id, t1.id).await.unwrap();
+
+        let result =
+            KijukuBackend::get_media_tags_bulk(&db, &[m1.id, m2.id, m3.id])
+                .await
+                .unwrap();
+
+        // タグなしメディア(m3)は結果のエントリに含まれない
+        assert_eq!(result.len(), 2);
+        // m1 は2タグ（名前順: tag-a, tag-b）
+        let m1_tags = result.get(&m1.id).unwrap();
+        assert_eq!(m1_tags.len(), 2);
+        assert_eq!(m1_tags[0].name, "tag-a");
+        assert_eq!(m1_tags[1].name, "tag-b");
+        // m2 は1タグ
+        let m2_tags = result.get(&m2.id).unwrap();
+        assert_eq!(m2_tags.len(), 1);
+        assert_eq!(m2_tags[0].name, "tag-a");
+        // m3 はエントリなし（タグなし）
+        assert!(!result.contains_key(&m3.id));
+    }
+
+    #[tokio::test]
+    async fn test_get_media_tags_bulk_empty_async() {
+        // 空リストは空のマップを返す
+        let db = KijukuDB::open_in_memory().unwrap();
+        KijukuBackend::migrate(&db).await.unwrap();
+
+        let result = KijukuBackend::get_media_tags_bulk(&db, &[]).await.unwrap();
+        assert!(result.is_empty());
     }
 
     #[tokio::test]

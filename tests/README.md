@@ -48,16 +48,16 @@ ts-sdk/test/
 
 ```bash
 # TypeScript SDK テスト（全て）
-cd ts-sdk && pnpm run test
+mise run test:ts
 
 # TypeScript SDK テスト（unit のみ）
-cd ts-sdk && pnpm run test:unit
+mise run test:ts:unit
 
 # TypeScript SDK テスト（integration のみ）
-cd ts-sdk && pnpm run test:integration
+mise run test:ts:integration
 
 # Rust SDK テスト（全て）
-cd rust-sdk && cargo test
+mise run test:rust
 
 # Rust SDK テスト（特定ファイル）
 cd rust-sdk && cargo test --test backup_test

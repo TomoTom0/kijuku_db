@@ -3,6 +3,7 @@ use crate::error::{KijukuError, Result};
 use crate::exec::SqlExec;
 use crate::types::{Tag, TagUsageStats};
 use rusqlite::{params, Connection};
+use std::collections::HashMap;
 
 /// タグを作成
 pub fn create_tag(conn: &Connection, name: &str) -> Result<Tag> {
@@ -206,6 +207,44 @@ pub async fn get_media_tags_async(exec: &dyn SqlExec, media_id: i64) -> Result<V
     let params = vec![SqlParam::Int(media_id)];
     let rows = exec.query(sql, &params).await?;
     rows.iter().map(row_to_tag).collect()
+}
+
+/// async バックエンド経由で複数メディアのタグを一括取得（N+1回避）
+///
+/// `media_tags` と `tags` の JOIN 1発で複数メディアのタグを取得し、
+/// `media_id -> Vec<Tag>` のマップに集約する。タグを持たないメディアは
+/// 結果のエントリに含まれない（呼び出し側で `get(&id).map(|v| v.as_slice()).unwrap_or(&[])`
+/// 等で補完すること）。999件超はチャンク分割して順次取得・マージする。
+pub async fn get_media_tags_bulk_async(
+    exec: &dyn SqlExec,
+    media_ids: &[i64],
+) -> Result<HashMap<i64, Vec<Tag>>> {
+    let mut result: HashMap<i64, Vec<Tag>> = HashMap::new();
+    if media_ids.is_empty() {
+        return Ok(result);
+    }
+
+    const CHUNK_SIZE: usize = 999;
+    for chunk in media_ids.chunks(CHUNK_SIZE) {
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let sql = format!(
+            "SELECT mt.media_id, t.id, t.name
+             FROM media_tags mt
+             INNER JOIN tags t ON t.id = mt.tag_id
+             WHERE mt.media_id IN ({})
+             ORDER BY t.name",
+            placeholders
+        );
+        let params: Vec<SqlParam> = chunk.iter().map(|id| SqlParam::Int(*id)).collect();
+        let rows = exec.query(&sql, &params).await?;
+        for row in rows.iter() {
+            let media_id = row.get_int("media_id")?;
+            let tag = row_to_tag(row)?;
+            result.entry(media_id).or_default().push(tag);
+        }
+    }
+
+    Ok(result)
 }
 
 /// async バックエンド経由でタグ使用数統計を取得

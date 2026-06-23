@@ -106,6 +106,8 @@ export interface MediaFilter {
   artist_en?: string;
   /** IDのIN句フィルタ（複数IDを一括フェッチする場合に使用） */
   id_in?: number[];
+  /** 除外IDのNOT IN句フィルタ（視聴済みIDなど少数のIDを除外する場合に使用） */
+  exclude_ids?: number[];
   /**
    * OR条件で結合する追加フィルタ
    * 各フィルタ内の条件はAND結合、or_filters間はOR結合される

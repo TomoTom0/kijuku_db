@@ -90,6 +90,41 @@ describe('Tag', () => {
     });
   });
 
+  describe('getMediaTagsBulk', () => {
+    test('複数メディアのタグを一括取得できる（N+1回避）', () => {
+      const tag1 = db.createTag('アクション');
+      const tag2 = db.createTag('SF');
+      // beforeEach の mediaId に 2 タグ
+      db.addTagToMedia(mediaId, tag1.id);
+      db.addTagToMedia(mediaId, tag2.id);
+      // タグ1つを持つメディアを追加
+      const media2 = db.createMedia({ title: 'bulk2', media_type: 'comic' });
+      db.addTagToMedia(media2.id, tag1.id);
+      // タグなしメディアを追加
+      const media3 = db.createMedia({ title: 'bulk3', media_type: 'comic' });
+
+      const result = db.getMediaTagsBulk([mediaId, media2.id, media3.id]);
+      // タグなしメディア(media3)はエントリに含まれない
+      expect(Object.keys(result)).toHaveLength(2);
+      // mediaId は2タグ
+      expect(result[mediaId]).toHaveLength(2);
+      expect(result[mediaId].map((t) => t.name).sort()).toEqual([
+        'SF',
+        'アクション',
+      ]);
+      // media2 は1タグ
+      expect(result[media2.id]).toHaveLength(1);
+      expect(result[media2.id][0].name).toBe('アクション');
+      // media3 はエントリなし（タグなし）
+      expect(result[media3.id]).toBeUndefined();
+    });
+
+    test('空配列の場合、空のオブジェクトを返す', () => {
+      const result = db.getMediaTagsBulk([]);
+      expect(Object.keys(result)).toHaveLength(0);
+    });
+  });
+
   describe('removeTagFromMedia', () => {
     test('メディアからタグを削除できる', () => {
       const tag = db.createTag('SF');

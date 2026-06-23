@@ -5,8 +5,10 @@
 ## インストール
 
 ```bash
-./scripts/dev/deploy-local.sh
+mise run deploy
 ```
+
+mise を使用しない場合は `./scripts/dev/deploy-local.sh` を直接実行することもできます。
 
 バイナリは `~/.local/bin/kijuku-cli` にインストールされます。
 

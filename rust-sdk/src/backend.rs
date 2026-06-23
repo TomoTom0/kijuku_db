@@ -7,6 +7,7 @@
 //! 固有メソッドとして残る（D1 では提供しない）。
 
 use crate::error::Result;
+use std::collections::HashMap;
 use crate::migration::TableColumnInfo;
 use crate::types::{
     AttributeValueType, BulkUpdateItem, Media, MediaAttribute, MediaFilter, MediaHash,
@@ -95,6 +96,21 @@ pub trait KijukuBackend: Send + Sync {
 
     /// メディアのタグを取得
     async fn get_media_tags(&self, media_id: i64) -> Result<Vec<Tag>>;
+
+    /// 複数メディアのタグを一括取得（N+1回避。タグなしメディアは結果のエントリに含まれない）
+    ///
+    /// デフォルト実装は `get_media_tags` のループ（N+1）。Local/D1 は JOIN 1発の
+    /// 効率的実装で上書きする。RemoteKijukuDB はデフォルト（ループ）を使用する。
+    async fn get_media_tags_bulk(
+        &self,
+        media_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<Tag>>> {
+        let mut result = HashMap::new();
+        for id in media_ids {
+            result.insert(*id, self.get_media_tags(*id).await?);
+        }
+        Ok(result)
+    }
 
     /// タグ使用数統計を取得
     async fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>>;

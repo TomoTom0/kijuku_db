@@ -131,6 +131,37 @@ describe('Search and Filter', () => {
         expect(m.media_type).toBe('comic');
       });
     });
+
+    test('exclude_idsで指定IDを除外できる', () => {
+      const all = db.findMedia({});
+      expect(all).toHaveLength(4);
+      const allIds = all.map((m) => m.id);
+      // 最初の2件を除外
+      const results = db.findMedia({ exclude_ids: [allIds[0], allIds[1]] });
+      expect(results).toHaveLength(2);
+      const resultIds = results.map((m) => m.id);
+      expect(resultIds).not.toContain(allIds[0]);
+      expect(resultIds).not.toContain(allIds[1]);
+    });
+
+    test('exclude_idsが空配列の場合、全件取得になる', () => {
+      const results = db.findMedia({ exclude_ids: [] });
+      expect(results).toHaveLength(4);
+    });
+
+    test('id_inとexclude_idsを組み合わせられる', () => {
+      const all = db.findMedia({});
+      const allIds = all.map((m) => m.id);
+      // id_in=全ID, exclude_ids=最初の2件 → 残り2件（IN と NOT IN の併用）
+      const results = db.findMedia({
+        id_in: allIds,
+        exclude_ids: [allIds[0], allIds[1]],
+      });
+      expect(results).toHaveLength(2);
+      const resultIds = results.map((m) => m.id);
+      expect(resultIds).not.toContain(allIds[0]);
+      expect(resultIds).not.toContain(allIds[1]);
+    });
   });
 
   describe('findMedia - ソート', () => {

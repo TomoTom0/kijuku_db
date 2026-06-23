@@ -190,6 +190,24 @@ function buildFilterConditions(filter: MediaFilter, counter: ParamCounter): Filt
     whereClauses.push(`(${orClauses.join(' OR ')})`);
   }
 
+  // exclude_idsフィルタの処理（id_in の逆: NOT IN）
+  // チャンク分割された NOT IN 句は AND で結合する
+  // （いずれのチャンクにも含まれない = 全体の NOT IN と同義）
+  if (filter.exclude_ids && filter.exclude_ids.length > 0) {
+    const CHUNK_SIZE = 999;
+    const andClauses: string[] = [];
+    for (let i = 0; i < filter.exclude_ids.length; i += CHUNK_SIZE) {
+      const chunk = filter.exclude_ids.slice(i, i + CHUNK_SIZE);
+      const idParamNames = chunk.map((id) => {
+        const paramName = getUniqueParamName('exclude_ids', counter);
+        params[paramName] = id;
+        return `@${paramName}`;
+      });
+      andClauses.push(`m.id NOT IN (${idParamNames.join(', ')})`);
+    }
+    whereClauses.push(`(${andClauses.join(' AND ')})`);
+  }
+
   // タグフィルタの処理
   if (filter.tag_ids && filter.tag_ids.length > 0) {
     needsTagJoin = true;

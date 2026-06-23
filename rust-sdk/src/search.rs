@@ -117,6 +117,22 @@ fn build_filter_conditions(filter: &MediaFilter) -> FilterConditions {
         }
     }
 
+    // exclude_idsフィルタの処理（id_in の逆: NOT IN）
+    // チャンク分割された NOT IN 句は AND で結合する
+    // （いずれのチャンクにも含まれない = 全体の NOT IN と同義）
+    if let Some(ref ids) = filter.exclude_ids {
+        if !ids.is_empty() {
+            const CHUNK_SIZE: usize = 999;
+            let not_in_clauses: Vec<String> = ids.chunks(CHUNK_SIZE).map(|chunk| {
+                format!("m.id NOT IN ({})", vec!["?"; chunk.len()].join(", "))
+            }).collect();
+            where_clauses.push(format!("({})", not_in_clauses.join(" AND ")));
+            for id in ids {
+                params.push(Box::new(*id));
+            }
+        }
+    }
+
     // タグフィルタの処理
     if let Some(ref tag_ids) = filter.tag_ids {
         if !tag_ids.is_empty() {
@@ -411,6 +427,21 @@ fn build_filter_conditions_sql(filter: &MediaFilter) -> FilterConditionsSql {
                 .map(|chunk| format!("m.id IN ({})", vec!["?"; chunk.len()].join(", ")))
                 .collect();
             where_clauses.push(format!("({})", in_clauses.join(" OR ")));
+            for id in ids {
+                params.push(SqlParam::Int(*id));
+            }
+        }
+    }
+
+    // exclude_ids（id_in の逆: NOT IN。チャンク分割された NOT IN 句は AND で結合）
+    if let Some(ref ids) = filter.exclude_ids {
+        if !ids.is_empty() {
+            const CHUNK_SIZE: usize = 999;
+            let not_in_clauses: Vec<String> = ids
+                .chunks(CHUNK_SIZE)
+                .map(|chunk| format!("m.id NOT IN ({})", vec!["?"; chunk.len()].join(", ")))
+                .collect();
+            where_clauses.push(format!("({})", not_in_clauses.join(" AND ")));
             for id in ids {
                 params.push(SqlParam::Int(*id));
             }
@@ -863,6 +894,87 @@ mod tests {
         let results = find_media(&conn, &filter, None).unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|m| m.media_type == MediaType::Comic));
+    }
+
+    #[test]
+    fn test_find_by_exclude_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        for i in 1..=5 {
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            }).unwrap();
+        }
+
+        // id=2,4 を除外 → id=1,3,5 のみ取得
+        let filter = MediaFilter {
+            exclude_ids: Some(vec![2, 4]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 3);
+
+        let ids: Vec<i64> = results.iter().map(|m| m.id).collect();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&3));
+        assert!(ids.contains(&5));
+        assert!(!ids.contains(&2));
+        assert!(!ids.contains(&4));
+    }
+
+    #[test]
+    fn test_find_by_exclude_ids_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        for i in 1..=3 {
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            }).unwrap();
+        }
+
+        // 空の exclude_ids は条件なしと同様（全件取得）
+        let filter = MediaFilter {
+            exclude_ids: Some(vec![]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_find_by_id_in_and_exclude_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        for i in 1..=5 {
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            }).unwrap();
+        }
+
+        // id_in=[1,2,3,4] AND exclude_ids=[2,3] → id=1,4 のみ（IN と NOT IN の併用）
+        let filter = MediaFilter {
+            id_in: Some(vec![1, 2, 3, 4]),
+            exclude_ids: Some(vec![2, 3]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let ids: Vec<i64> = results.iter().map(|m| m.id).collect();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&4));
+        assert!(!ids.contains(&2));
+        assert!(!ids.contains(&3));
+        assert!(!ids.contains(&5));
     }
 
     #[test]

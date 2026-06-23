@@ -560,6 +560,27 @@ export class RemoteKijukuDB {
   }
 
   /**
+   * 複数メディアのタグを一括取得（N+1回避。タグなしメディアはエントリに含まれない）
+   *
+   * リモートからは `{ [media_id: string]: Tag[] }` で返る（JSON object のキーは文字列）。
+   * number キーの Record に正規化して返す。
+   */
+  async getMediaTagsBulk(
+    mediaIds: number[]
+  ): Promise<Record<number, Tag[]>> {
+    const response = await this.executeRemoteCommand({
+      operation: 'getMediaTagsBulk',
+      params: { media_ids: mediaIds },
+    });
+    const raw = this.checkResponse(response);
+    const result: Record<number, Tag[]> = {};
+    for (const key of Object.keys(raw)) {
+      result[Number(key)] = raw[key];
+    }
+    return result;
+  }
+
+  /**
    * タグの使用数統計を取得
    */
   async getTagUsageStats(): Promise<TagUsageStats[]> {

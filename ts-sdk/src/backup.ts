@@ -997,8 +997,22 @@ function parseCsvRecord(line: string): AutoRecord | null {
 // ユーティリティ
 // ============================================================
 
+let lastBackupTimestampMs = 0;
+
+/**
+ * バックアップファイル名用タイムスタンプ（YYYYMMDDHHMMSS-mmm, 18文字固定）
+ *
+ * 連続呼び出しで同じミリ秒になると同名ファイル衝突（上書き）し、
+ * 差分バックアップの baseId / 復元が乱れるため、前回の呼び出しより必ず
+ * +1ms 以上進めた一意のタイムスタンプを返す。
+ */
 function currentTimestampStr(): string {
-  const now = new Date();
+  let ms = Date.now();
+  if (ms <= lastBackupTimestampMs) {
+    ms = lastBackupTimestampMs + 1;
+  }
+  lastBackupTimestampMs = ms;
+  const now = new Date(ms);
   const pad = (n: number, len = 2): string => n.toString().padStart(len, '0');
   return (
     `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
