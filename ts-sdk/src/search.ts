@@ -176,10 +176,13 @@ function buildFilterConditions(filter: MediaFilter, counter: ParamCounter): Filt
   // id_inフィルタの処理
   // SQLiteのパラメータ数上限（デフォルト999）を考慮してチャンク分割
   if (filter.id_in && filter.id_in.length > 0) {
+    // 重複IDを排除（IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+    // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+    const uniqueIds = Array.from(new Set(filter.id_in));
     const CHUNK_SIZE = 999;
     const orClauses: string[] = [];
-    for (let i = 0; i < filter.id_in.length; i += CHUNK_SIZE) {
-      const chunk = filter.id_in.slice(i, i + CHUNK_SIZE);
+    for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
+      const chunk = uniqueIds.slice(i, i + CHUNK_SIZE);
       const idParamNames = chunk.map((id) => {
         const paramName = getUniqueParamName('id_in', counter);
         params[paramName] = id;

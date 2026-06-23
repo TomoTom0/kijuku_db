@@ -106,13 +106,18 @@ fn build_filter_conditions(filter: &MediaFilter) -> FilterConditions {
     // SQLiteのパラメータ数上限（デフォルト999）を考慮してチャンク分割
     if let Some(ref ids) = filter.id_in {
         if !ids.is_empty() {
+            // 重複IDを排除（IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+            // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+            let mut unique_ids = ids.clone();
+            unique_ids.sort_unstable();
+            unique_ids.dedup();
             const CHUNK_SIZE: usize = 999;
-            let in_clauses: Vec<String> = ids.chunks(CHUNK_SIZE).map(|chunk| {
+            let in_clauses: Vec<String> = unique_ids.chunks(CHUNK_SIZE).map(|chunk| {
                 format!("m.id IN ({})", vec!["?"; chunk.len()].join(", "))
             }).collect();
             where_clauses.push(format!("({})", in_clauses.join(" OR ")));
-            for id in ids {
-                params.push(Box::new(*id));
+            for id in unique_ids {
+                params.push(Box::new(id));
             }
         }
     }
@@ -867,6 +872,33 @@ mod tests {
         };
         let results = find_media(&conn, &filter, None).unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_find_by_id_in_deduplicated() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        for i in 1..=5 {
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            }).unwrap();
+        }
+
+        // 重複した id_in（同じIDを複数回指定）でも結果は同一
+        let filter = MediaFilter {
+            id_in: Some(vec![1, 1, 3, 3, 5, 5]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 3);
+
+        let ids: Vec<i64> = results.iter().map(|m| m.id).collect();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&3));
+        assert!(ids.contains(&5));
     }
 
     #[test]

@@ -121,6 +121,19 @@ describe('Search and Filter', () => {
       expect(results).toHaveLength(4);
     });
 
+    test('id_inに重複IDが含まれていても重複なく取得できる', () => {
+      const all = db.findMedia({});
+      const targetIds = [all[0].id, all[2].id];
+      // 重複して指定しても結果は同一
+      const results = db.findMedia({
+        id_in: [targetIds[0], targetIds[0], targetIds[1], targetIds[1]],
+      });
+      expect(results).toHaveLength(2);
+      const resultIds = results.map((m) => m.id);
+      expect(resultIds).toContain(targetIds[0]);
+      expect(resultIds).toContain(targetIds[1]);
+    });
+
     test('id_inと他のフィルタを組み合わせられる', () => {
       const all = db.findMedia({});
       const allIds = all.map((m) => m.id);
