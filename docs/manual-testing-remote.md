@@ -13,8 +13,7 @@ SSH接続のモック化が複雑なため、リモートDB操作機能は手動
 ### 1. Rustバイナリのビルドとデプロイ
 
 ```bash
-cd ts-sdk
-bun run deploy:local
+mise run deploy
 ```
 
 これにより、`~/.local/bin/kijuku-cli`にバイナリが配置されます。

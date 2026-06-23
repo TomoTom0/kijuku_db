@@ -241,7 +241,12 @@ const tmpDb = new Database('/tmp/test-kijuku.db');
 - SDK用途に適している
 
 ### パッケージマネージャ
-**決定**: bun
+**決定**: pnpm（ビルド・テスト・デプロイは mise タスクでラップ）
+
+**理由**:
+- pnpm は workspaces に対応し、TS SDK の構成（tsup / vitest）と相性が良い
+- ビルド・テスト・デプロイの各操作は `.mise.toml` のタスク（`mise run build` / `test` / `deploy`）で統一し、プロジェクトルートから実行できる
+- 初期検討では bun を想定していたが、エコシステムの安定性と CI/IDE 連携を優先して pnpm に移行した
 
 ## API設計
 
@@ -431,8 +436,8 @@ KIJUKU_DB_VERBOSE=false
     "@types/better-sqlite3": "^7.6.0",
     "bun-types": "latest"
   }
-}
 ```
+※ 初期検討段階の package.json 例（bun 想定）。現在の実装は tsup + vitest + pnpm（`ts-sdk/package.json` 参照）。ビルド・テスト・デプロイは mise タスク（`.mise.toml`）で実行する。
 
 ### tsconfig.json
 

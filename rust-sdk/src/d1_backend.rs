@@ -5,6 +5,7 @@
 //! `record_operation`（バックアップ記録）は Local 専用のため持たない。
 
 use crate::backend::KijukuBackend;
+use std::collections::HashMap;
 use crate::d1_client::{D1Client, D1Config};
 use crate::error::Result;
 use crate::exec_d1::D1Exec;
@@ -135,6 +136,13 @@ impl KijukuBackend for D1KijukuDB {
 
     async fn get_media_tags(&self, media_id: i64) -> Result<Vec<Tag>> {
         crate::tag::get_media_tags_async(&self.exec, media_id).await
+    }
+
+    async fn get_media_tags_bulk(
+        &self,
+        media_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<Tag>>> {
+        crate::tag::get_media_tags_bulk_async(&self.exec, media_ids).await
     }
 
     async fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {

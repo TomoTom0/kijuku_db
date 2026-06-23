@@ -176,10 +176,13 @@ function buildFilterConditions(filter: MediaFilter, counter: ParamCounter): Filt
   // id_inフィルタの処理
   // SQLiteのパラメータ数上限（デフォルト999）を考慮してチャンク分割
   if (filter.id_in && filter.id_in.length > 0) {
+    // 重複IDを排除（IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+    // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+    const uniqueIds = Array.from(new Set(filter.id_in));
     const CHUNK_SIZE = 999;
     const orClauses: string[] = [];
-    for (let i = 0; i < filter.id_in.length; i += CHUNK_SIZE) {
-      const chunk = filter.id_in.slice(i, i + CHUNK_SIZE);
+    for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
+      const chunk = uniqueIds.slice(i, i + CHUNK_SIZE);
       const idParamNames = chunk.map((id) => {
         const paramName = getUniqueParamName('id_in', counter);
         params[paramName] = id;
@@ -188,6 +191,27 @@ function buildFilterConditions(filter: MediaFilter, counter: ParamCounter): Filt
       orClauses.push(`m.id IN (${idParamNames.join(', ')})`);
     }
     whereClauses.push(`(${orClauses.join(' OR ')})`);
+  }
+
+  // exclude_idsフィルタの処理（id_in の逆: NOT IN）
+  // チャンク分割された NOT IN 句は AND で結合する
+  // （いずれのチャンクにも含まれない = 全体の NOT IN と同義）
+  if (filter.exclude_ids && filter.exclude_ids.length > 0) {
+    // 重複IDを排除（NOT IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+    // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+    const uniqueIds = Array.from(new Set(filter.exclude_ids));
+    const CHUNK_SIZE = 999;
+    const andClauses: string[] = [];
+    for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
+      const chunk = uniqueIds.slice(i, i + CHUNK_SIZE);
+      const idParamNames = chunk.map((id) => {
+        const paramName = getUniqueParamName('exclude_ids', counter);
+        params[paramName] = id;
+        return `@${paramName}`;
+      });
+      andClauses.push(`m.id NOT IN (${idParamNames.join(', ')})`);
+    }
+    whereClauses.push(`(${andClauses.join(' AND ')})`);
   }
 
   // タグフィルタの処理

@@ -37,20 +37,14 @@ kijuku-dbは、メディアコンテンツのメタデータを効率的に管�
 
 ```bash
 cd ts-sdk
-bun install
-```
-
-npmを使用する場合：
-
-```bash
-cd ts-sdk
-npm install
+pnpm install
 ```
 
 #### ビルド
 
 ```bash
-bun run build
+# プロジェクトルートから
+mise run build:ts
 ```
 
 これにより`dist/`ディレクトリに以下のファイルが生成されます：
@@ -61,8 +55,8 @@ bun run build
 ### Rust SDK
 
 ```bash
-cd rust-sdk
-cargo build --release
+# プロジェクトルートから
+mise run build:rust
 ```
 
 これにより`target/release/`ディレクトリにバイナリが生成されます：
@@ -469,28 +463,28 @@ cd kijuku_db
 
 ```bash
 cd ts-sdk
-bun install
+pnpm install
 ```
 
 ### ビルド
 
 ```bash
-bun run build
+mise run build
 ```
 
 ### テスト実行
 
 ```bash
 # 全テストを実行（リモートテストを除く）
-bun run test:all
+mise run test:ts
 
 # カテゴリ別にテストを実行
-bun run test:unit          # 単体テストのみ
-bun run test:integration   # 結合テストのみ
-bun run test:e2e           # E2Eテスト（ローカル）のみ
+mise run test:ts:unit          # 単体テストのみ
+mise run test:ts:integration   # 結合テストのみ
+mise run test:ts:e2e           # E2Eテスト（ローカル）のみ
 
 # テストをウォッチモードで実行
-bun run test:watch
+mise run test:ts:watch
 ```
 
 詳細なテスト方針とガイドラインについては [TESTING.md](./TESTING.md) を参照してください。
@@ -503,7 +497,7 @@ bun run test:watch
 ### 開発モード
 
 ```bash
-bun run dev
+mise run dev
 ```
 
 ## プロジェクト構成
@@ -551,8 +545,7 @@ SSH経由でリモートサーバー上のデータベースを操作できま�
 1. Rustバイナリをビルドしてローカルに配置
 
 ```bash
-cd ts-sdk
-bun run deploy:local
+mise run deploy
 ```
 
 2. `.ssh/config`にリモートホスト設定を追加

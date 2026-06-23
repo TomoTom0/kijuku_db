@@ -78,23 +78,23 @@ Kijuku DBプロジェクトのテスト戦略とガイドライン
 
 ```bash
 # リモートテストを除く全テスト
-bun run test:all
+mise run test:ts
 
 # または（全テスト、better-sqlite3エラーは無視）
-bun test
+cd ts-sdk && pnpm run test
 ```
 
 ### カテゴリ別実行
 
 ```bash
 # 単体テストのみ
-bun run test:unit
+mise run test:ts:unit
 
 # 結合テストのみ（better-sqlite3エラーが出る場合があります）
-bun run test:integration
+mise run test:ts:integration
 
 # E2Eテスト（ローカルのみ）
-bun run test:e2e
+mise run test:ts:e2e
 ```
 
 ### リモートテストの実行
@@ -106,11 +106,11 @@ bun run test:e2e
 export TEST_SSH_HOST=as5202  # ~/.ssh/config に設定されているホスト名
 
 # リモートE2Eテストを実行
-bun run test:e2e:remote
+mise run test:ts:e2e:remote
 
 # または直接実行
-TEST_SSH_HOST=as5202 bun test test/e2e/cli-remote.test.ts
-TEST_SSH_HOST=as5202 bun test test/e2e/sdk-remote.test.ts
+cd ts-sdk && TEST_SSH_HOST=as5202 pnpm exec vitest run test/e2e/cli-remote.test.ts
+cd ts-sdk && TEST_SSH_HOST=as5202 pnpm exec vitest run test/e2e/sdk-remote.test.ts
 ```
 
 **注意**:
@@ -121,7 +121,7 @@ TEST_SSH_HOST=as5202 bun test test/e2e/sdk-remote.test.ts
 
 ```bash
 # 変更を監視してテストを自動実行
-bun run test:watch
+mise run test:ts:watch
 ```
 
 ## テストの書き方
@@ -289,22 +289,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: oven-sh/setup-bun@v1
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ts-sdk/pnpm-lock.yaml
 
       - name: Install dependencies
-        run: bun install
+        run: pnpm install --frozen-lockfile
         working-directory: ts-sdk
 
       - name: Build
-        run: bun run build
+        run: pnpm run build
         working-directory: ts-sdk
 
       - name: Run unit tests
-        run: bun run test:unit
+        run: pnpm run test:unit
         working-directory: ts-sdk
 
       - name: Run E2E tests (local)
-        run: bun run test:e2e
+        run: pnpm run test:e2e
         working-directory: ts-sdk
 
       # リモートテストは環境変数が必要なためスキップ
@@ -315,7 +320,7 @@ jobs:
 
 ```bash
 # カバレッジ計測（オプション）
-bun test --coverage
+cd ts-sdk && pnpm exec vitest run --coverage
 ```
 
 ## トラブルシューティング

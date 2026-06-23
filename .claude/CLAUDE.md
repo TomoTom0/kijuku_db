@@ -1,39 +1,30 @@
 # kijuku_db プロジェクト固有の設定
 
-## ビルド・デプロイ
+## ビルド・デプロイ・テスト（mise タスク）
 
-### ローカルデプロイ（推奨）
+ビルド・テスト・デプロイは `.mise.toml` で定義した mise タスクで実行する。プロジェクトルートから `mise run <task>` を呼ぶ。
 
 ```bash
-./scripts/dev/deploy-local.sh
+mise run build      # Rust SDK + TypeScript SDK をビルド
+mise run build:rust # Rust SDK のみ (cargo build --release)
+mise run build:ts   # TypeScript SDK のみ (pnpm run build)
+mise run test       # Rust + TypeScript 両方のテスト
+mise run test:rust  # Rust SDK のみ (cargo test)
+mise run test:ts    # TypeScript SDK のみ (pnpm run test)
+mise run deploy     # Rust バイナリをビルドしてローカル配置
 ```
 
-このスクリプトは以下を実行します:
+### ローカルデプロイ（詳細）
+
+`mise run deploy` は `./scripts/dev/deploy-local.sh` を呼び出し、以下を実行します:
 - Rust SDKのリリースビルド (`cargo build --release`)
 - バイナリを `~/.local/kijuku-db/bin/` にコピー
 - `~/.local/bin/kijuku-cli` にシンボリックリンクを作成
+- `REMOTE_SSH_HOST`（`.env`）設定時はリモートにもデプロイ
 
-ドキュメントはビルド時にバイナリに埋め込まれるため、ドキュメントを更新した場合は必ずデプロイスクリプトを実行してください。
+ドキュメントはビルド時にバイナリに埋め込まれるため、ドキュメントを更新した場合は必ず `mise run deploy` を実行してください。
 
-### 個別ビルド
-
-```bash
-# Rust SDK
-cd rust-sdk && cargo build --release
-
-# TypeScript SDK
-cd ts-sdk && pnpm run build
-```
-
-### テスト
-
-```bash
-# Rust SDK
-cd rust-sdk && cargo test
-
-# TypeScript SDK
-cd ts-sdk && pnpm run test
-```
+mise を使わず個別に実行する場合は各 SDK ディレクトリで直接コマンドを実行（`cd rust-sdk && cargo build --release` / `cd ts-sdk && pnpm run build` 等）。
 
 ## プロジェクト構成
 

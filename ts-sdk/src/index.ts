@@ -227,6 +227,13 @@ export class KijukuDB {
   }
 
   /**
+   * 複数メディアのタグを一括取得（N+1回避。タグなしメディアはエントリに含まれない）
+   */
+  getMediaTagsBulk(mediaIds: number[]): Record<number, Tag[]> {
+    return tag.getMediaTagsBulk(this.db, mediaIds);
+  }
+
+  /**
    * タグ名でタグを取得
    */
   getTagByName(name: string): Tag | null {

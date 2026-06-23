@@ -1,0 +1,87 @@
+# .mise.toml - kijuku_db プロジェクトのビルド・テスト・デプロイタスク
+#
+# ルートから mise run <task> で各操作を統一的に実行できる。
+# 既存開発環境 (rustup / node / pnpm) を使用する。[tools] は定義しない。
+#
+# 注意:
+# - deploy タスクは ./scripts/dev/deploy-local.sh を呼ぶ (スクリプトは維持)。
+#   REMOTE_SSH_HOST 環境変数 (.env) 設定時はリモートにもデプロイする。
+
+# ---------------------------------------------------------------------------
+# ビルド
+# ---------------------------------------------------------------------------
+
+[tasks.build]
+description = "Rust SDK と TypeScript SDK の両方をビルドする"
+depends = ["build:rust", "build:ts"]
+
+[tasks."build:rust"]
+description = "Rust SDK をリリースビルドする (cargo build --release)"
+dir = "{{config_root}}/rust-sdk"
+run = "cargo build --release"
+
+[tasks."build:ts"]
+description = "TypeScript SDK をビルドする (pnpm run build)"
+dir = "{{config_root}}/ts-sdk"
+run = "pnpm run build"
+
+# ---------------------------------------------------------------------------
+# テスト
+# ---------------------------------------------------------------------------
+
+[tasks.test]
+description = "Rust SDK と TypeScript SDK の両方のテストを実行する"
+depends = ["test:rust", "test:ts"]
+
+[tasks."test:rust"]
+description = "Rust SDK のテストを実行する (cargo test)"
+dir = "{{config_root}}/rust-sdk"
+run = "cargo test"
+
+[tasks."test:ts"]
+description = "TypeScript SDK の全テストを実行する (pnpm run test)"
+dir = "{{config_root}}/ts-sdk"
+run = "pnpm run test"
+
+[tasks."test:ts:unit"]
+description = "TypeScript SDK の単体テスト (pnpm run test:unit)"
+dir = "{{config_root}}/ts-sdk"
+run = "pnpm run test:unit"
+
+[tasks."test:ts:integration"]
+description = "TypeScript SDK の結合テスト (pnpm run test:integration)"
+dir = "{{config_root}}/ts-sdk"
+run = "pnpm run test:integration"
+
+[tasks."test:ts:e2e"]
+description = "TypeScript SDK の E2E テスト・ローカル (pnpm run test:e2e)"
+dir = "{{config_root}}/ts-sdk"
+run = "pnpm run test:e2e"
+
+[tasks."test:ts:e2e:remote"]
+description = "TypeScript SDK のリモート E2E テスト (pnpm run test:e2e:remote)。TEST_SSH_HOST が必要"
+dir = "{{config_root}}/ts-sdk"
+run = "pnpm run test:e2e:remote"
+
+[tasks."test:ts:watch"]
+description = "TypeScript SDK のテストをウォッチモードで実行 (pnpm run test:watch)"
+dir = "{{config_root}}/ts-sdk"
+run = "pnpm run test:watch"
+
+# ---------------------------------------------------------------------------
+# デプロイ
+# ---------------------------------------------------------------------------
+
+[tasks.deploy]
+description = "Rust バイナリをビルドしてローカルに配置する (./scripts/dev/deploy-local.sh)。REMOTE_SSH_HOST 設定時はリモートにもデプロイ"
+dir = "{{config_root}}"
+run = "./scripts/dev/deploy-local.sh"
+
+# ---------------------------------------------------------------------------
+# 開発
+# ---------------------------------------------------------------------------
+
+[tasks.dev]
+description = "TypeScript SDK を開発モードで起動する (pnpm run dev)"
+dir = "{{config_root}}/ts-sdk"
+run = "pnpm run dev"

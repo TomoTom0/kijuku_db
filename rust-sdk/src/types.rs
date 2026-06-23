@@ -132,6 +132,8 @@ pub struct MediaFilter {
     pub artist_en: Option<String>,
     /// IDのIN句フィルタ（複数IDを一括フェッチする場合に使用）
     pub id_in: Option<Vec<i64>>,
+    /// 除外IDのNOT IN句フィルタ（視聴済みIDなど少数のIDを除外する場合に使用）
+    pub exclude_ids: Option<Vec<i64>>,
     /// OR条件で結合する追加フィルタ
     /// 各フィルタ内の条件はAND結合、or_filters間はOR結合される
     #[serde(default)]

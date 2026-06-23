@@ -168,6 +168,12 @@ struct GetMediaTagsParams {
     media_id: i64,
 }
 
+/// 複数メディアのタグ一括取得のパラメータ
+#[derive(Debug, Deserialize)]
+struct GetMediaTagsBulkParams {
+    media_ids: Vec<i64>,
+}
+
 /// 属性設定のパラメータ
 #[derive(Debug, Deserialize)]
 struct SetMediaAttributeParams {
@@ -885,6 +891,7 @@ async fn execute_command(backend: &mut Backend, request: &CommandRequest) -> Com
         "addTagToMedia" => handle_add_tag_to_media(backend.as_backend(), &request.params).await,
         "removeTagFromMedia" => handle_remove_tag_from_media(backend.as_backend(), &request.params).await,
         "getMediaTags" => handle_get_media_tags(backend.as_backend(), &request.params).await,
+        "getMediaTagsBulk" => handle_get_media_tags_bulk(backend.as_backend(), &request.params).await,
         "getTagUsageStats" => handle_get_tag_usage_stats(backend.as_backend()).await,
         "findUnusedTags" => handle_find_unused_tags(backend.as_backend()).await,
         "setMediaAttribute" => handle_set_media_attribute(backend.as_backend(), &request.params).await,
@@ -1141,6 +1148,21 @@ async fn handle_get_media_tags(db: &dyn KijukuBackend, params: &serde_json::Valu
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
         },
         Err(e) => CommandResponse::error(format!("メディアタグ取得エラー: {}", e)),
+    }
+}
+
+async fn handle_get_media_tags_bulk(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
+    let params: GetMediaTagsBulkParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+
+    match db.get_media_tags_bulk(&params.media_ids).await {
+        Ok(tags_map) => match serde_json::to_value(tags_map) {
+            Ok(data) => CommandResponse::success(data),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
+        Err(e) => CommandResponse::error(format!("一括メディアタグ取得エラー: {}", e)),
     }
 }
 

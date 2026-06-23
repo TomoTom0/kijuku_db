@@ -106,13 +106,39 @@ fn build_filter_conditions(filter: &MediaFilter) -> FilterConditions {
     // SQLiteのパラメータ数上限（デフォルト999）を考慮してチャンク分割
     if let Some(ref ids) = filter.id_in {
         if !ids.is_empty() {
+            // 重複IDを排除（IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+            // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+            let mut unique_ids = ids.clone();
+            unique_ids.sort_unstable();
+            unique_ids.dedup();
             const CHUNK_SIZE: usize = 999;
-            let in_clauses: Vec<String> = ids.chunks(CHUNK_SIZE).map(|chunk| {
+            let in_clauses: Vec<String> = unique_ids.chunks(CHUNK_SIZE).map(|chunk| {
                 format!("m.id IN ({})", vec!["?"; chunk.len()].join(", "))
             }).collect();
             where_clauses.push(format!("({})", in_clauses.join(" OR ")));
-            for id in ids {
-                params.push(Box::new(*id));
+            for id in unique_ids {
+                params.push(Box::new(id));
+            }
+        }
+    }
+
+    // exclude_idsフィルタの処理（id_in の逆: NOT IN）
+    // チャンク分割された NOT IN 句は AND で結合する
+    // （いずれのチャンクにも含まれない = 全体の NOT IN と同義）
+    if let Some(ref ids) = filter.exclude_ids {
+        if !ids.is_empty() {
+            // 重複IDを排除（NOT IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+            // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+            let mut unique_ids = ids.clone();
+            unique_ids.sort_unstable();
+            unique_ids.dedup();
+            const CHUNK_SIZE: usize = 999;
+            let not_in_clauses: Vec<String> = unique_ids.chunks(CHUNK_SIZE).map(|chunk| {
+                format!("m.id NOT IN ({})", vec!["?"; chunk.len()].join(", "))
+            }).collect();
+            where_clauses.push(format!("({})", not_in_clauses.join(" AND ")));
+            for id in unique_ids {
+                params.push(Box::new(id));
             }
         }
     }
@@ -411,6 +437,21 @@ fn build_filter_conditions_sql(filter: &MediaFilter) -> FilterConditionsSql {
                 .map(|chunk| format!("m.id IN ({})", vec!["?"; chunk.len()].join(", ")))
                 .collect();
             where_clauses.push(format!("({})", in_clauses.join(" OR ")));
+            for id in ids {
+                params.push(SqlParam::Int(*id));
+            }
+        }
+    }
+
+    // exclude_ids（id_in の逆: NOT IN。チャンク分割された NOT IN 句は AND で結合）
+    if let Some(ref ids) = filter.exclude_ids {
+        if !ids.is_empty() {
+            const CHUNK_SIZE: usize = 999;
+            let not_in_clauses: Vec<String> = ids
+                .chunks(CHUNK_SIZE)
+                .map(|chunk| format!("m.id NOT IN ({})", vec!["?"; chunk.len()].join(", ")))
+                .collect();
+            where_clauses.push(format!("({})", not_in_clauses.join(" AND ")));
             for id in ids {
                 params.push(SqlParam::Int(*id));
             }
@@ -834,6 +875,33 @@ mod tests {
     }
 
     #[test]
+    fn test_find_by_id_in_deduplicated() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        for i in 1..=5 {
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            }).unwrap();
+        }
+
+        // 重複した id_in（同じIDを複数回指定）でも結果は同一
+        let filter = MediaFilter {
+            id_in: Some(vec![1, 1, 3, 3, 5, 5]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 3);
+
+        let ids: Vec<i64> = results.iter().map(|m| m.id).collect();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&3));
+        assert!(ids.contains(&5));
+    }
+
+    #[test]
     fn test_find_by_id_in_with_other_filter() {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
@@ -863,6 +931,116 @@ mod tests {
         let results = find_media(&conn, &filter, None).unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|m| m.media_type == MediaType::Comic));
+    }
+
+    #[test]
+    fn test_find_by_exclude_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        for i in 1..=5 {
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            }).unwrap();
+        }
+
+        // id=2,4 を除外 → id=1,3,5 のみ取得
+        let filter = MediaFilter {
+            exclude_ids: Some(vec![2, 4]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 3);
+
+        let ids: Vec<i64> = results.iter().map(|m| m.id).collect();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&3));
+        assert!(ids.contains(&5));
+        assert!(!ids.contains(&2));
+        assert!(!ids.contains(&4));
+    }
+
+    #[test]
+    fn test_find_by_exclude_ids_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        for i in 1..=3 {
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            }).unwrap();
+        }
+
+        // 空の exclude_ids は条件なしと同様（全件取得）
+        let filter = MediaFilter {
+            exclude_ids: Some(vec![]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_find_by_exclude_ids_deduplicated() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        for i in 1..=5 {
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            }).unwrap();
+        }
+
+        // 重複した exclude_ids（同じIDを複数回指定）でも結果は同一
+        let filter = MediaFilter {
+            exclude_ids: Some(vec![2, 2, 4, 4]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 3);
+
+        let ids: Vec<i64> = results.iter().map(|m| m.id).collect();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&3));
+        assert!(ids.contains(&5));
+        assert!(!ids.contains(&2));
+        assert!(!ids.contains(&4));
+    }
+
+    #[test]
+    fn test_find_by_id_in_and_exclude_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        for i in 1..=5 {
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            }).unwrap();
+        }
+
+        // id_in=[1,2,3,4] AND exclude_ids=[2,3] → id=1,4 のみ（IN と NOT IN の併用）
+        let filter = MediaFilter {
+            id_in: Some(vec![1, 2, 3, 4]),
+            exclude_ids: Some(vec![2, 3]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let ids: Vec<i64> = results.iter().map(|m| m.id).collect();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&4));
+        assert!(!ids.contains(&2));
+        assert!(!ids.contains(&3));
+        assert!(!ids.contains(&5));
     }
 
     #[test]

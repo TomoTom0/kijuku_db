@@ -121,6 +121,19 @@ describe('Search and Filter', () => {
       expect(results).toHaveLength(4);
     });
 
+    test('id_inに重複IDが含まれていても重複なく取得できる', () => {
+      const all = db.findMedia({});
+      const targetIds = [all[0].id, all[2].id];
+      // 重複して指定しても結果は同一
+      const results = db.findMedia({
+        id_in: [targetIds[0], targetIds[0], targetIds[1], targetIds[1]],
+      });
+      expect(results).toHaveLength(2);
+      const resultIds = results.map((m) => m.id);
+      expect(resultIds).toContain(targetIds[0]);
+      expect(resultIds).toContain(targetIds[1]);
+    });
+
     test('id_inと他のフィルタを組み合わせられる', () => {
       const all = db.findMedia({});
       const allIds = all.map((m) => m.id);
@@ -130,6 +143,51 @@ describe('Search and Filter', () => {
       results.forEach((m) => {
         expect(m.media_type).toBe('comic');
       });
+    });
+
+    test('exclude_idsで指定IDを除外できる', () => {
+      const all = db.findMedia({});
+      expect(all).toHaveLength(4);
+      const allIds = all.map((m) => m.id);
+      // 最初の2件を除外
+      const results = db.findMedia({ exclude_ids: [allIds[0], allIds[1]] });
+      expect(results).toHaveLength(2);
+      const resultIds = results.map((m) => m.id);
+      expect(resultIds).not.toContain(allIds[0]);
+      expect(resultIds).not.toContain(allIds[1]);
+    });
+
+    test('exclude_idsが空配列の場合、全件取得になる', () => {
+      const results = db.findMedia({ exclude_ids: [] });
+      expect(results).toHaveLength(4);
+    });
+
+    test('exclude_idsに重複IDが含まれていても正しく除外される', () => {
+      const all = db.findMedia({});
+      expect(all).toHaveLength(4);
+      const allIds = all.map((m) => m.id);
+      // 重複した exclude_ids（同じIDを複数回指定）でも結果は同一
+      const results = db.findMedia({
+        exclude_ids: [allIds[0], allIds[0], allIds[1], allIds[1]],
+      });
+      expect(results).toHaveLength(2);
+      const resultIds = results.map((m) => m.id);
+      expect(resultIds).not.toContain(allIds[0]);
+      expect(resultIds).not.toContain(allIds[1]);
+    });
+
+    test('id_inとexclude_idsを組み合わせられる', () => {
+      const all = db.findMedia({});
+      const allIds = all.map((m) => m.id);
+      // id_in=全ID, exclude_ids=最初の2件 → 残り2件（IN と NOT IN の併用）
+      const results = db.findMedia({
+        id_in: allIds,
+        exclude_ids: [allIds[0], allIds[1]],
+      });
+      expect(results).toHaveLength(2);
+      const resultIds = results.map((m) => m.id);
+      expect(resultIds).not.toContain(allIds[0]);
+      expect(resultIds).not.toContain(allIds[1]);
     });
   });
 

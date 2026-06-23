@@ -89,6 +89,53 @@ export function getMediaTags(db: Database.Database, mediaId: number): Tag[] {
 }
 
 /**
+ * 複数メディアのタグを一括取得（N+1回避）
+ *
+ * media_tags と tags の JOIN 1発で複数メディアのタグを取得し、
+ * media_id -> Tag[] のマップに集約する。タグを持たないメディアは
+ * 結果のエントリに含まれない（呼び出し側で補完すること）。
+ * 999件超はチャンク分割して順次取得・マージする。
+ */
+export function getMediaTagsBulk(
+  db: Database.Database,
+  mediaIds: number[]
+): Record<number, Tag[]> {
+  const result: Record<number, Tag[]> = {};
+  if (mediaIds.length === 0) {
+    return result;
+  }
+
+  // 重複IDを排除（IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+  // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+  const uniqueMediaIds = Array.from(new Set(mediaIds));
+  const CHUNK_SIZE = 999;
+  for (let i = 0; i < uniqueMediaIds.length; i += CHUNK_SIZE) {
+    const chunk = uniqueMediaIds.slice(i, i + CHUNK_SIZE);
+    const placeholders = chunk.map(() => '?').join(', ');
+    const stmt = db.prepare(`
+      SELECT mt.media_id AS media_id, t.id AS id, t.name AS name
+      FROM media_tags mt
+      INNER JOIN tags t ON t.id = mt.tag_id
+      WHERE mt.media_id IN (${placeholders})
+      ORDER BY t.name
+    `);
+    const rows = stmt.all(...chunk) as Array<{
+      media_id: number;
+      id: number;
+      name: string;
+    }>;
+    for (const row of rows) {
+      if (!result[row.media_id]) {
+        result[row.media_id] = [];
+      }
+      result[row.media_id].push({ id: row.id, name: row.name });
+    }
+  }
+
+  return result;
+}
+
+/**
  * タグ名でタグを取得
  */
 export function getTagByName(
