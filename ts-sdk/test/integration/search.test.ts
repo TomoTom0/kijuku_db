@@ -149,6 +149,20 @@ describe('Search and Filter', () => {
       expect(results).toHaveLength(4);
     });
 
+    test('exclude_idsに重複IDが含まれていても正しく除外される', () => {
+      const all = db.findMedia({});
+      expect(all).toHaveLength(4);
+      const allIds = all.map((m) => m.id);
+      // 重複した exclude_ids（同じIDを複数回指定）でも結果は同一
+      const results = db.findMedia({
+        exclude_ids: [allIds[0], allIds[0], allIds[1], allIds[1]],
+      });
+      expect(results).toHaveLength(2);
+      const resultIds = results.map((m) => m.id);
+      expect(resultIds).not.toContain(allIds[0]);
+      expect(resultIds).not.toContain(allIds[1]);
+    });
+
     test('id_inとexclude_idsを組み合わせられる', () => {
       const all = db.findMedia({});
       const allIds = all.map((m) => m.id);

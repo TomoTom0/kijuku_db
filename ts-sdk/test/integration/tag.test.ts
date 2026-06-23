@@ -123,6 +123,16 @@ describe('Tag', () => {
       const result = db.getMediaTagsBulk([]);
       expect(Object.keys(result)).toHaveLength(0);
     });
+
+    test('重複したmediaIdsが含まれていても重複なく取得できる', () => {
+      const tag1 = db.createTag('アクション');
+      db.addTagToMedia(mediaId, tag1.id);
+      // mediaId を重複して指定しても1エントリ・1タグ（重複なし）
+      const result = db.getMediaTagsBulk([mediaId, mediaId, mediaId]);
+      expect(Object.keys(result)).toHaveLength(1);
+      expect(result[mediaId]).toHaveLength(1);
+      expect(result[mediaId][0].name).toBe('アクション');
+    });
   });
 
   describe('removeTagFromMedia', () => {

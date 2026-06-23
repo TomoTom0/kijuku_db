@@ -105,9 +105,12 @@ export function getMediaTagsBulk(
     return result;
   }
 
+  // 重複IDを排除（IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+  // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+  const uniqueMediaIds = Array.from(new Set(mediaIds));
   const CHUNK_SIZE = 999;
-  for (let i = 0; i < mediaIds.length; i += CHUNK_SIZE) {
-    const chunk = mediaIds.slice(i, i + CHUNK_SIZE);
+  for (let i = 0; i < uniqueMediaIds.length; i += CHUNK_SIZE) {
+    const chunk = uniqueMediaIds.slice(i, i + CHUNK_SIZE);
     const placeholders = chunk.map(() => '?').join(', ');
     const stmt = db.prepare(`
       SELECT mt.media_id AS media_id, t.id AS id, t.name AS name

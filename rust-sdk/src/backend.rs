@@ -107,7 +107,9 @@ pub trait KijukuBackend: Send + Sync {
     ) -> Result<HashMap<i64, Vec<Tag>>> {
         let mut result = HashMap::new();
         for id in media_ids {
-            result.insert(*id, self.get_media_tags(*id).await?);
+            if !result.contains_key(id) {
+                result.insert(*id, self.get_media_tags(*id).await?);
+            }
         }
         Ok(result)
     }

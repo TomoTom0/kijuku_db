@@ -224,8 +224,14 @@ pub async fn get_media_tags_bulk_async(
         return Ok(result);
     }
 
+    // 重複IDを排除（IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+    // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+    let mut unique_ids = media_ids.to_vec();
+    unique_ids.sort_unstable();
+    unique_ids.dedup();
+
     const CHUNK_SIZE: usize = 999;
-    for chunk in media_ids.chunks(CHUNK_SIZE) {
+    for chunk in unique_ids.chunks(CHUNK_SIZE) {
         let placeholders = vec!["?"; chunk.len()].join(", ");
         let sql = format!(
             "SELECT mt.media_id, t.id, t.name

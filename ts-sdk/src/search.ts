@@ -194,10 +194,13 @@ function buildFilterConditions(filter: MediaFilter, counter: ParamCounter): Filt
   // チャンク分割された NOT IN 句は AND で結合する
   // （いずれのチャンクにも含まれない = 全体の NOT IN と同義）
   if (filter.exclude_ids && filter.exclude_ids.length > 0) {
+    // 重複IDを排除（NOT IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+    // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+    const uniqueIds = Array.from(new Set(filter.exclude_ids));
     const CHUNK_SIZE = 999;
     const andClauses: string[] = [];
-    for (let i = 0; i < filter.exclude_ids.length; i += CHUNK_SIZE) {
-      const chunk = filter.exclude_ids.slice(i, i + CHUNK_SIZE);
+    for (let i = 0; i < uniqueIds.length; i += CHUNK_SIZE) {
+      const chunk = uniqueIds.slice(i, i + CHUNK_SIZE);
       const idParamNames = chunk.map((id) => {
         const paramName = getUniqueParamName('exclude_ids', counter);
         params[paramName] = id;

@@ -1,7 +1,7 @@
 // 結合テストは意図的に deprecated 同期 API を検証（後方互換の保証）
 #![allow(deprecated)]
 
-use kijuku_db::{KijukuDB, KijukuError, MediaInput, MediaUpdateInput, MediaType, MediaFilter, QueryOptions, SortKey, SortOrder};
+use kijuku_db::{KijukuDB, KijukuBackend, KijukuError, MediaInput, MediaUpdateInput, MediaType, MediaFilter, QueryOptions, SortKey, SortOrder};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -535,4 +535,35 @@ fn test_transaction_panic_rolls_back() {
 
     let all_media = db.find_media(&MediaFilter::default(), None).unwrap();
     assert_eq!(all_media.len(), 2);
+}
+
+#[tokio::test]
+async fn test_get_media_tags_bulk_deduplicated() {
+    // 重複した media_ids を渡しても、結果の HashMap にタグが重複して登録されないこと
+    // （IN句は集合扱いだが、ユニーク化でプレースホルダー無駄増加も防止）を検証する。
+    let temp_file = NamedTempFile::new().unwrap();
+    let db = KijukuDB::open(temp_file.path()).unwrap();
+    db.migrate().unwrap();
+
+    let media = db
+        .create_media(&MediaInput {
+            title: "tagged".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        })
+        .unwrap();
+    let tag = db.create_tag("アクション").unwrap();
+    db.add_tag_to_media(media.id, tag.id).unwrap();
+
+    // media.id を重複して指定しても1エントリ・1タグ（重複なし）
+    let result = db
+        .get_media_tags_bulk(&[media.id, media.id, media.id])
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 1);
+    let tags = result
+        .get(&media.id)
+        .expect("media.id のエントリが存在するべき");
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].name, "アクション");
 }
