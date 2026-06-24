@@ -256,6 +256,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `or_filters`間: OR結合
 - ネスト可能（`or_filters`の中にさらに`or_filters`）
 
+#### 特定IDの除外（exclude_ids）
+
+`exclude_ids` を使うと、指定したIDを NOT IN で除外して検索できます。`id_in` の逆で、未視聴メディア取得などで「既知のIDを差し引く」用途に使います。999件超は `id_in` と同様にチャンク分割されます。
+
+```rust
+use kijuku_db::{KijukuDB, MediaFilter, MediaType, QueryOptions, SortKey, SortOrder};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = KijukuDB::open("./data/kijuku.db")?;
+
+    // 視聴済みIDを除外して未視聴メディアを取得
+    let filter = MediaFilter {
+        media_type: Some(MediaType::Comic),
+        exclude_ids: Some(vec![1, 2, 3]),
+        ..Default::default()
+    };
+    let options = QueryOptions {
+        sort_keys: vec![SortKey { field: "title".to_string(), order: SortOrder::Asc }],
+        ..Default::default()
+    };
+    let unwatched = db.find_media(&filter, Some(&options))?;
+    println!("未視聴: {}件", unwatched.len());
+
+    Ok(())
+}
+```
+
 ### 3b. フィールドのユニーク値取得
 
 `get_distinct_values` を使うと、特定フィールドの重複なし値一覧や、複数フィールドの組み合わせ一覧を取得できます。
@@ -321,6 +348,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tags = db.get_media_tags(media_id)?;
     let tag_names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
     println!("タグ: {}", tag_names.join(", "));
+
+    // 複数メディアのタグを一括取得（N+1回避: JOIN 1発）
+    let media_tags = db.get_media_tags_bulk(&[1, 2, 3])?;
+    for (mid, ts) in &media_tags {
+        let names: Vec<&str> = ts.iter().map(|t| t.name.as_str()).collect();
+        println!("Media {}: {}", mid, names.join(", "));
+    }
 
     // タグの使用数統計を取得
     let stats = db.get_tag_usage_stats()?;

@@ -339,6 +339,7 @@ console.log(media === null); // true
 | `title_en` | `string` | タイトル（英語）部分一致検索 |
 | `artist_en` | `string` | 作者名（英語）部分一致検索 |
 | `id_in` | `number[]` | IDのIN句フィルタ（複数IDを一括フェッチする場合に使用）。999件超の場合は自動的にチャンク分割して処理 |
+| `exclude_ids` | `number[]` | IDのNOT IN句フィルタ（指定IDを除外）。`id_in` の逆。999件超の場合は自動的にチャンク分割（NOT IN 句は AND で結合） |
 | `or_filters` | `MediaFilter[]` | OR条件で結合する追加フィルタ（ネスト可能） |
 
 **QueryOptions:**
@@ -718,6 +719,31 @@ const tags = db.getMediaTags(1);
 console.log(`Media has ${tags.length} tags`);
 tags.forEach((tag) => console.log(`- ${tag.name}`));
 ```
+
+---
+
+#### `getMediaTagsBulk(mediaIds: number[]): Record<number, Tag[]>`
+
+複数メディアのタグを一括取得します（N+1クエリ回避）。`media_tags` JOIN `tags` 1発で取得し、`mediaId` ごとのタグ配列を返します。指定した `mediaId` にタグがない場合、結果にはそのキーが含まれない（または空配列）ことがあります。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `mediaIds` | `number[]` | ✓ | タグを取得するメディアIDの配列 |
+
+**戻り値:** `Record<number, Tag[]>` - メディアIDをキー、そのメディアのタグ配列を値とするオブジェクト
+
+**使用例:**
+
+```typescript
+const mediaTags = db.getMediaTagsBulk([1, 2, 3]);
+for (const [mediaId, tags] of Object.entries(mediaTags)) {
+  console.log(`Media ${mediaId}: ${tags.map((t) => t.name).join(', ')}`);
+}
+```
+
+> **Rust SDK:** `get_media_tags_bulk(media_ids: &[i64]) -> Result<HashMap<i64, Vec<Tag>>>`。Local/D1 バックエンドは JOIN 1発で取得しますが、Rust `RemoteKijukuDB` はデフォルト実装（`get_media_tags` の N+1）です。
 
 ---
 

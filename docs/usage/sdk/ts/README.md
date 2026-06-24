@@ -153,6 +153,19 @@ const nested = db.findMedia({
 - `or_filters`間: OR結合
 - ネスト可能
 
+#### 特定IDの除外（exclude_ids）
+
+`exclude_ids` を使うと、指定したIDを NOT IN で除外して検索できます。`id_in` の逆で、未視聴メディア取得などで「既知のIDを差し引く」用途に使います。999件超は `id_in` と同様にチャンク分割されます。
+
+```typescript
+// 視聴済みIDを除外して未視聴メディアを取得
+const watched = [1, 2, 3];
+const unwatched = db.findMedia(
+  { media_type: 'comic', exclude_ids: watched },
+  { sortKeys: [{ field: 'title', order: 'ASC' }] }
+);
+```
+
 ### 3b. フィールドのユニーク値取得
 
 `getDistinctValues` を使うと、特定フィールドの重複なし値一覧や、複数フィールドの組み合わせ一覧を取得できます。
@@ -200,6 +213,12 @@ db.removeTagFromMedia(media.id, tag.id);
 // メディアのタグを取得
 const tags = db.getMediaTags(media.id);
 console.log('タグ:', tags.map(t => t.name).join(', '));
+
+// 複数メディアのタグを一括取得（N+1回避: JOIN 1発）
+const mediaTags = db.getMediaTagsBulk([1, 2, 3]);
+for (const [mid, ts] of Object.entries(mediaTags)) {
+  console.log(`Media ${mid}:`, ts.map(t => t.name).join(', '));
+}
 
 // タグの使用数統計を取得
 const stats = db.getTagUsageStats();
