@@ -426,7 +426,7 @@ export class BackupManager {
       }
     }
 
-    return backups.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return backups.sort((a, b) => compareBackupIdDesc(a.id, b.id));
   }
 
   /** 最後のバックアップ時刻を取得 */
@@ -527,7 +527,7 @@ export class BackupManager {
     }
 
     if (candidates.length === 0) return null;
-    return candidates.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+    return candidates.sort((a, b) => compareBackupIdDesc(a.id, b.id))[0];
   }
 
   /** IDでバックアップを検索（指定スコープ内） */
@@ -730,6 +730,21 @@ function getSqlitePageSize(dbPath: string): number {
   fs.closeSync(fd);
   const raw = buf.readUInt16BE(16);
   return raw === 1 ? 65536 : raw;
+}
+
+/**
+ * バックアップの作成順降順比較（新しいほど前）。
+ *
+ * ソートキーには ファイルの mtime ではなく、ファイル名タイムスタンプ
+ * (id = "YYYYMMDDHHMMSS-mmm", fixed-width) を使う。mtime は粒度が粗く
+ * 同ミリ秒に作られたフル/差分が同値になることで順序が非決定になり、
+ * latest 選択が誤って古いフルを選ぶ不具合の原因となるため。
+ * id は currentTimestampStr + lastBackupTimestampMs で単調一意が保証されている。
+ */
+function compareBackupIdDesc(aId: string, bId: string): number {
+  if (aId > bId) return -1;
+  if (aId < bId) return 1;
+  return 0;
 }
 
 /**

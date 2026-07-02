@@ -529,7 +529,10 @@ impl BackupManager {
             }
         }
 
-        backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        // 作成順のソートは mtime ではなくファイル名タイムスタンプ(id)で行う。
+        // mtime は粒度が粗く同ミリ秒作成でフル/差分が同値になり、latest 選択が
+        // 非決定で古いフルを選ぶ不具合の原因となるため(TASK-17 と同一原因)。
+        backups.sort_by(|a, b| b.id.cmp(&a.id));
         Ok(backups)
     }
 
@@ -681,7 +684,7 @@ impl BackupManager {
             }
         }
 
-        candidates.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        candidates.sort_by(|a, b| b.id.cmp(&a.id));
         Ok(candidates.into_iter().next())
     }
 

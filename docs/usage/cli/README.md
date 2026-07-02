@@ -42,7 +42,7 @@ TypeScript SDKの `RemoteKijukuDB` はこのモードを使用してSSH経由で
 echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.db
 ```
 
-**stdin操作一覧（44種類）:**
+**stdin操作一覧（43種類）:**
 
 | カテゴリ | 操作名 | 説明 | 主なパラメータ |
 |---------|--------|------|--------------|
@@ -65,6 +65,7 @@ echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.d
 | | `addTagToMedia` | タグ追加 | `media_id`, `tag_id` |
 | | `removeTagFromMedia` | タグ削除 | `media_id`, `tag_id` |
 | | `getMediaTags` | メディアのタグ取得 | `media_id` |
+| | `getMediaTagsBulk` | 複数メディアのタグ一括取得（N+1回避） | `media_ids: number[]` |
 | | `getTagUsageStats` | タグ使用統計 | なし |
 | | `findUnusedTags` | 未使用タグ検索 | なし |
 | **属性操作** | `setMediaAttribute` | 属性設定 | `media_id`, `key`, `value`, `value_type?` |
@@ -100,6 +101,9 @@ echo '{"operation":"findMedia","params":{"filter":{"media_type":"comic"},"option
 
 # タグ作成
 echo '{"operation":"createTag","params":{"name":"お気に入り"}}' | kijuku-cli --db ./data/kijuku.db
+
+# 複数メディアのタグ一括取得（N+1回避）
+echo '{"operation":"getMediaTagsBulk","params":{"media_ids":[1,2,3]}}' | kijuku-cli --db ./data/kijuku.db
 
 # 属性設定
 echo '{"operation":"setMediaAttribute","params":{"media_id":1,"key":"rating","value":"5"}}' | kijuku-cli --db ./data/kijuku.db

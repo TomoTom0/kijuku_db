@@ -316,6 +316,30 @@ describe('BackupManager', () => {
       // 差分バックアップ時点の2件が復元されているべき
       expect(count).toBe(2);
     });
+
+    it('フル/差分のmtimeが同値でも latest は作成順(id)で差分を選ぶ（TASK-17 回帰）', async () => {
+      // ファイル mtime の粒度が粗く同ミリ秒作成でフル/差分が同 mtime になると、
+      // mtime ベースのソートは非決定になり latest が古いフル(空)を選ぶ不具合があった。
+      // 作成順はファイル名タイムスタンプ(id)で決定論的に判定されることを検証する。
+      const manager = db.getBackupManager()!;
+      const { BackupSelector } = await import('../../src/backup.js');
+
+      await manager.backupAuto(); // フル(空)
+      db.createMedia({ title: 'A', media_type: 'video' });
+      db.createMedia({ title: 'B', media_type: 'comic' });
+      await manager.backupAuto(); // 差分(2件)
+
+      // フル/差分両バックアップの mtime を同一化してタイ条件を決定論的に再現
+      const sameTime = new Date();
+      for (const b of db.listBackups().filter((x) => x.scope === 'auto')) {
+        fs.utimesSync(b.path, sameTime, sameTime);
+      }
+
+      const selected = manager.selectBackup(BackupSelector.latest().scope('auto'));
+      expect(selected).not.toBeNull();
+      // フル(空状態)ではなく、新しい差分(2件)が選ばれるべき
+      expect(selected!.kind.type).toBe('diff');
+    });
   });
 
   describe('auto-records.csv (TASK-148)', () => {
