@@ -694,3 +694,28 @@ fn test_cli_get_distinct_values_invalid_field() {
 
     assert_eq!(response["success"], false);
 }
+
+#[test]
+fn test_cli_version_flag() {
+    // --version はバージョン文字列を出力して終了する（stdin不要）
+    let output = Command::new("cargo")
+        .args(&["run", "--bin", "kijuku-cli", "--", "--version"])
+        .output()
+        .expect("CLIの起動に失敗");
+
+    assert!(
+        output.status.success(),
+        "exit code: {:?}, stderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected = format!("kijuku-cli {}", env!("CARGO_PKG_VERSION"));
+    assert!(
+        stdout.contains(&expected),
+        "expected '{}' in output, got: {}",
+        expected,
+        stdout
+    );
+}
