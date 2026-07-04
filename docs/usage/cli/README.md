@@ -25,7 +25,7 @@ kijuku-cli --db <dbファイルのパス> [--verbose] <サブコマンド> [オ�
 | `--db <path>` | データベースファイルのパス（省略時: `./kijuku.db`） |
 | `--verbose` | 実行したSQLをstderrに出力する（デバッグ用） |
 | `--backend <BACKEND>` | バックエンド（`local` / `d1`）。`d1` は `D1_ACCOUNT_ID` / `D1_DATABASE_ID` 環境変数と事前の `wrangler login` が必要（省略時: `local`） |
-| `--version` | バージョンを表示して終了する |
+| `-V`, `--version` | バージョンを表示して終了する |
 
 **例:**
 
