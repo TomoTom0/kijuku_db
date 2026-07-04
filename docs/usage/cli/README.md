@@ -24,6 +24,8 @@ kijuku-cli --db <dbファイルのパス> [--verbose] <サブコマンド> [オ�
 |-----------|------|
 | `--db <path>` | データベースファイルのパス（省略時: `./kijuku.db`） |
 | `--verbose` | 実行したSQLをstderrに出力する（デバッグ用） |
+| `--backend <BACKEND>` | バックエンド（`local` / `d1`）。`d1` は `D1_ACCOUNT_ID` / `D1_DATABASE_ID` 環境変数と事前の `wrangler login` が必要（省略時: `local`） |
+| `-V`, `--version` | バージョンを表示して終了する |
 
 **例:**
 
@@ -287,6 +289,25 @@ kijuku-cli --db ./data/kijuku.db hash find --hash <sha256_hex>
 ```bash
 kijuku-cli --db ./data/kijuku.db hash duplicates
 ```
+
+### bulk-load
+
+ローカルDB（`--db`）の全データを D1 へバルクロード（移行）し、件数・内容一致を検証します。`--backend d1` が必要で、source はローカル SQLite、dest は D1 です。
+
+前提: 事前に `wrangler login` を実行し、`D1_ACCOUNT_ID` / `D1_DATABASE_ID` 環境変数を設定しておく必要があります。
+
+```bash
+# ローカル → D1 へバルクロード（件数・内容一致を検証）
+kijuku-cli --db ./data/kijuku.db --backend d1 bulk-load
+
+# source 読み出しのページサイズを指定（省略時 500）
+kijuku-cli --db ./data/kijuku.db --backend d1 bulk-load --chunk-size 1000
+
+# 転送せず、既存の D1 に対する検証のみ行う
+kijuku-cli --db ./data/kijuku.db --backend d1 bulk-load --verify-only
+```
+
+`--backend d1` を指定すれば、stdin（デフォルト）モードの各 operation（`createMedia` / `findMedia` など）も D1 に対して実行できます。
 
 ### server
 

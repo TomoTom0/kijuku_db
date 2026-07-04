@@ -485,7 +485,7 @@ fn show_docs(doc_type: &str) {
 }
 
 #[derive(Parser)]
-#[command(name = "kijuku-cli")]
+#[command(name = "kijuku-cli", version)]
 #[command(about = "きじゅくDB CLI", long_about = None)]
 struct Cli {
     /// データベースファイルのパス
