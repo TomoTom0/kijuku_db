@@ -74,9 +74,10 @@ export class KijukuDB {
     this.db.pragma('foreign_keys = ON');
     this.db.pragma('journal_mode = WAL');
 
-    // バックアップマネージャーの初期化
-    if (options?.backup) {
-      this.backupManager = new BackupManager(this.db, dbPath, options.backup);
+    // バックアップマネージャーの初期化（合意に基づきデフォルトで有効）
+    const backupOpts = options?.backup === undefined ? {} : options.backup;
+    if (backupOpts !== null) {
+      this.backupManager = new BackupManager(this.db, dbPath, backupOpts);
     }
   }
 

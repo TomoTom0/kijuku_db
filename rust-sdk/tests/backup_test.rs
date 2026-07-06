@@ -242,8 +242,12 @@ fn test_kijukudb_without_backup() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test.db");
 
-    // バックアップオプションなしでデータベースを開く
-    let db = KijukuDB::open(&db_path).unwrap();
+    // バックアップを明示的に無効化してデータベースを開く
+    let options = DBOptions {
+        backup: None,
+        ..Default::default()
+    };
+    let db = KijukuDB::open_with_options(&db_path, options).unwrap();
 
     // バックアップマネージャーが存在しない
     assert!(db.get_backup_manager().is_none());
@@ -339,7 +343,11 @@ fn test_db_backup_method_without_backup_manager() {
     let db_path = temp_dir.path().join("test.db");
 
     // バックアップマネージャーなしでデータベースを開く
-    let db = KijukuDB::open(&db_path).unwrap();
+    let options = DBOptions {
+        backup: None,
+        ..Default::default()
+    };
+    let db = KijukuDB::open_with_options(&db_path, options).unwrap();
     db.migrate().unwrap();
 
     // backup()メソッドを呼び出すと None が返る

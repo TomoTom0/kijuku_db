@@ -218,13 +218,13 @@ describe('BackupManager', () => {
       dbWithoutBackup.close();
     });
 
-    it('backupオプションが指定されていない場合、バックアップマネージャーが作成されない', () => {
+    it('backup を明示的に無効化(null)した場合、バックアップマネージャーが作成されない', () => {
       db.close();
       if (fs.existsSync(testDbPath)) {
         fs.unlinkSync(testDbPath);
       }
 
-      const dbWithoutBackup = new KijukuDB(testDbPath);
+      const dbWithoutBackup = new KijukuDB(testDbPath, { backup: null });
       dbWithoutBackup.migrate();
 
       const backupManager = dbWithoutBackup.getBackupManager();

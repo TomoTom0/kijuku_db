@@ -235,7 +235,13 @@ export interface DBOptions {
   timeout?: number;
   readonly?: boolean;
   verbose?: boolean;
-  backup?: BackupOptions;
+  /**
+   * バックアップ設定。
+   * - undefined: デフォルトで有効（既定の BackupOptions）
+   * - null: バックアップ無効（マネージャーを生成しない）
+   * - BackupOptions: 指定の内容で有効
+   */
+  backup?: BackupOptions | null;
 }
 
 /**
