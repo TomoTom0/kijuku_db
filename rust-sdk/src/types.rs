@@ -305,12 +305,25 @@ pub struct TagUsageStats {
 }
 
 /// データベース接続オプション
-#[derive(Debug, Default, Clone)]
+///
+/// バックアップは合意に基づきデフォルトで有効（`backup: Some(BackupOptions::default())`）。
+#[derive(Debug, Clone)]
 pub struct DBOptions {
     pub timeout: Option<u64>,
     pub readonly: bool,
     pub verbose: bool,
     pub backup: Option<crate::backup::BackupOptions>,
+}
+
+impl Default for DBOptions {
+    fn default() -> Self {
+        Self {
+            timeout: None,
+            readonly: false,
+            verbose: false,
+            backup: Some(crate::backup::BackupOptions::default()),
+        }
+    }
 }
 
 /// メディア属性（EAVモデル）

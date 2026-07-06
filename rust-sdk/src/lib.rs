@@ -114,16 +114,7 @@ impl KijukuDB {
     ///
     /// データベース接続を返す
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        let conn = Arc::new(ReentrantMutex::new(conn));
-        let exec = LocalExec::new(Arc::clone(&conn));
-        Ok(Self {
-            conn,
-            exec,
-            options: DBOptions::default(),
-            backup_manager: None,
-        })
+        Self::open_with_options(path, DBOptions::default())
     }
 
     /// オプション付きでデータベースを開く
