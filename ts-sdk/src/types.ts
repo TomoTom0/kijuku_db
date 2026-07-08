@@ -300,3 +300,99 @@ export interface ComputeHashResult {
   skipped: boolean;
   skip_reason?: string;
 }
+
+/**
+ * メディアとタグの紐付け（media_tags テーブル対応、DBカラム準拠）
+ */
+export interface MediaTagAssoc {
+  media_id: number;
+  tag_id: number;
+}
+
+// ========== バックアップ差分（diff）==========
+// Rust 側 serde(rename_all = camelCase) の JSON と一致させるため camelCase。
+
+/** 差分件数 */
+export interface DiffCounts {
+  added: number;
+  removed: number;
+  changed: number;
+}
+
+/** 差分の詳細度（省略時 limited{n:100}） */
+export type DiffDetail =
+  | { type: 'summaryOnly' }
+  | { type: 'limited'; n: number }
+  | { type: 'full' };
+
+/** 差分取得オプション */
+export interface DiffOptions {
+  detail?: DiffDetail;
+}
+
+export interface MediaChange {
+  current: Media;
+  backup: Media;
+}
+export interface TagChange {
+  current: Tag;
+  backup: Tag;
+}
+export interface AttributeChange {
+  current: MediaAttribute;
+  backup: MediaAttribute;
+}
+export interface HashChange {
+  current: MediaHash;
+  backup: MediaHash;
+}
+
+export interface MediaDiff {
+  added: Media[];
+  removed: Media[];
+  changed: MediaChange[];
+}
+export interface TagDiff {
+  added: Tag[];
+  removed: Tag[];
+  changed: TagChange[];
+}
+export interface MediaTagAssocDiff {
+  added: MediaTagAssoc[];
+  removed: MediaTagAssoc[];
+}
+export interface AttributeDiff {
+  added: MediaAttribute[];
+  removed: MediaAttribute[];
+  changed: AttributeChange[];
+}
+export interface HashDiff {
+  added: MediaHash[];
+  removed: MediaHash[];
+  changed: HashChange[];
+}
+
+export interface BackupDiffSummary {
+  media: DiffCounts;
+  tags: DiffCounts;
+  /** 紐付けは一致/不一致のみ（changed は常に 0） */
+  mediaTags: DiffCounts;
+  attributes: DiffCounts;
+  hashes: DiffCounts;
+}
+
+/**
+ * バックアップと現在DBの差分
+ *
+ * - added:   バックアップに在り現在に無い（復元で復活する）
+ * - removed: 現在に在りバックアップに無い（復元で失われる）
+ * - changed: 両方に在り内容が異なる（復元で上書きされる）
+ */
+export interface BackupDiff {
+  media: MediaDiff;
+  tags: TagDiff;
+  mediaTags: MediaTagAssocDiff;
+  attributes: AttributeDiff;
+  hashes: HashDiff;
+  summary: BackupDiffSummary;
+}

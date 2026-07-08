@@ -103,6 +103,38 @@ pub fn get_media_attributes(
     Ok(attributes)
 }
 
+/// 全てのメディア属性を取得（差分比較用）
+pub fn get_all_media_attributes(conn: &Connection) -> Result<Vec<MediaAttribute>, KijukuError> {
+    let mut stmt = conn.prepare(
+        "SELECT media_id, key, value, value_type
+         FROM media_attributes
+         ORDER BY media_id, key",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        let value_type_str: String = row.get(3)?;
+        let value_type = match value_type_str.as_str() {
+            "integer" => AttributeValueType::Integer,
+            "boolean" => AttributeValueType::Boolean,
+            _ => AttributeValueType::String,
+        };
+
+        Ok(MediaAttribute {
+            media_id: row.get(0)?,
+            key: row.get(1)?,
+            value: row.get(2)?,
+            value_type,
+        })
+    })?;
+
+    let mut attributes = Vec::new();
+    for attr in rows {
+        attributes.push(attr?);
+    }
+
+    Ok(attributes)
+}
+
 /// メディアの属性を削除
 pub fn delete_media_attribute(
     conn: &Connection,

@@ -304,6 +304,7 @@ struct BackupParams {
 enum BackupSelectorJson {
     Latest,
     Nth { n: usize },
+    ById { id: String },
 }
 
 impl BackupSelectorJson {
@@ -311,8 +312,69 @@ impl BackupSelectorJson {
         match self {
             BackupSelectorJson::Latest => BackupSelector::latest(),
             BackupSelectorJson::Nth { n } => BackupSelector::nth(*n),
+            BackupSelectorJson::ById { id } => BackupSelector::by_id(id),
         }
     }
+}
+
+/// 差分詳細度のJSON表現
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum DiffDetailJson {
+    SummaryOnly,
+    Limited { n: usize },
+    Full,
+}
+
+impl DiffDetailJson {
+    fn to_detail(&self) -> kijuku_db::diff::DiffDetail {
+        match self {
+            Self::SummaryOnly => kijuku_db::diff::DiffDetail::SummaryOnly,
+            Self::Limited { n } => kijuku_db::diff::DiffDetail::Limited { n: *n },
+            Self::Full => kijuku_db::diff::DiffDetail::Full,
+        }
+    }
+}
+
+/// 差分取得オプションのJSON表現
+#[derive(Debug, Deserialize, Default)]
+struct DiffOptionsJson {
+    detail: Option<DiffDetailJson>,
+}
+
+impl DiffOptionsJson {
+    fn to_options(&self) -> kijuku_db::diff::DiffOptions {
+        kijuku_db::diff::DiffOptions {
+            detail: self.detail.as_ref().map(|d| d.to_detail()),
+        }
+    }
+}
+
+/// バックアップ差分のパラメータ
+#[derive(Debug, Deserialize, Default)]
+struct DiffBackupParams {
+    selector: Option<BackupSelectorJson>,
+    options: Option<DiffOptionsJson>,
+}
+
+/// バックアップメタ（ラベル）操作のパラメータ
+#[derive(Debug, Deserialize)]
+struct BackupLabelParams {
+    id: String,
+    label: Option<String>,
+}
+
+/// バックアップメタ（メモ）操作のパラメータ
+#[derive(Debug, Deserialize)]
+struct BackupNoteParams {
+    id: String,
+    note: Option<String>,
+}
+
+/// バックアップIDのみのパラメータ
+#[derive(Debug, Deserialize)]
+struct BackupIdParams {
+    id: String,
 }
 
 /// バックアップ復元のパラメータ
@@ -429,6 +491,11 @@ fn backup_info_to_json(info: &BackupInfo) -> serde_json::Value {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64();
+    use kijuku_db::backup::LabelSource;
+    let label_source = match &info.label_source {
+        LabelSource::Filename => "filename",
+        LabelSource::Sidecar => "sidecar",
+    };
     serde_json::json!({
         "id": info.id,
         "name": info.name,
@@ -437,6 +504,8 @@ fn backup_info_to_json(info: &BackupInfo) -> serde_json::Value {
         "scope": scope,
         "kind": kind,
         "label": info.label,
+        "labelSource": label_source,
+        "note": info.note,
     })
 }
 
@@ -562,6 +631,35 @@ enum Commands {
         /// N番目のバックアップから復元（0が最新、省略時は最新）
         #[arg(long)]
         nth: Option<usize>,
+        /// バックアップID（タイムスタンプ）を指定して復元（nth より優先）
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// バックアップと現在DBの差分を表示（復元判断用）
+    DiffBackup {
+        /// N番目のバックアップと比較（0が最新、省略時は最新）
+        #[arg(long)]
+        nth: Option<usize>,
+        /// バックアップID（タイムスタンプ）を指定（nth より優先）
+        #[arg(long)]
+        id: Option<String>,
+        /// 詳細度: summary（件数のみ）/ limited=<N> / full
+        #[arg(long, default_value = "summary")]
+        detail: String,
+    },
+    /// バックアップにラベルを付与（事後）
+    SetBackupLabel {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// バックアップにメモを付与（事後）
+    SetBackupNote {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        note: Option<String>,
     },
     /// コンテンツハッシュ操作
     Hash {
@@ -703,18 +801,98 @@ fn handle_list_backups_subcommand(ctx: &CliContext) {
     }
 }
 
-fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>) {
+fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>, id: Option<String>) {
     let mut db = match open_and_migrate_db(ctx) {
         Some(db) => db,
         None => return,
     };
-    let selector = match nth {
-        Some(n) => BackupSelector::nth(n),
-        None => BackupSelector::latest(),
+    let selector = if let Some(id) = id {
+        BackupSelector::by_id(id)
+    } else {
+        match nth {
+            Some(n) => BackupSelector::nth(n),
+            None => BackupSelector::latest(),
+        }
     };
     match db.restore(&selector) {
         Ok(path) => println!("{}", path.to_string_lossy()),
         Err(e) => eprintln!("復元に失敗: {}", e),
+    }
+}
+
+fn handle_diff_backup_subcommand(
+    ctx: &CliContext,
+    nth: Option<usize>,
+    id: Option<String>,
+    detail: String,
+) {
+    let db = match open_and_migrate_db(ctx) {
+        Some(db) => db,
+        None => return,
+    };
+    let selector = if let Some(id) = id {
+        BackupSelector::by_id(id)
+    } else {
+        match nth {
+            Some(n) => BackupSelector::nth(n),
+            None => BackupSelector::latest(),
+        }
+    };
+    let options = kijuku_db::diff::DiffOptions {
+        detail: parse_diff_detail(&detail),
+    };
+    match db.diff_with_backup(&selector, &options) {
+        Ok(diff) => print_backup_diff_summary(&diff),
+        Err(e) => eprintln!("差分の取得に失敗: {}", e),
+    }
+}
+
+/// `--detail` 文字列を DiffDetail に変換（summary / limited=N / full）
+fn parse_diff_detail(s: &str) -> Option<kijuku_db::diff::DiffDetail> {
+    match s {
+        "summary" => Some(kijuku_db::diff::DiffDetail::SummaryOnly),
+        "full" => Some(kijuku_db::diff::DiffDetail::Full),
+        _ => s.strip_prefix("limited=").and_then(|n| {
+            n.parse::<usize>()
+                .ok()
+                .map(|n| kijuku_db::diff::DiffDetail::Limited { n })
+        }),
+    }
+}
+
+fn print_backup_diff_summary(diff: &kijuku_db::diff::BackupDiff) {
+    let s = &diff.summary;
+    println!(
+        "media:      +{} -{} ~{}",
+        s.media.added, s.media.removed, s.media.changed
+    );
+    println!(
+        "tags:       +{} -{} ~{}",
+        s.tags.added, s.tags.removed, s.tags.changed
+    );
+    println!(
+        "media_tags: +{} -{}",
+        s.media_tags.added, s.media_tags.removed
+    );
+    println!(
+        "attributes: +{} -{} ~{}",
+        s.attributes.added, s.attributes.removed, s.attributes.changed
+    );
+    println!(
+        "hashes:     +{} -{} ~{}",
+        s.hashes.added, s.hashes.removed, s.hashes.changed
+    );
+    if !diff.media.added.is_empty() {
+        println!("  [media added]");
+        for m in diff.media.added.iter().take(10) {
+            println!("    + id={} {}", m.id, m.title);
+        }
+    }
+    if !diff.media.removed.is_empty() {
+        println!("  [media removed]");
+        for m in diff.media.removed.iter().take(10) {
+            println!("    - id={} {}", m.id, m.title);
+        }
     }
 }
 
@@ -811,8 +989,17 @@ async fn main() {
         Some(Commands::ListBackups) => {
             handle_list_backups_subcommand(&ctx);
         }
-        Some(Commands::Restore { nth }) => {
-            handle_restore_subcommand(&ctx, *nth);
+        Some(Commands::Restore { nth, id }) => {
+            handle_restore_subcommand(&ctx, *nth, id.clone());
+        }
+        Some(Commands::DiffBackup { nth, id, detail }) => {
+            handle_diff_backup_subcommand(&ctx, *nth, id.clone(), detail.clone());
+        }
+        Some(Commands::SetBackupLabel { id, label }) => {
+            handle_set_backup_label_subcommand(&ctx, id.clone(), label.clone());
+        }
+        Some(Commands::SetBackupNote { id, note }) => {
+            handle_set_backup_note_subcommand(&ctx, id.clone(), note.clone());
         }
         Some(Commands::Hash { hash_command }) => {
             handle_hash_subcommand(&ctx, hash_command);
@@ -866,6 +1053,89 @@ async fn handle_restore(db: &mut KijukuDB, params: &serde_json::Value) -> Comman
         .unwrap_or_else(BackupSelector::latest);
     match db.restore(&selector) {
         Ok(path) => CommandResponse::success(serde_json::json!({"path": path.to_string_lossy()})),
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
+async fn handle_diff_backup(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: DiffBackupParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    let selector = params
+        .selector
+        .as_ref()
+        .map(|s| s.to_selector())
+        .unwrap_or_else(BackupSelector::latest);
+    let options = params.options.map(|o| o.to_options()).unwrap_or_default();
+    match db.diff_with_backup(&selector, &options) {
+        Ok(diff) => match serde_json::to_value(&diff) {
+            Ok(v) => CommandResponse::success(v),
+            Err(e) => CommandResponse::error(format!("シリアライズエラー: {}", e)),
+        },
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
+fn handle_set_backup_label_subcommand(
+    ctx: &CliContext,
+    id: String,
+    label: Option<String>,
+) {
+    let db = match open_and_migrate_db(ctx) {
+        Some(db) => db,
+        None => return,
+    };
+    match db.set_backup_label(&id, label.as_deref()) {
+        Ok(_) => println!("ラベルを設定しました（id={}）", id),
+        Err(e) => eprintln!("ラベル設定に失敗: {}", e),
+    }
+}
+
+fn handle_set_backup_note_subcommand(
+    ctx: &CliContext,
+    id: String,
+    note: Option<String>,
+) {
+    let db = match open_and_migrate_db(ctx) {
+        Some(db) => db,
+        None => return,
+    };
+    match db.set_backup_note(&id, note.as_deref()) {
+        Ok(_) => println!("メモを設定しました（id={}）", id),
+        Err(e) => eprintln!("メモ設定に失敗: {}", e),
+    }
+}
+
+async fn handle_set_backup_label(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: BackupLabelParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.set_backup_label(&params.id, params.label.as_deref()) {
+        Ok(_) => CommandResponse::ack(),
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
+async fn handle_set_backup_note(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: BackupNoteParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.set_backup_note(&params.id, params.note.as_deref()) {
+        Ok(_) => CommandResponse::ack(),
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
+async fn handle_get_backup_meta(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: BackupIdParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    match db.get_backup_meta(&params.id) {
+        Ok(meta) => CommandResponse::success(serde_json::to_value(&meta).unwrap_or_default()),
         Err(e) => CommandResponse::error(e.to_string()),
     }
 }
@@ -938,6 +1208,22 @@ async fn execute_command(backend: &mut Backend, request: &CommandRequest) -> Com
         "restore" => match backend.as_local_mut() {
             Some(local) => handle_restore(local, &request.params).await,
             None => not_supported("restore"),
+        },
+        "diffBackup" => match backend.as_local() {
+            Some(local) => handle_diff_backup(local, &request.params).await,
+            None => not_supported("diffBackup"),
+        },
+        "setBackupLabel" => match backend.as_local() {
+            Some(local) => handle_set_backup_label(local, &request.params).await,
+            None => not_supported("setBackupLabel"),
+        },
+        "setBackupNote" => match backend.as_local() {
+            Some(local) => handle_set_backup_note(local, &request.params).await,
+            None => not_supported("setBackupNote"),
+        },
+        "getBackupMeta" => match backend.as_local() {
+            Some(local) => handle_get_backup_meta(local, &request.params).await,
+            None => not_supported("getBackupMeta"),
         },
         _ => CommandResponse::error(format!("不明な操作: {}", request.operation)),
     }

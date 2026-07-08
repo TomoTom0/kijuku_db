@@ -560,6 +560,9 @@ impl RemoteKijukuDB {
             scope: String,
             kind: BackupKindRaw,
             label: Option<String>,
+            #[serde(rename = "labelSource", default)]
+            label_source: String,
+            note: Option<String>,
         }
 
         #[derive(Deserialize)]
@@ -592,6 +595,11 @@ impl RemoteKijukuDB {
                     scope,
                     kind,
                     label: item.label,
+                    label_source: match item.label_source.as_str() {
+                        "sidecar" => crate::backup::LabelSource::Sidecar,
+                        _ => crate::backup::LabelSource::Filename,
+                    },
+                    note: item.note,
                 })
             })
             .collect::<Result<Vec<_>>>()
@@ -611,6 +619,23 @@ impl RemoteKijukuDB {
 
         let data: PathResponse = self.check_response(response)?;
         Ok(data.path)
+    }
+
+    /// バックアップと現在DBの差分を取得
+    pub fn diff_with_backup(
+        &self,
+        selector: &serde_json::Value,
+        options: &crate::diff::DiffOptions,
+    ) -> Result<crate::diff::BackupDiff> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "diffBackup".to_string(),
+            params: serde_json::json!({
+                "selector": selector,
+                "options": serde_json::to_value(options)
+                    .map_err(|e| KijukuError::Other(e.to_string()))?,
+            }),
+        })?;
+        self.check_response(response)
     }
 
     // --- update_exist ---

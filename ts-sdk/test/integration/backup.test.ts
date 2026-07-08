@@ -340,6 +340,34 @@ describe('BackupManager', () => {
       // フル(空状態)ではなく、新しい差分(2件)が選ばれるべき
       expect(selected!.kind.type).toBe('diff');
     });
+
+    it('差分バックアップを read-only で開いてクエリできる（.diff open + ById）', async () => {
+      const manager = db.getBackupManager()!;
+      const { BackupSelector } = await import('../../src/backup.js');
+
+      // フルバックアップ（空のDB）
+      await manager.backupAuto();
+      // データ追加
+      db.createMedia({ title: 'Diff Target', media_type: 'video' });
+      // 差分バックアップ
+      await manager.backupAuto();
+
+      const backups = db.listBackups();
+      const diff = backups.find((b) => b.kind.type === 'diff');
+      expect(diff).toBeDefined();
+
+      // 差分バックアップを ID 指定で read-only open しクエリできる
+      const media = db.findMediaFromBackup({}, undefined, BackupSelector.byId(diff!.id));
+      expect(media.length).toBe(1);
+      expect(media[0].title).toBe('Diff Target');
+
+      // 一時フルDBはコールバック終了後に削除される
+      const tmpDir = path.join(backupDir, 'tmp');
+      if (fs.existsSync(tmpDir)) {
+        const tempFiles = fs.readdirSync(tmpDir).filter((f) => f.includes('restore_temp_'));
+        expect(tempFiles.length, `temp files remaining: ${JSON.stringify(tempFiles)}`).toBe(0);
+      }
+    });
   });
 
   describe('auto-records.csv (TASK-148)', () => {
@@ -355,6 +383,63 @@ describe('BackupManager', () => {
       expect(content).toContain('id,created_at,tier,type,base_id,size_bytes,status,pruned_at');
       expect(content).toContain('daily');
       expect(content).toContain('full');
+    });
+  });
+
+  describe('バックアップ差分（diffWithBackup）', () => {
+    it('backup直後は差分なし', async () => {
+      const { BackupSelector } = await import('../../src/backup.js');
+      db.createMedia({ title: 'A', media_type: 'video' });
+      await db.backupWithLabel('b1');
+      const diff = db.diffWithBackup(BackupSelector.latest());
+      expect(diff.summary.media.added).toBe(0);
+      expect(diff.summary.media.removed).toBe(0);
+      expect(diff.summary.media.changed).toBe(0);
+    });
+
+    it('backup後に追加したmediaは removed（復元で失われる）', async () => {
+      const { BackupSelector } = await import('../../src/backup.js');
+      // 空DBでバックアップ
+      await db.backupWithLabel('empty');
+      // backup後に2件追加（現在にのみ存在 → removed）
+      db.createMedia({ title: 'A', media_type: 'video' });
+      db.createMedia({ title: 'B', media_type: 'comic' });
+
+      const diff = db.diffWithBackup(BackupSelector.latest());
+      expect(diff.summary.media.removed).toBe(2);
+      expect(diff.summary.media.added).toBe(0);
+    });
+
+    it('backup時のみのmediaは added（復元で復活）', async () => {
+      const { BackupSelector } = await import('../../src/backup.js');
+      const a = db.createMedia({ title: 'A', media_type: 'video' });
+      await db.backupWithLabel('b1');
+      // backup後にAを削除（backupにのみ残る → added）
+      db.deleteMedia(a.id);
+
+      const diff = db.diffWithBackup(BackupSelector.latest());
+      expect(diff.summary.media.added).toBe(1);
+      expect(diff.summary.media.removed).toBe(0);
+    });
+  });
+
+  describe('事後ラベル/メモ（機能3）', () => {
+    it('ラベルとメモを付与してlistで見える（サイドカー優先）', async () => {
+      db.createMedia({ title: 'A', media_type: 'video' });
+      await db.backupWithLabel('initial'); // ファイル名ラベル
+      const id = db.listBackups()[0].id;
+
+      db.setBackupLabel(id, 'important');
+      db.setBackupNote(id, '作業前の状態');
+
+      const info = db.listBackups().find((b) => b.id === id)!;
+      expect(info.label).toBe('important');
+      expect(info.labelSource).toBe('sidecar');
+      expect(info.note).toBe('作業前の状態');
+    });
+
+    it('存在しないidはエラー', () => {
+      expect(() => db.setBackupLabel('20990101000000-000', 'x')).toThrow();
     });
   });
 });

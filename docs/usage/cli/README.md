@@ -91,6 +91,10 @@ echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.d
 | **バックアップ** | `backup` | バックアップ作成 | `label?` |
 | | `listBackups` | バックアップ一覧 | なし |
 | | `restore` | バックアップ復元 | `selector?` |
+| | `diffBackup` | 現在DBとの差分 | `selector?`, `options?` |
+| | `setBackupLabel` | 事後ラベル付与 | `id`, `label?` |
+| | `setBackupNote` | 事後メモ付与 | `id`, `note?` |
+| | `getBackupMeta` | 事後メタ取得 | `id` |
 
 **使用例:**
 
@@ -161,7 +165,49 @@ kijuku-cli --db ./data/kijuku.db restore
 
 # N番目のバックアップから復元（list-backupsの[N]に対応）
 kijuku-cli --db ./data/kijuku.db restore --nth 1
+
+# バックアップID（タイムスタンプ）を指定して復元
+kijuku-cli --db ./data/kijuku.db restore --id 20260707120000-000
 ```
+
+### diff-backup
+
+バックアップと現在DBの差分を表示します（復元判断用）。
+
+```bash
+# 最新バックアップとの差分（件数サマリ）
+kijuku-cli --db ./data/kijuku.db diff-backup
+
+# N番目のバックアップとの差分
+kijuku-cli --db ./data/kijuku.db diff-backup --nth 2
+
+# バックアップID指定 + 全件表示
+kijuku-cli --db ./data/kijuku.db diff-backup --id 20260707120000-000 --detail full
+
+# 各カテゴリ上位10件
+kijuku-cli --db ./data/kijuku.db diff-backup --detail limited=10
+```
+
+- `added`: バックアップに在り現在に無い（復元で復活）
+- `removed`: 現在に在りバックアップに無い（復元で失われる）
+- `changed`: 両方に在り内容が異なる（復元で上書き）
+
+### set-backup-label / set-backup-note
+
+既存バックアップにラベル・メモを事後付与します（`backup/meta/backup-meta.json` に保存）。
+
+```bash
+# ラベル付与
+kijuku-cli --db ./data/kijuku.db set-backup-label --id 20260707120000-000 --label "重要"
+
+# メモ付与
+kijuku-cli --db ./data/kijuku.db set-backup-note --id 20260707120000-000 --note "作業前の状態"
+
+# ラベル/メモをクリア（--label/--note を省略）
+kijuku-cli --db ./data/kijuku.db set-backup-label --id 20260707120000-000
+```
+
+付与したラベル・メモは `list-backups` で表示されます。
 
 ### check-thumbnail
 

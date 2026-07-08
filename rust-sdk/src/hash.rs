@@ -91,6 +91,17 @@ pub fn get_media_hashes(conn: &Connection, item_uuid: &str) -> Result<Vec<MediaH
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
+/// 全てのメディアハッシュを取得（差分比較用）
+pub fn get_all_media_hashes(conn: &Connection) -> Result<Vec<MediaHash>> {
+    let mut stmt = conn.prepare(
+        "SELECT item_uuid, filename, time_range, content_hash, alternative_of, embedding, created_at, updated_at
+         FROM media_hashes
+         ORDER BY item_uuid, filename, time_range",
+    )?;
+    let rows = stmt.query_map([], row_to_media_hash)?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
 /// 特定位置のハッシュを取得
 pub fn get_media_hash(
     conn: &Connection,

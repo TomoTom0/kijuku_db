@@ -1,7 +1,7 @@
 use crate::db_value::{SqlParam, SqlRow};
 use crate::error::{KijukuError, Result};
 use crate::exec::SqlExec;
-use crate::types::{Tag, TagUsageStats};
+use crate::types::{MediaTagAssoc, Tag, TagUsageStats};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 
@@ -79,6 +79,20 @@ pub fn get_media_tags(conn: &Connection, media_id: i64) -> Result<Vec<Tag>> {
         .collect::<std::result::Result<Vec<Tag>, _>>()?;
 
     Ok(tags)
+}
+
+/// 全てのメディア-タグ紐付けを取得（差分比較用）
+pub fn get_all_media_tags(conn: &Connection) -> Result<Vec<MediaTagAssoc>> {
+    let mut stmt = conn.prepare(
+        "SELECT media_id, tag_id FROM media_tags ORDER BY media_id, tag_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(MediaTagAssoc {
+            media_id: row.get(0)?,
+            tag_id: row.get(1)?,
+        })
+    })?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
 /// タグの使用数統計を取得

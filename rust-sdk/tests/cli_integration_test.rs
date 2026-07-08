@@ -299,6 +299,72 @@ fn test_cli_list_backups() {
 }
 
 #[test]
+fn test_cli_diff_backup() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+    execute_cli_command(db_path, json!({"operation": "backup", "params": {}}));
+
+    // backup直後は差分なし
+    let response = execute_cli_command(db_path, json!({
+        "operation": "diffBackup",
+        "params": {}
+    }));
+    assert_eq!(response["success"], true);
+    let media = &response["data"]["summary"]["media"];
+    assert_eq!(media["added"], 0);
+    assert_eq!(media["removed"], 0);
+    assert_eq!(media["changed"], 0);
+}
+
+#[test]
+fn test_cli_set_backup_label_and_note() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+
+    execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
+    execute_cli_command(db_path, json!({"operation": "backup", "params": {}}));
+
+    let list = execute_cli_command(db_path, json!({"operation": "listBackups", "params": {}}));
+    let id = list["data"][0]["id"].as_str().unwrap();
+
+    // ラベル・メモ付与
+    let r1 = execute_cli_command(db_path, json!({
+        "operation": "setBackupLabel",
+        "params": { "id": id, "label": "重要" }
+    }));
+    assert_eq!(r1["success"], true);
+
+    let r2 = execute_cli_command(db_path, json!({
+        "operation": "setBackupNote",
+        "params": { "id": id, "note": "作業前の状態" }
+    }));
+    assert_eq!(r2["success"], true);
+
+    // listBackups で label/note/labelSource を確認（サイドカー優先マージ）。
+    // /tmp/backup は並列テストで共有されるため、id で自分のbackupを特定する。
+    let list2 = execute_cli_command(db_path, json!({"operation": "listBackups", "params": {}}));
+    let entry = list2["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["id"] == id)
+        .expect("自分のbackupが見つからない");
+    assert_eq!(entry["label"], "重要");
+    assert_eq!(entry["note"], "作業前の状態");
+    assert_eq!(entry["labelSource"], "sidecar");
+
+    // getBackupMeta で取得
+    let meta = execute_cli_command(db_path, json!({
+        "operation": "getBackupMeta",
+        "params": { "id": id }
+    }));
+    assert_eq!(meta["data"]["label"], "重要");
+    assert_eq!(meta["data"]["note"], "作業前の状態");
+}
+
+#[test]
 fn test_cli_restore() {
     let temp_file = NamedTempFile::new().unwrap();
     let db_path = temp_file.path().to_str().unwrap();

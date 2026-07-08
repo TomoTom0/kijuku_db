@@ -35,7 +35,7 @@ impl MediaType {
 ///
 /// 注意: volume_numberは自動計算されます。
 /// 保存時にvolume_textが整数なら、自動的にvolume_numberに設定されます。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Media {
     pub id: i64,
     pub uuid: String,
@@ -290,10 +290,17 @@ pub struct QueryOptions {
 }
 
 /// タグ情報
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Tag {
     pub id: i64,
     pub name: String,
+}
+
+/// メディアとタグの紐付け（media_tags テーブル対応）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaTagAssoc {
+    pub media_id: i64,
+    pub tag_id: i64,
 }
 
 /// タグ使用統計情報
@@ -327,7 +334,7 @@ impl Default for DBOptions {
 }
 
 /// メディア属性（EAVモデル）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MediaAttribute {
     pub media_id: i64,
     pub key: String,
@@ -355,7 +362,7 @@ impl AttributeValueType {
 }
 
 /// メディアハッシュ情報
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MediaHash {
     pub item_uuid: String,
     pub filename: String,

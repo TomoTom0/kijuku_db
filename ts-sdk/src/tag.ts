@@ -2,7 +2,7 @@
  * タグ管理機能
  */
 import type Database from 'better-sqlite3';
-import type { Tag, TagUsageStats } from './types.js';
+import type { MediaTagAssoc, Tag, TagUsageStats } from './types.js';
 
 /**
  * タグを作成
@@ -86,6 +86,14 @@ export function getMediaTags(db: Database.Database, mediaId: number): Tag[] {
   `);
 
   return stmt.all(mediaId) as Tag[];
+}
+
+/** 全てのメディア-タグ紐付けを取得（差分比較用） */
+export function getAllMediaTags(db: Database.Database): MediaTagAssoc[] {
+  const stmt = db.prepare(`
+    SELECT media_id, tag_id FROM media_tags ORDER BY media_id, tag_id
+  `);
+  return stmt.all() as MediaTagAssoc[];
 }
 
 /**
