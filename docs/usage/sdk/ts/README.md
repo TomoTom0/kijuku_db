@@ -500,6 +500,28 @@ const attr = db.getMediaAttributeFromBackup(1, 'rating');
 const attrs = db.getMediaAttributesFromBackup(1);
 ```
 
+### 復元判断支援（差分・事後ラベル/メモ）
+
+```typescript
+// バックアップと現在DBの差分（復元判断）
+//   added: 復元で復活 / removed: 復元で失われる / changed: 復元で上書き
+const diff = db.diffWithBackup(BackupSelector.latest());
+console.log(`media: +${diff.summary.media.added} -${diff.summary.media.removed} ~${diff.summary.media.changed}`);
+
+// ID（タイムスタンプ）でバックアップを直接指定
+const byId = db.diffWithBackup(BackupSelector.byId('20260707120000-000'));
+
+// 既存バックアップにラベル/メモを事後付与（ファイル名は変更せず backup/meta/backup-meta.json に保存）
+const id = db.listBackups()[0].id;
+db.setBackupLabel(id, '重要');
+db.setBackupNote(id, '作業前の状態');
+
+// listBackups はサイドカー優先で label/note/labelSource を返す
+for (const b of db.listBackups()) {
+  console.log(`${b.id} label=${b.label ?? '-'} note=${b.note ?? '-'}`);
+}
+```
+
 ### リモートDB操作（SSH経由）
 
 SSH経由でリモートサーバー上のデータベースを操作できます。

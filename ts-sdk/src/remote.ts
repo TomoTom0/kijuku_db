@@ -19,9 +19,11 @@ import type {
   MediaHash,
   MediaHashInput,
   ComputeHashResult,
+  BackupDiff,
+  DiffDetail,
 } from './types.js';
 import type { UpdateExistOptions, UpdateExistResult } from './update_exist.js';
-import type { BackupInfo, BackupScope, BackupKind } from './backup.js';
+import type { BackupInfo, BackupScope, BackupKind, BackupMetaEntry } from './backup.js';
 import type { ThumbnailOptions, CheckThumbnailResult, UpdateThumbnailResult } from './types.js';
 
 /**
@@ -29,7 +31,8 @@ import type { ThumbnailOptions, CheckThumbnailResult, UpdateThumbnailResult } fr
  */
 export type RemoteBackupSelector =
   | { type: 'latest' }
-  | { type: 'nth'; n: number };
+  | { type: 'nth'; n: number }
+  | { type: 'byId'; id: string };
 
 /**
  * リモート接続設定
@@ -753,6 +756,8 @@ export class RemoteKijukuDB {
       scope: string;
       kind: { type: string; baseId?: string };
       label?: string;
+      labelSource?: string;
+      note?: string;
     }> = this.checkResponse(response);
     return data.map((item) => ({
       id: item.id,
@@ -764,6 +769,8 @@ export class RemoteKijukuDB {
         ? ({ type: 'diff', baseId: item.kind.baseId! } as BackupKind)
         : ({ type: 'full' } as BackupKind),
       label: item.label,
+      labelSource: (item.labelSource ?? 'filename') as BackupInfo['labelSource'],
+      note: item.note,
     }));
   }
 
@@ -908,6 +915,69 @@ export class RemoteKijukuDB {
       }, resolvedTimeoutMs);
       const data = this.checkResponse(response);
       return data.path;
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  /**
+   * バックアップと現在DBの差分を取得
+   */
+  async diffWithBackup(
+    params: { selector?: RemoteBackupSelector; options?: { detail?: DiffDetail } } = {},
+    timeoutMs?: number,
+  ): Promise<BackupDiff> {
+    await this.connect();
+    try {
+      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
+      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
+      const response = await this.executeRemoteCommand({
+        operation: 'diffBackup',
+        params: { selector: params.selector, options: params.options },
+      }, resolvedTimeoutMs);
+      return this.checkResponse(response) as BackupDiff;
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  /** バックアップにラベルを付与（事後） */
+  async setBackupLabel(id: string, label: string | undefined): Promise<void> {
+    await this.connect();
+    try {
+      const response = await this.executeRemoteCommand({
+        operation: 'setBackupLabel',
+        params: { id, label },
+      });
+      this.checkResponse(response);
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  /** バックアップにメモを付与（事後） */
+  async setBackupNote(id: string, note: string | undefined): Promise<void> {
+    await this.connect();
+    try {
+      const response = await this.executeRemoteCommand({
+        operation: 'setBackupNote',
+        params: { id, note },
+      });
+      this.checkResponse(response);
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  /** バックアップの事後メタを取得 */
+  async getBackupMeta(id: string): Promise<BackupMetaEntry | null> {
+    await this.connect();
+    try {
+      const response = await this.executeRemoteCommand({
+        operation: 'getBackupMeta',
+        params: { id },
+      });
+      return this.checkResponse(response);
     } finally {
       await this.disconnect();
     }

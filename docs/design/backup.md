@@ -292,3 +292,44 @@ BackupSelector::ClosestTo(time)  // 指定日時に最も近い
 | auto-records.csv の書き込み | 実装済み |
 | BackupSelector のディレクトリスコープ指定 | 実装済み |
 | tmp/ 自動削除（retention_secs） | 実装済み |
+| バックアップの read-only 参照（.diff 含む） | 実装済み |
+| BackupSelector::ById（ID 直接指定） | 実装済み |
+| バックアップとの差分表示（diff_with_backup） | 実装済み |
+| 事後ラベル/メモ（サイドカー backup-meta.json） | 実装済み |
+
+## 復元判断支援機能（read-only 参照・差分・事後ラベル）
+
+復元先を判断するため、バックアップの中身を調べ、現在との差分を見て、
+意味づけ（ラベル/メモ）を付与できる。
+
+### バックアップの read-only 参照
+
+- `with_backup_db` / `*_from_backup` 系: バックアップを読み取り専用で開きクエリ。
+  差分バックアップ（.diff）は基底フルから一時フルを再構成して開く（一時ファイルと
+  WAL 副産物 `-wal`/`-shm` はコールバック終了後に削除）。
+- `BackupSelector::by_id(id)`: タイムスタンプ文字列でバックアップを直接指定。
+- CLI: `restore --id <ID>`、stdin/Remote の selector に `byId` を追加。
+
+### 差分表示（diff_with_backup）
+
+バックアップと現在DBを比較し、何が増える/減る/変わるかを可視化。
+
+- `added`: バックアップに在り現在に無い（復元で復活）
+- `removed`: 現在に在りバックアップに無い（復元で失われる）
+- `changed`: 両方に在り内容が異なる（復元で上書き）
+
+media / tags / media_tags / attributes / hashes の各テーブルを比較。
+`DiffOptions.detail` で `summaryOnly`（件数のみ）/ `limited{n}` / `full` を切り替え。
+CLI: `diff-backup [--nth N | --id ID] [--detail summary|limited=N|full]`。
+
+### 事後ラベル/メモ（サイドカー）
+
+既存バックアップに後からラベル・メモを付与。ファイル名は変更せず、
+`backup/meta/backup-meta.json` に `{ entries: { <id>: { label?, note?, updatedAt } } }` を
+保持（temp + rename で原子書き込み）。
+
+- `set_backup_label(id, label?)` / `set_backup_note(id, note?)`（None/undefined でクリア）
+- `get_backup_meta(id)`
+- `listBackups` はサイドカーを優先マージ（`labelSource = filename | sidecar`、`note`）。
+- 間引き時に実在しない id のエントリを `cleanup_backup_meta` が掃除。
+- CLI: `set-backup-label --id <ID> [--label L]`、`set-backup-note --id <ID> [--note N]`。

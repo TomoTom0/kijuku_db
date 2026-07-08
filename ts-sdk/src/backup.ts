@@ -41,6 +41,9 @@ export type BackupKind =
   | { type: 'full' }
   | { type: 'diff'; baseId: string };
 
+/** ラベルの由来 */
+export type LabelSource = 'filename' | 'sidecar';
+
 /** バックアップ情報 */
 export interface BackupInfo {
   /** バックアップID（タイムスタンプ文字列、18文字） */
@@ -55,8 +58,20 @@ export interface BackupInfo {
   scope: BackupScope;
   /** 種別（フル / 差分） */
   kind: BackupKind;
-  /** ラベル（手動バックアップの任意ラベル） */
+  /** ラベル（サイドカー優先、なければファイル名由来） */
   label?: string;
+  /** ラベルの由来 */
+  labelSource?: LabelSource;
+  /** メモ（サイドカー backup-meta.json 由来） */
+  note?: string;
+}
+
+/** バックアップの事後メタ（サイドカー backup-meta.json の1エントリ） */
+export interface BackupMetaEntry {
+  id: string;
+  label?: string;
+  note?: string;
+  updatedAt: string;
 }
 
 /** auto-records.csv の1レコード */
@@ -119,6 +134,10 @@ export class BackupSelector {
   static closestTo(date: Date): BackupSelector {
     return new BackupSelector({ type: 'closestTo', date });
   }
+  /** ID（タイムスタンプ文字列）でバックアップを直接指定する */
+  static byId(id: string): BackupSelector {
+    return new BackupSelector({ type: 'byId', id });
+  }
 
   /** スコープを限定する (TASK-150) */
   scope(scope: BackupScope): BackupSelector {
@@ -135,7 +154,8 @@ type BackupSelectorKind =
   | { type: 'nth'; n: number }
   | { type: 'before'; date: Date }
   | { type: 'after'; date: Date }
-  | { type: 'closestTo'; date: Date };
+  | { type: 'closestTo'; date: Date }
+  | { type: 'byId'; id: string };
 
 /** バックアップ設定オプション */
 export interface BackupOptions {
@@ -326,20 +346,11 @@ export class BackupManager {
 
     // 2. バックアップを復元
     let sourcePath: string;
+    let isTempSource = false;
     if (backupInfo.kind.type === 'diff') {
-      // 差分を適用して一時フルを作成
-      const base = this.findBackupByIdInScope(backupInfo.kind.baseId, 'auto');
-      if (!base) {
-        throw new Error(`Base backup ${backupInfo.kind.baseId} not found`);
-      }
-      const tempPath = path.join(
-        this.backupDir,
-        'tmp',
-        `${this.dbStem}.restore_temp_${backupInfo.kind.baseId}.db`,
-      );
-      fs.mkdirSync(path.dirname(tempPath), { recursive: true });
-      applyDiffToFile(base.path, backupInfo.path, tempPath);
-      sourcePath = tempPath;
+      // 差分を基底フルに適用して一時フルを作成
+      sourcePath = this.resolveDiffBackupToTempFull(backupInfo);
+      isTempSource = true;
     } else {
       sourcePath = backupInfo.path;
     }
@@ -355,11 +366,13 @@ export class BackupManager {
     if (fs.existsSync(walPath)) fs.rmSync(walPath);
     if (fs.existsSync(shmPath)) fs.rmSync(shmPath);
 
-    // 一時ファイル削除
-    if (backupInfo.kind.type === 'diff') {
-      try {
-        fs.rmSync(sourcePath);
-      } catch { /* ignore */ }
+    // 一時ファイル削除（WAL の -wal/-shm 副産物も含む）
+    if (isTempSource) {
+      for (const p of [sourcePath, `${sourcePath}-wal`, `${sourcePath}-shm`]) {
+        try {
+          fs.rmSync(p);
+        } catch { /* ignore */ }
+      }
     }
 
     // 接続を再オープン
@@ -386,6 +399,7 @@ export class BackupManager {
   }
 
   private listBackupsFiltered(scopeFilter: BackupScope | undefined): BackupInfo[] {
+    const meta = this.readBackupMetaStore();
     const scopes: BackupScope[] = scopeFilter
       ? [scopeFilter]
       : ['auto', 'manual', 'tmp'];
@@ -414,6 +428,8 @@ export class BackupManager {
           kind = { type: 'full' };
         }
 
+        const metaEntry = meta[parsed.id];
+        const hasSidecarLabel = !!metaEntry && metaEntry.label !== undefined;
         backups.push({
           id: parsed.id,
           name,
@@ -421,7 +437,9 @@ export class BackupManager {
           createdAt: stat.mtime,
           scope,
           kind,
-          label: parsed.label,
+          label: hasSidecarLabel ? metaEntry!.label : parsed.label,
+          labelSource: hasSidecarLabel ? 'sidecar' : 'filename',
+          note: metaEntry?.note,
         });
       }
     }
@@ -472,6 +490,10 @@ export class BackupManager {
           return currentDiff < closestDiff ? current : closest;
         });
       }
+      // ID（タイムスタンプ文字列）で検索。.db/.diff 両方を list 結果から探す
+      // （findBackupByIdInScope は基底フル .db のみを返すため差分選択に使えない）。
+      case 'byId':
+        return backups.find((b) => b.id === kind.id) ?? null;
     }
   }
 
@@ -480,11 +502,124 @@ export class BackupManager {
     return this.selectBackup(selector)?.path ?? null;
   }
 
+  /** 差分backup復元・参照用の一時フルDBパス（pid付きでプロセス間衝突回避） */
+  tempFullPathForDiff(baseId: string): string {
+    return path.join(
+      this.backupDir,
+      'tmp',
+      `${this.dbStem}.restore_temp_${baseId}_${process.pid}.db`,
+    );
+  }
+
+  /**
+   * 差分backupを基底フルから再構成し、一時フルDBのパスを返す。
+   * 呼び出し元が使用後に一時ファイルを削除する責任を持つ。
+   */
+  resolveDiffBackupToTempFull(diffBackup: BackupInfo): string {
+    if (diffBackup.kind.type !== 'diff') {
+      throw new Error('Not a diff backup');
+    }
+    const baseId = diffBackup.kind.baseId;
+    const base = this.findBackupByIdInScope(baseId, 'auto');
+    if (!base) {
+      throw new Error(`Base backup ${baseId} not found`);
+    }
+    const tempPath = this.tempFullPathForDiff(baseId);
+    fs.mkdirSync(path.dirname(tempPath), { recursive: true });
+    applyDiffToFile(base.path, diffBackup.path, tempPath);
+    return tempPath;
+  }
+
   /** 古いバックアップを削除（tmp の期限切れ削除を含む） */
   cleanupOldBackups(): void {
     if (!this.enabled) return;
     this.cleanupAutoBackups();
     this.cleanupTmpBackups();
+    this.cleanupBackupMeta();
+  }
+
+  /** バックアップにラベルを付与（事後）。undefined でクリア */
+  setBackupLabel(id: string, label: string | undefined): void {
+    this.updateBackupMeta(id, (e) => {
+      e.label = label;
+    });
+  }
+
+  /** バックアップにメモを付与。undefined でクリア（最大4096文字） */
+  setBackupNote(id: string, note: string | undefined): void {
+    if (note !== undefined && [...note].length > 4096) {
+      throw new Error('noteが長すぎます（最大4096文字）');
+    }
+    this.updateBackupMeta(id, (e) => {
+      e.note = note;
+    });
+  }
+
+  /** バックアップの事後メタを取得 */
+  getBackupMeta(id: string): BackupMetaEntry | null {
+    return this.readBackupMetaStore()[id] ?? null;
+  }
+
+  // ---- private: サイドカー backup-meta.json ----
+
+  private metaPath(): string {
+    return path.join(this.backupDir, 'meta', 'backup-meta.json');
+  }
+
+  private readBackupMetaStore(): Record<string, BackupMetaEntry> {
+    const p = this.metaPath();
+    // ファイル不在時のみ空ストアを返す。読込/パース失敗時はエラーをスローする
+    // （失敗時に{}を返すと updateBackupMeta が空ストアに書き込み、既存の全メタデータを消失させるため）。
+    if (!fs.existsSync(p)) return {};
+    const content = fs.readFileSync(p, 'utf-8');
+    if (!content.trim()) return {};
+    try {
+      const parsed = JSON.parse(content) as { entries?: Record<string, BackupMetaEntry> };
+      return parsed.entries ?? {};
+    } catch (e) {
+      throw new Error(`Failed to parse backup meta store: ${e}`);
+    }
+  }
+
+  private writeBackupMetaStore(entries: Record<string, BackupMetaEntry>): void {
+    const p = this.metaPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ entries }, null, 2));
+    fs.renameSync(tmp, p);
+  }
+
+  private updateBackupMeta(id: string, f: (e: BackupMetaEntry) => void): void {
+    const exists = this.listBackups().some((b) => b.id === id);
+    if (!exists) {
+      throw new Error(`Backup ${id} not found`);
+    }
+    const entries = this.readBackupMetaStore();
+    const entry: BackupMetaEntry = entries[id] ?? {
+      id,
+      updatedAt: new Date().toISOString(),
+    };
+    f(entry);
+    entry.updatedAt = new Date().toISOString();
+    entries[id] = entry;
+    this.writeBackupMetaStore(entries);
+  }
+
+  /** 実在しないバックアップのメタエントリを掃除 */
+  private cleanupBackupMeta(): void {
+    const entries = this.readBackupMetaStore();
+    if (Object.keys(entries).length === 0) return;
+    const existing = new Set(this.listBackups().map((b) => b.id));
+    const surviving: Record<string, BackupMetaEntry> = {};
+    let changed = false;
+    for (const [id, e] of Object.entries(entries)) {
+      if (existing.has(id)) {
+        surviving[id] = e;
+      } else {
+        changed = true;
+      }
+    }
+    if (changed) this.writeBackupMetaStore(surviving);
   }
 
   // ---- private helpers ----
@@ -530,14 +665,16 @@ export class BackupManager {
     return candidates.sort((a, b) => compareBackupIdDesc(a.id, b.id))[0];
   }
 
-  /** IDでバックアップを検索（指定スコープ内） */
-  private findBackupByIdInScope(id: string, scope: BackupScope): BackupInfo | null {
+  /** IDでバックアップを検索（指定スコープ内、基底フル .db のみ） */
+  findBackupByIdInScope(id: string, scope: BackupScope): BackupInfo | null {
     const subdir = path.join(this.backupDir, scope);
     if (!fs.existsSync(subdir)) return null;
 
     for (const name of fs.readdirSync(subdir)) {
       const parsed = parseBackupFilename(name, this.dbStem);
-      if (parsed?.id === id) {
+      // 基底フル(.db)のみ。.diff と同一タイムスタンプの場合に .diff（=SQLite DB
+      // ではない）が誤って選ばれるのを防ぐ（readdirSync 順序依存の非決定バグ）。
+      if (parsed?.id === id && parsed?.extension === 'db') {
         const filePath = path.join(subdir, name);
         const stat = fs.statSync(filePath);
         return {

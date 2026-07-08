@@ -1542,7 +1542,8 @@ backups.forEach(b => console.log(`${b.name} (${b.scope})`));
 ```typescript
 type RemoteBackupSelector =
   | { type: 'latest' }
-  | { type: 'nth'; n: number };
+  | { type: 'nth'; n: number }
+  | { type: 'byId'; id: string };
 ```
 
 **戻り値:** `Promise<string>` - 復元に使用したバックアップファイルのパス
@@ -2074,7 +2075,11 @@ type BackupKind = 'full' | 'diff';
 class BackupSelector {
   static latest(): BackupSelector;
   static nth(n: number): BackupSelector;
-  static withLabel(label: string): BackupSelector;
+  static before(date: Date): BackupSelector;
+  static after(date: Date): BackupSelector;
+  static closestTo(date: Date): BackupSelector;
+  static byId(id: string): BackupSelector;      // タイムスタンプ文字列で直接指定
+  scope(scope: BackupScope): BackupSelector;    // スコープ限定
 }
 ```
 
@@ -2095,10 +2100,61 @@ db.restore(BackupSelector.withLabel('before_import'));
 ```typescript
 type RemoteBackupSelector =
   | { type: 'latest' }
-  | { type: 'nth'; n: number };
+  | { type: 'nth'; n: number }
+  | { type: 'byId'; id: string };
 ```
 
 リモートバックアップの選択条件。
+
+---
+
+### BackupDiff / DiffOptions（バックアップ差分）
+
+`diffWithBackup(selector, options?)` が返す、現在DBとバックアップの差分。
+
+```typescript
+type DiffDetail =
+  | { type: 'summaryOnly' }
+  | { type: 'limited'; n: number }
+  | { type: 'full' };
+
+interface DiffOptions {
+  detail?: DiffDetail;  // 省略時 limited{n: 100}
+}
+
+interface DiffCounts { added: number; removed: number; changed: number; }
+
+interface BackupDiff {
+  media:       { added: Media[]; removed: Media[]; changed: { current: Media; backup: Media }[] };
+  tags:        { added: Tag[]; removed: Tag[]; changed: { current: Tag; backup: Tag }[] };
+  mediaTags:   { added: MediaTagAssoc[]; removed: MediaTagAssoc[] };
+  attributes:  { added: MediaAttribute[]; removed: MediaAttribute[]; changed: { current: MediaAttribute; backup: MediaAttribute }[] };
+  hashes:      { added: MediaHash[]; removed: MediaHash[]; changed: { current: MediaHash; backup: MediaHash }[] };
+  summary:     { media: DiffCounts; tags: DiffCounts; mediaTags: DiffCounts; attributes: DiffCounts; hashes: DiffCounts };
+}
+```
+
+- `added`: バックアップに在り現在に無い（復元で復活）
+- `removed`: 現在に在りバックアップに無い（復元で失われる）
+- `changed`: 両方に在り内容が異なる（復元で上書き）
+
+---
+
+### BackupMetaEntry / LabelSource（事後ラベル/メモ）
+
+```typescript
+type LabelSource = 'filename' | 'sidecar';
+
+interface BackupMetaEntry {
+  id: string;
+  label?: string;
+  note?: string;
+  updatedAt: string;  // ISO8601
+}
+```
+
+`setBackupLabel(id, label?)` / `setBackupNote(id, note?)` / `getBackupMeta(id)` で事後付与。
+`BackupInfo` は `labelSource` と `note` を追加で返す（サイドカー優先マージ、省略時 `labelSource='filename'`）。
 
 ---
 

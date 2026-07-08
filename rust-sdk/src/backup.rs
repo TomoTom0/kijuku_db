@@ -19,6 +19,7 @@
 /// timestamp = `YYYYMMDDHHMMSS-mmm` (18文字固定)
 use crate::{KijukuError, Result};
 use chrono::{Datelike, NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, Write};
@@ -57,6 +58,15 @@ pub enum BackupKind {
     Diff { base_id: String },
 }
 
+/// ラベルの由来
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LabelSource {
+    /// ファイル名に埋め込まれた作成時ラベル
+    Filename,
+    /// サイドカー（backup-meta.json）の事後付与ラベル
+    Sidecar,
+}
+
 /// バックアップ情報
 #[derive(Debug, Clone)]
 pub struct BackupInfo {
@@ -72,8 +82,12 @@ pub struct BackupInfo {
     pub scope: BackupScope,
     /// 種別（フル / 差分）
     pub kind: BackupKind,
-    /// ラベル（手動バックアップの任意ラベル、または tmp の場合 "pre_restore"）
+    /// ラベル（サイドカー優先、なければファイル名由来）
     pub label: Option<String>,
+    /// ラベルの由来
+    pub label_source: LabelSource,
+    /// メモ（サイドカー backup-meta.json 由来）
+    pub note: Option<String>,
 }
 
 impl BackupInfo {
@@ -101,6 +115,23 @@ pub struct AutoRecord {
     pub size_bytes: u64,
     pub status: AutoRecordStatus,
     pub pruned_at: String,
+}
+
+/// バックアップの事後メタ（ラベル/メモ）。サイドカー backup-meta.json の1エントリ
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupMetaEntry {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    pub updated_at: String,
+}
+
+/// サイドカー backup-meta.json の全体
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BackupMetaStore {
+    pub entries: std::collections::BTreeMap<String, BackupMetaEntry>,
 }
 
 /// 保持ポリシーの1段階
@@ -196,6 +227,8 @@ pub(crate) enum BackupSelectorKind {
     Before(SystemTime),
     After(SystemTime),
     ClosestTo(SystemTime),
+    /// ID（タイムスタンプ文字列 YYYYMMDDHHMMSS-mmm）で直接指定
+    ById(String),
 }
 
 impl BackupSelector {
@@ -213,6 +246,11 @@ impl BackupSelector {
     }
     pub fn closest_to(time: SystemTime) -> Self {
         Self { kind: BackupSelectorKind::ClosestTo(time), scope_filter: None }
+    }
+
+    /// ID（タイムスタンプ文字列）でバックアップを直接指定する
+    pub fn by_id(id: impl Into<String>) -> Self {
+        Self { kind: BackupSelectorKind::ById(id.into()), scope_filter: None }
     }
 
     /// スコープを限定する（TASK-150）
@@ -450,9 +488,7 @@ impl BackupManager {
                     .ok_or_else(|| KijukuError::Other(format!("Base backup {} not found", base_id)))?;
 
                 // 差分を適用して一時ファイルに復元
-                let temp_path = self.backup_dir.join("tmp").join(
-                    format!("{}.restore_temp_{}.db", self.db_stem, base_id),
-                );
+                let temp_path = self.temp_full_path_for_diff(base_id);
                 fs::create_dir_all(temp_path.parent().unwrap())?;
                 apply_diff_to_file(&base.path, &backup_info.path, &temp_path)?;
 
@@ -460,6 +496,8 @@ impl BackupManager {
                 let bk = rusqlite::backup::Backup::new(&src, conn)?;
                 bk.run_to_completion(1000, std::time::Duration::from_millis(50), None)?;
                 let _ = fs::remove_file(&temp_path);
+                let _ = fs::remove_file(format!("{}-wal", temp_path.display()));
+                let _ = fs::remove_file(format!("{}-shm", temp_path.display()));
             }
         }
 
@@ -473,12 +511,43 @@ impl BackupManager {
         self.list_backups_filtered(None)
     }
 
+    /// バックアップにラベルを付与（事後）。None でクリア
+    pub fn set_backup_label(&self, id: &str, label: Option<&str>) -> Result<()> {
+        self.update_backup_meta(id, |e| {
+            e.label = label.map(|s| s.to_string());
+        })
+    }
+
+    /// バックアップにメモを付与。None でクリア（最大4096文字）
+    pub fn set_backup_note(&self, id: &str, note: Option<&str>) -> Result<()> {
+        let note = match note {
+            Some(n) => {
+                if n.chars().count() > 4096 {
+                    return Err(KijukuError::Other(
+                        "noteが長すぎます（最大4096文字）".to_string(),
+                    ));
+                }
+                Some(n.to_string())
+            }
+            None => None,
+        };
+        self.update_backup_meta(id, |e| {
+            e.note = note;
+        })
+    }
+
+    /// バックアップの事後メタを取得
+    pub fn get_backup_meta(&self, id: &str) -> Result<Option<BackupMetaEntry>> {
+        Ok(self.read_backup_meta_store()?.entries.get(id).cloned())
+    }
+
     /// スコープを指定してバックアップ一覧を取得（TASK-150）
     pub fn list_backups_in_scope(&self, scope: BackupScope) -> Result<Vec<BackupInfo>> {
         self.list_backups_filtered(Some(&scope))
     }
 
     fn list_backups_filtered(&self, scope_filter: Option<&BackupScope>) -> Result<Vec<BackupInfo>> {
+        let meta = self.read_backup_meta_store().unwrap_or_default();
         let mut backups = Vec::new();
 
         let scopes: &[BackupScope] = match scope_filter {
@@ -516,6 +585,16 @@ impl BackupManager {
                         BackupKind::Full
                     };
 
+                    let (label, label_source, note) = match meta.entries.get(&parsed.id) {
+                        Some(e) if e.label.is_some() => {
+                            (e.label.clone(), LabelSource::Sidecar, e.note.clone())
+                        }
+                        e => (
+                            parsed.label.clone(),
+                            LabelSource::Filename,
+                            e.and_then(|x| x.note.clone()),
+                        ),
+                    };
                     backups.push(BackupInfo {
                         id: parsed.id,
                         name,
@@ -523,7 +602,9 @@ impl BackupManager {
                         created_at: metadata.modified()?,
                         scope: scope.clone(),
                         kind,
-                        label: parsed.label,
+                        label,
+                        label_source,
+                        note,
                     });
                 }
             }
@@ -566,6 +647,10 @@ impl BackupManager {
                     diff.as_millis()
                 })
             }
+            // ID（タイムスタンプ文字列）で検索。.db/.diff 両方を対象とするため
+            // list 結果から一致する id を探す（find_backup_by_id_in_scope は基底フル
+            // .db のみを返すため、差分バックアップの直接選択には使えない）。
+            BackupSelectorKind::ById(id) => backups.into_iter().find(|b| &b.id == id),
         })
     }
 
@@ -611,6 +696,7 @@ impl BackupManager {
 
         self.cleanup_auto_backups()?;
         self.cleanup_tmp_backups()?;
+        self.cleanup_backup_meta()?;
 
         Ok(())
     }
@@ -678,6 +764,8 @@ impl BackupManager {
                             scope: BackupScope::Auto,
                             kind: BackupKind::Full,
                             label: None,
+                            label_source: LabelSource::Filename,
+                            note: None,
                         });
                     }
                 }
@@ -689,8 +777,8 @@ impl BackupManager {
     }
 
     /// IDでバックアップを検索（指定スコープ内）
-    fn find_backup_by_id_in_scope(&self, id: &str, scope: BackupScope) -> Result<Option<BackupInfo>> {
-        let subdir = match scope {
+    pub(crate) fn find_backup_by_id_in_scope(&self, id: &str, scope: BackupScope) -> Result<Option<BackupInfo>> {
+        let subdir = match &scope {
             BackupScope::Auto => self.backup_dir.join("auto"),
             BackupScope::Manual => self.backup_dir.join("manual"),
             BackupScope::Tmp => self.backup_dir.join("tmp"),
@@ -715,15 +803,24 @@ impl BackupManager {
                         name,
                         path,
                         created_at: metadata.modified()?,
-                        scope: BackupScope::Auto,
+                        scope,
                         kind: BackupKind::Full,
                         label: parsed.label,
+                        label_source: LabelSource::Filename,
+                        note: None,
                     }));
                 }
             }
         }
 
         Ok(None)
+    }
+
+    /// 差分backup復元・参照用の一時フルDBパス（pid付きでプロセス間衝突回避）
+    pub(crate) fn temp_full_path_for_diff(&self, base_id: &str) -> PathBuf {
+        self.backup_dir
+            .join("tmp")
+            .join(format!("{}.restore_temp_{}_{}.db", self.db_stem, base_id, std::process::id()))
     }
 
     /// 差分バックアップファイルを作成（TASK-147）
@@ -852,6 +949,74 @@ impl BackupManager {
     }
 
     // ---- auto-records.csv (TASK-148) ----
+
+    fn meta_path(&self) -> PathBuf {
+        self.backup_dir.join("meta").join("backup-meta.json")
+    }
+
+    fn read_backup_meta_store(&self) -> Result<BackupMetaStore> {
+        let path = self.meta_path();
+        if !path.exists() {
+            return Ok(BackupMetaStore::default());
+        }
+        let content = fs::read_to_string(&path)?;
+        if content.trim().is_empty() {
+            return Ok(BackupMetaStore::default());
+        }
+        let store: BackupMetaStore = serde_json::from_str(&content)
+            .map_err(|e| KijukuError::Other(e.to_string()))?;
+        Ok(store)
+    }
+
+    fn write_backup_meta_store(&self, store: &BackupMetaStore) -> Result<()> {
+        let path = self.meta_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let json =
+            serde_json::to_string_pretty(store).map_err(|e| KijukuError::Other(e.to_string()))?;
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, json)?;
+        fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    fn update_backup_meta<F: FnOnce(&mut BackupMetaEntry)>(&self, id: &str, f: F) -> Result<()> {
+        let exists = self.list_backups()?.iter().any(|b| b.id == id);
+        if !exists {
+            return Err(KijukuError::Other(format!("Backup {} not found", id)));
+        }
+        let mut store = self.read_backup_meta_store()?;
+        let entry = store.entries.entry(id.to_string()).or_insert(BackupMetaEntry {
+            id: id.to_string(),
+            label: None,
+            note: None,
+            updated_at: iso8601_now(),
+        });
+        f(entry);
+        entry.updated_at = iso8601_now();
+        self.write_backup_meta_store(&store)
+    }
+
+    /// 実在しないバックアップのメタエントリを掃除
+    fn cleanup_backup_meta(&self) -> Result<()> {
+        let store = self.read_backup_meta_store().unwrap_or_default();
+        if store.entries.is_empty() {
+            return Ok(());
+        }
+        let existing: std::collections::HashSet<String> =
+            self.list_backups()?.into_iter().map(|b| b.id).collect();
+        let original_len = store.entries.len();
+        let surviving: std::collections::BTreeMap<_, _> = store
+            .entries
+            .into_iter()
+            .filter(|(id, _)| existing.contains(id))
+            .collect();
+        if surviving.len() != original_len {
+            self.write_backup_meta_store(&BackupMetaStore { entries: surviving })?;
+        }
+        Ok(())
+    }
 
     fn records_path(&self) -> PathBuf {
         self.backup_dir.join("meta").join("auto-records.csv")
@@ -1037,7 +1202,7 @@ fn read_diff_base_id(diff_path: &Path) -> Result<String> {
 ///
 /// 基底DBと差分ファイルをページ単位でストリーミングしながらマージするため、
 /// ファイルサイズに依存しない一定量のメモリのみを使用する。
-fn apply_diff_to_file(base_path: &Path, diff_path: &Path, output_path: &Path) -> Result<()> {
+pub(crate) fn apply_diff_to_file(base_path: &Path, diff_path: &Path, output_path: &Path) -> Result<()> {
     let mut diff_file = File::open(diff_path)?;
     let mut header = [0u8; 30]; // 18 + 4 + 4 + 4
     diff_file

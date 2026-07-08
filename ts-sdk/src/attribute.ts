@@ -65,6 +65,18 @@ export function getMediaAttributes(
 }
 
 /**
+ * 全てのメディア属性を取得（差分比較用）
+ */
+export function getAllMediaAttributes(db: Database.Database): MediaAttribute[] {
+  const stmt = db.prepare(`
+    SELECT media_id, key, value, value_type
+    FROM media_attributes
+    ORDER BY media_id, key
+  `);
+  return stmt.all() as MediaAttribute[];
+}
+
+/**
  * メディアの属性を削除
  */
 export function deleteMediaAttribute(

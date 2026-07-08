@@ -43,6 +43,7 @@ pub mod crud;
 pub mod d1_backend;
 pub mod d1_client;
 pub mod db_value;
+pub mod diff;
 pub mod error;
 pub mod exec;
 pub mod exec_d1;
@@ -816,19 +817,53 @@ impl KijukuDB {
     where
         F: FnOnce(&KijukuDB) -> Result<T>,
     {
-        let backup_path = self
+        use crate::backup::{apply_diff_to_file, BackupKind, BackupScope};
+
+        let manager = self
             .backup_manager
             .as_ref()
-            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?
-            .get_backup_path(selector)?
+            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?;
+        let backup_info = manager
+            .select_backup(selector)?
             .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
 
-        // バックアップファイルは読み取り専用で開く
-        let backup_db = KijukuDB::open_with_options(
-            &backup_path,
-            DBOptions { readonly: true, ..Default::default() },
-        )?;
-        f(&backup_db)
+        match &backup_info.kind {
+            BackupKind::Full => {
+                // フルバックアップは読み取り専用で直接開く
+                let backup_db = KijukuDB::open_with_options(
+                    &backup_info.path,
+                    DBOptions { readonly: true, ..Default::default() },
+                )?;
+                f(&backup_db)
+            }
+            BackupKind::Diff { base_id } => {
+                // 差分バックアップは基底フルを探し、一時フルDBに再構成してから開く。
+                // 一時ファイルはコールバック終了後（成功・失敗問わず）に削除する。
+                let base = manager
+                    .find_backup_by_id_in_scope(base_id, BackupScope::Auto)?
+                    .ok_or_else(|| {
+                        KijukuError::Other(format!("Base backup {} not found", base_id))
+                    })?;
+                let temp_path = manager.temp_full_path_for_diff(base_id);
+                if let Some(parent) = temp_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                apply_diff_to_file(&base.path, &backup_info.path, &temp_path)?;
+
+                let result = (|| {
+                    let backup_db = KijukuDB::open_with_options(
+                        &temp_path,
+                        DBOptions { readonly: true, ..Default::default() },
+                    )?;
+                    f(&backup_db)
+                })();
+                // WAL モードの DB を開くと -wal/-shm 副産物が作られるため全て削除する
+                let _ = std::fs::remove_file(&temp_path);
+                let _ = std::fs::remove_file(format!("{}-wal", temp_path.display()));
+                let _ = std::fs::remove_file(format!("{}-shm", temp_path.display()));
+                result
+            }
+        }
     }
 
     /// バックアップからIDでメディアを取得
@@ -897,6 +932,113 @@ impl KijukuDB {
         selector: &BackupSelector,
     ) -> Result<Vec<MediaAttribute>> {
         self.with_backup_db(selector, |backup_db| backup_db.get_media_attributes(media_id))
+    }
+
+    /// バックアップから特定作品の全ハッシュを取得
+    #[allow(deprecated)]
+    pub fn get_media_hashes_from_backup(
+        &self,
+        item_uuid: &str,
+        selector: &BackupSelector,
+    ) -> Result<Vec<MediaHash>> {
+        self.with_backup_db(selector, |backup_db| backup_db.get_media_hashes(item_uuid))
+    }
+
+    /// バックアップから特定位置のハッシュを取得
+    #[allow(deprecated)]
+    pub fn get_media_hash_from_backup(
+        &self,
+        item_uuid: &str,
+        filename: &str,
+        time_range: &str,
+        selector: &BackupSelector,
+    ) -> Result<Option<MediaHash>> {
+        self.with_backup_db(selector, |backup_db| {
+            backup_db.get_media_hash(item_uuid, filename, time_range)
+        })
+    }
+
+    /// バックアップからSHA256による完全一致検索
+    #[allow(deprecated)]
+    pub fn find_by_content_hash_from_backup(
+        &self,
+        hash_bytes: &[u8],
+        selector: &BackupSelector,
+    ) -> Result<Vec<MediaHash>> {
+        self.with_backup_db(selector, |backup_db| backup_db.find_by_content_hash(hash_bytes))
+    }
+
+    /// バックアップから重複ハッシュを検出
+    #[allow(deprecated)]
+    pub fn find_duplicate_hashes_from_backup(
+        &self,
+        selector: &BackupSelector,
+    ) -> Result<Vec<(Vec<u8>, i64)>> {
+        self.with_backup_db(selector, |backup_db| backup_db.find_duplicate_hashes())
+    }
+
+    // ========== バックアップ差分 ==========
+
+    /// 現在DBのスナップショットを取得（差分比較用・内部）
+    fn collect_snapshot(&self) -> Result<diff::BackupSnapshot> {
+        let conn = self.conn.lock();
+        let mut snap = diff::BackupSnapshot::default();
+        for m in search::find_media(&conn, &MediaFilter::default(), None)? {
+            snap.media.insert(m.id, m);
+        }
+        for t in tag::get_all_tags(&conn)? {
+            snap.tags.insert(t.id, t);
+        }
+        for a in tag::get_all_media_tags(&conn)? {
+            snap.media_tags.insert((a.media_id, a.tag_id));
+        }
+        for a in attribute::get_all_media_attributes(&conn)? {
+            snap.attributes.insert((a.media_id, a.key.clone()), a);
+        }
+        for h in hash::get_all_media_hashes(&conn)? {
+            snap.hashes.insert((h.item_uuid.clone(), h.filename.clone(), h.time_range.clone()), h);
+        }
+        Ok(snap)
+    }
+
+    /// バックアップと現在DBの差分を取得（復元判断用）
+    ///
+    /// - `added`:   バックアップに在り現在に無い（復元で復活する）
+    /// - `removed`: 現在に在りバックアップに無い（復元で失われる）
+    /// - `changed`: 両方に在り内容が異なる（復元で上書きされる）
+    #[allow(deprecated)]
+    pub fn diff_with_backup(
+        &self,
+        selector: &BackupSelector,
+        options: &diff::DiffOptions,
+    ) -> Result<diff::BackupDiff> {
+        let backup_snap = self.with_backup_db(selector, |bdb| bdb.collect_snapshot())?;
+        let current_snap = self.collect_snapshot()?;
+        Ok(diff::compute_diff(&current_snap, &backup_snap, options))
+    }
+
+    /// バックアップにラベルを付与（事後）。None でクリア
+    pub fn set_backup_label(&self, id: &str, label: Option<&str>) -> Result<()> {
+        self.backup_manager
+            .as_ref()
+            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?
+            .set_backup_label(id, label)
+    }
+
+    /// バックアップにメモを付与。None でクリア（最大4096文字）
+    pub fn set_backup_note(&self, id: &str, note: Option<&str>) -> Result<()> {
+        self.backup_manager
+            .as_ref()
+            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?
+            .set_backup_note(id, note)
+    }
+
+    /// バックアップの事後メタを取得
+    pub fn get_backup_meta(&self, id: &str) -> Result<Option<backup::BackupMetaEntry>> {
+        self.backup_manager
+            .as_ref()
+            .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?
+            .get_backup_meta(id)
     }
 }
 

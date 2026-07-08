@@ -95,6 +95,17 @@ export function getMediaHashes(db: Database.Database, itemUuid: string): MediaHa
   return rows.map(rowToMediaHash);
 }
 
+/** 全てのメディアハッシュを取得（差分比較用） */
+export function getAllMediaHashes(db: Database.Database): MediaHash[] {
+  const stmt = db.prepare(`
+    SELECT item_uuid, filename, time_range, content_hash, alternative_of, embedding, created_at, updated_at
+    FROM media_hashes
+    ORDER BY item_uuid, filename, time_range
+  `);
+  const rows = stmt.all() as Record<string, unknown>[];
+  return rows.map(rowToMediaHash);
+}
+
 /** 特定位置のハッシュを取得 */
 export function getMediaHash(
   db: Database.Database,

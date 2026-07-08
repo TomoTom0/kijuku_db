@@ -713,6 +713,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### 復元判断支援（差分・事後ラベル/メモ）
+
+```rust
+use kijuku_db::diff::DiffOptions;
+
+// バックアップと現在DBの差分（復元判断）
+//   added: 復元で復活 / removed: 復元で失われる / changed: 復元で上書き
+let diff = db.diff_with_backup(&BackupSelector::latest(), &DiffOptions::default())?;
+println!("media: +{} -{} ~{}",
+    diff.summary.media.added, diff.summary.media.removed, diff.summary.media.changed);
+
+// ID（タイムスタンプ）でバックアップを直接指定
+let by_id = db.diff_with_backup(&BackupSelector::by_id("20260707120000-000"), &DiffOptions::default())?;
+
+// 既存バックアップにラベル/メモを事後付与（ファイル名は変更せず backup/meta/backup-meta.json に保存）
+let id = &db.list_backups()?[0].id;
+db.set_backup_label(id, Some("重要"))?;
+db.set_backup_note(id, Some("作業前の状態"))?;
+
+// list_backups はサイドカー優先で label/note を返す
+for b in &db.list_backups()? {
+    println!("{} label={:?} note={:?}", b.id, b.label, b.note);
+}
+```
+
 ### RemoteKijukuDB（SSH経由のリモート操作）
 
 リモートサーバーのDBをSSH経由で操作できます：

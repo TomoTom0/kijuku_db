@@ -2,6 +2,7 @@
  * Kijuku DB - メディア情報管理SDK
  */
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
 import type {
   Media,
   MediaInput,
@@ -15,7 +16,11 @@ import type {
   MediaHash,
   MediaHashInput,
   ComputeHashResult,
+  MediaTagAssoc,
+  BackupDiff,
+  DiffOptions,
 } from './types.js';
+import { computeBackupDiff, type BackupSnapshot } from './diff.js';
 import * as migration from './migration.js';
 import * as crud from './crud.js';
 import * as tag from './tag.js';
@@ -24,7 +29,7 @@ import * as bulk from './bulk.js';
 import * as attribute from './attribute.js';
 import * as hashModule from './hash.js';
 import { BackupManager, BackupSelector } from './backup.js';
-import type { BackupInfo } from './backup.js';
+import type { BackupInfo, BackupMetaEntry } from './backup.js';
 import * as updateExistModule from './update_exist.js';
 import * as thumbnailModule from './thumbnail.js';
 import type {
@@ -469,16 +474,37 @@ export class KijukuDB {
     if (!this.backupManager) {
       throw new Error('Backup manager not configured');
     }
-    const backupPath = this.backupManager.getBackupPath(selector);
-    if (!backupPath) {
+    const backupInfo = this.backupManager.selectBackup(selector);
+    if (!backupInfo) {
       throw new Error('No backup found matching selector');
     }
 
-    const backupDb = new KijukuDB(backupPath, { readonly: true });
+    // 差分バックアップの場合は基底フルから一時フルDBを再構成してから開く。
+    // 一時ファイルはコールバック終了後（成功・失敗問わず）に削除する。
+    let dbPath: string;
+    let tempPath: string | null = null;
+    if (backupInfo.kind.type === 'diff') {
+      tempPath = this.backupManager.resolveDiffBackupToTempFull(backupInfo);
+      dbPath = tempPath;
+    } else {
+      dbPath = backupInfo.path;
+    }
+
+    const backupDb = new KijukuDB(dbPath, { readonly: true });
     try {
       return callback(backupDb);
     } finally {
       backupDb.close();
+      if (tempPath) {
+        // WAL モードの DB を開くと -wal/-shm 副産物が作られるため全て削除する
+        for (const p of [tempPath, `${tempPath}-wal`, `${tempPath}-shm`]) {
+          try {
+            fs.rmSync(p);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
     }
   }
 
@@ -555,5 +581,99 @@ export class KijukuDB {
     return this.withBackupDb(selector, (backupDb) =>
       backupDb.getMediaAttributes(mediaId)
     );
+  }
+
+  /**
+   * バックアップから特定作品の全ハッシュを取得
+   */
+  getMediaHashesFromBackup(
+    itemUuid: string,
+    selector: BackupSelector = BackupSelector.latest()
+  ): MediaHash[] {
+    return this.withBackupDb(selector, (backupDb) =>
+      backupDb.getMediaHashes(itemUuid)
+    );
+  }
+
+  /**
+   * バックアップから特定位置のハッシュを取得
+   */
+  getMediaHashFromBackup(
+    itemUuid: string,
+    filename: string,
+    timeRange: string,
+    selector: BackupSelector = BackupSelector.latest()
+  ): MediaHash | null {
+    return this.withBackupDb(selector, (backupDb) =>
+      backupDb.getMediaHash(itemUuid, filename, timeRange)
+    );
+  }
+
+  /**
+   * バックアップからSHA256による完全一致検索
+   */
+  findByContentHashFromBackup(
+    hashBytes: Uint8Array,
+    selector: BackupSelector = BackupSelector.latest()
+  ): MediaHash[] {
+    return this.withBackupDb(selector, (backupDb) =>
+      backupDb.findByContentHash(hashBytes)
+    );
+  }
+
+  /**
+   * バックアップから重複ハッシュを検出
+   * 戻り型は findDuplicateHashes() に準じます（{ content_hash, count } の配列）。
+   */
+  findDuplicateHashesFromBackup(selector: BackupSelector = BackupSelector.latest()) {
+    return this.withBackupDb(selector, (backupDb) =>
+      backupDb.findDuplicateHashes()
+    );
+  }
+
+  /**
+   * 現在DBのスナップショットを取得（差分比較用・内部）
+   */
+  private collectSnapshot(): BackupSnapshot {
+    return {
+      media: search.findMedia(this.db, {}, undefined),
+      tags: tag.getAllTags(this.db),
+      mediaTags: tag.getAllMediaTags(this.db),
+      attributes: attribute.getAllMediaAttributes(this.db),
+      hashes: hashModule.getAllMediaHashes(this.db),
+    };
+  }
+
+  /**
+   * バックアップと現在DBの差分を取得（復元判断用）
+   *
+   * - added:   バックアップに在り現在に無い（復元で復活する）
+   * - removed: 現在に在りバックアップに無い（復元で失われる）
+   * - changed: 両方に在り内容が異なる（復元で上書きされる）
+   */
+  diffWithBackup(
+    selector: BackupSelector = BackupSelector.latest(),
+    options: DiffOptions = {},
+  ): BackupDiff {
+    const backupSnap = this.withBackupDb(selector, (bdb) => bdb.collectSnapshot());
+    const currentSnap = this.collectSnapshot();
+    return computeBackupDiff(currentSnap, backupSnap, options);
+  }
+
+  /** バックアップにラベルを付与（事後）。undefined でクリア */
+  setBackupLabel(id: string, label: string | undefined): void {
+    if (!this.backupManager) throw new Error('Backup manager not configured');
+    this.backupManager.setBackupLabel(id, label);
+  }
+
+  /** バックアップにメモを付与（事後）。undefined でクリア */
+  setBackupNote(id: string, note: string | undefined): void {
+    if (!this.backupManager) throw new Error('Backup manager not configured');
+    this.backupManager.setBackupNote(id, note);
+  }
+
+  /** バックアップの事後メタを取得 */
+  getBackupMeta(id: string): BackupMetaEntry | null {
+    return this.backupManager?.getBackupMeta(id) ?? null;
   }
 }

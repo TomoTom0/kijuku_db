@@ -650,3 +650,93 @@ fn test_manual_backup_with_label() {
     assert_eq!(backups[0].label.as_deref(), Some("before_import"));
     assert!(backups[0].name.contains("-before_import.db"));
 }
+
+#[test]
+fn test_backup_selector_by_id() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let backup_dir = temp_dir.path().join("backups");
+
+    let options = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        enabled: Some(true),
+        ..Default::default()
+    };
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+    }
+
+    let manager = BackupManager::new(&db_path, options).unwrap();
+    manager.backup(None).unwrap();
+    manager.backup(Some("labeled")).unwrap();
+
+    let backups = manager.list_backups().unwrap();
+    assert_eq!(backups.len(), 2);
+
+    // 各 id で選択できる（manual backup を ID 指定）
+    for b in &backups {
+        let selected = manager.select_backup(&BackupSelector::by_id(&b.id)).unwrap();
+        assert!(selected.is_some(), "should find backup by id {}", b.id);
+        assert_eq!(selected.unwrap().id, b.id);
+    }
+
+    // scope 限定付きでも ID 検索できる
+    let manual_id = manager.list_backups_in_scope(BackupScope::Manual).unwrap()[0].id.clone();
+    let scoped = manager
+        .select_backup(&BackupSelector::by_id(&manual_id).scope(BackupScope::Manual))
+        .unwrap();
+    assert!(scoped.is_some());
+
+    // 存在しない id は None
+    let none = manager.select_backup(&BackupSelector::by_id("20990101000000-000")).unwrap();
+    assert!(none.is_none());
+}
+
+#[test]
+fn test_set_backup_label_and_note() {
+    use kijuku_db::backup::LabelSource;
+
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let backup_dir = temp_dir.path().join("backups");
+    let options = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        enabled: Some(true),
+        ..Default::default()
+    };
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+    }
+    let manager = BackupManager::new(&db_path, options).unwrap();
+    manager.backup(None).unwrap();
+    let id = manager.list_backups().unwrap()[0].id.clone();
+
+    // ラベル・メモ付与
+    manager.set_backup_label(&id, Some("important")).unwrap();
+    manager.set_backup_note(&id, Some("作業前の状態")).unwrap();
+
+    let info = manager.list_backups().unwrap().into_iter().find(|b| b.id == id).unwrap();
+    assert_eq!(info.label.as_deref(), Some("important"));
+    assert!(matches!(info.label_source, LabelSource::Sidecar));
+    assert_eq!(info.note.as_deref(), Some("作業前の状態"));
+
+    // get_backup_meta でも取得可能
+    let meta = manager.get_backup_meta(&id).unwrap().unwrap();
+    assert_eq!(meta.label.as_deref(), Some("important"));
+
+    // 永続化: BackupManager を再生成してもサイドカーから復元される
+    let options2 = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        enabled: Some(true),
+        ..Default::default()
+    };
+    let manager2 = BackupManager::new(&db_path, options2).unwrap();
+    let info2 = manager2.list_backups().unwrap().into_iter().find(|b| b.id == id).unwrap();
+    assert_eq!(info2.label.as_deref(), Some("important"));
+    assert_eq!(info2.note.as_deref(), Some("作業前の状態"));
+
+    // 存在しない id はエラー
+    assert!(manager.set_backup_label("20990101000000-000", Some("x")).is_err());
+}
