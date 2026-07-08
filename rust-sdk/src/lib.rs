@@ -845,7 +845,9 @@ impl KijukuDB {
                         KijukuError::Other(format!("Base backup {} not found", base_id))
                     })?;
                 let temp_path = manager.temp_full_path_for_diff(base_id);
-                std::fs::create_dir_all(temp_path.parent().unwrap())?;
+                if let Some(parent) = temp_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
                 apply_diff_to_file(&base.path, &backup_info.path, &temp_path)?;
 
                 let result = (|| {

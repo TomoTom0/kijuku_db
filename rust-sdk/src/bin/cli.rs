@@ -838,8 +838,15 @@ fn handle_diff_backup_subcommand(
             None => BackupSelector::latest(),
         }
     };
+    let detail = match parse_diff_detail(&detail) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
+    };
     let options = kijuku_db::diff::DiffOptions {
-        detail: parse_diff_detail(&detail),
+        detail: Some(detail),
     };
     match db.diff_with_backup(&selector, &options) {
         Ok(diff) => print_backup_diff_summary(&diff),
@@ -848,15 +855,62 @@ fn handle_diff_backup_subcommand(
 }
 
 /// `--detail` 文字列を DiffDetail に変換（summary / limited=N / full）
-fn parse_diff_detail(s: &str) -> Option<kijuku_db::diff::DiffDetail> {
+/// 無効値はエラーを返し、デフォルトへのサイレントフォールバックを防ぐ。
+fn parse_diff_detail(s: &str) -> Result<kijuku_db::diff::DiffDetail, String> {
     match s {
-        "summary" => Some(kijuku_db::diff::DiffDetail::SummaryOnly),
-        "full" => Some(kijuku_db::diff::DiffDetail::Full),
-        _ => s.strip_prefix("limited=").and_then(|n| {
-            n.parse::<usize>()
-                .ok()
-                .map(|n| kijuku_db::diff::DiffDetail::Limited { n })
-        }),
+        "summary" => Ok(kijuku_db::diff::DiffDetail::SummaryOnly),
+        "full" => Ok(kijuku_db::diff::DiffDetail::Full),
+        _ => {
+            if let Some(n) = s.strip_prefix("limited=") {
+                n.parse::<usize>()
+                    .map(|n| kijuku_db::diff::DiffDetail::Limited { n })
+                    .map_err(|_| format!("無効な limited 値です: {} (数値を指定してください)", n))
+            } else {
+                Err(format!(
+                    "無効な --detail 値です: {} (summary | limited=N | full のいずれかを指定してください)",
+                    s
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_parse_diff_detail {
+    use super::*;
+
+    #[test]
+    fn parses_summary() {
+        assert!(matches!(
+            parse_diff_detail("summary"),
+            Ok(kijuku_db::diff::DiffDetail::SummaryOnly)
+        ));
+    }
+
+    #[test]
+    fn parses_full() {
+        assert!(matches!(
+            parse_diff_detail("full"),
+            Ok(kijuku_db::diff::DiffDetail::Full)
+        ));
+    }
+
+    #[test]
+    fn parses_limited_n() {
+        assert!(matches!(
+            parse_diff_detail("limited=50"),
+            Ok(kijuku_db::diff::DiffDetail::Limited { n: 50 })
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_value() {
+        assert!(parse_diff_detail("invalid").is_err());
+    }
+
+    #[test]
+    fn rejects_non_numeric_limited() {
+        assert!(parse_diff_detail("limited=abc").is_err());
     }
 }
 

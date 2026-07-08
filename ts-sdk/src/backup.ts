@@ -567,15 +567,17 @@ export class BackupManager {
   }
 
   private readBackupMetaStore(): Record<string, BackupMetaEntry> {
+    const p = this.metaPath();
+    // ファイル不在時のみ空ストアを返す。読込/パース失敗時はエラーをスローする
+    // （失敗時に{}を返すと updateBackupMeta が空ストアに書き込み、既存の全メタデータを消失させるため）。
+    if (!fs.existsSync(p)) return {};
+    const content = fs.readFileSync(p, 'utf-8');
+    if (!content.trim()) return {};
     try {
-      const p = this.metaPath();
-      if (!fs.existsSync(p)) return {};
-      const content = fs.readFileSync(p, 'utf-8');
-      if (!content.trim()) return {};
       const parsed = JSON.parse(content) as { entries?: Record<string, BackupMetaEntry> };
       return parsed.entries ?? {};
-    } catch {
-      return {};
+    } catch (e) {
+      throw new Error(`Failed to parse backup meta store: ${e}`);
     }
   }
 
@@ -672,7 +674,7 @@ export class BackupManager {
       const parsed = parseBackupFilename(name, this.dbStem);
       // 基底フル(.db)のみ。.diff と同一タイムスタンプの場合に .diff（=SQLite DB
       // ではない）が誤って選ばれるのを防ぐ（readdirSync 順序依存の非決定バグ）。
-      if (parsed?.id === id && parsed.extension === 'db') {
+      if (parsed?.id === id && parsed?.extension === 'db') {
         const filePath = path.join(subdir, name);
         const stat = fs.statSync(filePath);
         return {
