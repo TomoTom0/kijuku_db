@@ -27,6 +27,10 @@ fi
 
 # 保護ブランチ拒否（origin/dev, origin/main は PR のみ）
 BRANCH=$(git branch --show-current)
+if [ -z "$BRANCH" ]; then
+  echo "Error: 現在ブランチが特定できません（デタッチドHEAD状態の可能性があります）。feature ブランチを checkout してください。" >&2
+  exit 1
+fi
 if [ "$BRANCH" = "dev" ] || [ "$BRANCH" = "main" ]; then
   echo "Error: ブランチ '$BRANCH' では mise run push を実行できません（origin/dev, origin/main は PR のみ）。feature ブランチで実行してください。" >&2
   exit 1
@@ -36,9 +40,10 @@ CARGO_TOML="$PROJECT_ROOT/rust-sdk/Cargo.toml"
 PACKAGE_JSON="$PROJECT_ROOT/ts-sdk/package.json"
 README="$PROJECT_ROOT/rust-sdk/README.md"
 CLI_RS="$PROJECT_ROOT/rust-sdk/src/bin/cli.rs"
-CARGO_LOCK="$PROJECT_ROOT/rust-sdk/Cargo.lock"
+# Cargo.lock はプロジェクトルート（ワークスペースルート）にあるものを cargo check で更新するため、
+# ここでは明示的なパスを持たない（rust-sdk/Cargo.lock は stale な未使用ファイルとして削除済み）。
 
-for f in "$CARGO_TOML" "$PACKAGE_JSON" "$README" "$CLI_RS" "$CARGO_LOCK"; do
+for f in "$CARGO_TOML" "$PACKAGE_JSON" "$README" "$CLI_RS"; do
   if [ ! -f "$f" ]; then
     echo "Error: $f が見つかりません" >&2
     exit 1
@@ -66,8 +71,8 @@ fi
 MAJOR=$(echo "$CURRENT" | cut -d. -f1)
 MINOR=$(echo "$CURRENT" | cut -d. -f2)
 PATCH=$(echo "$CURRENT" | cut -d. -f3)
-if [ -z "$MAJOR" ] || [ -z "$MINOR" ] || [ -z "$PATCH" ]; then
-  echo "Error: version '$CURRENT' の形式が不正（X.Y.Z 期待）" >&2
+if [[ ! "$MAJOR" =~ ^[0-9]+$ ]] || [[ ! "$MINOR" =~ ^[0-9]+$ ]] || [[ ! "$PATCH" =~ ^[0-9]+$ ]]; then
+  echo "Error: version '$CURRENT' の形式が不正です（半角数字の X.Y.Z 形式を期待しています。プレリリース表記 0.2.0-beta.1 等は対応外）" >&2
   exit 1
 fi
 NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
@@ -92,25 +97,34 @@ perl -pi -e "s/(kijuku-db[[:space:]]*=[[:space:]]*\")[^\"]*\"/\${1}$NEW_VERSION\
 # perl の s{}{} だと // がデリミタと衝突するため awk を使用
 awk -v new="$NEW_VERSION" '/^\/\/![[:space:]]*Version:[[:space:]]*[0-9]/ { sub(/[0-9]+\.[0-9]+\.[0-9]+/, new) } { print }' "$CLI_RS" > "$CLI_RS.tmp" && mv "$CLI_RS.tmp" "$CLI_RS"
 
-# 5. rust-sdk/Cargo.lock (name = "kijuku-db" の version エントリ。slurp モードで次行の version を更新)
-perl -pi -0777 -e "s/(name = \"kijuku-db\"\nversion = )\"[^\"]*\"/\${1}\"$NEW_VERSION\"/" "$CARGO_LOCK"
+# 5. ワークスペースルートの Cargo.lock を cargo check で更新
+#    perl 等での直接書き換えは改行コード（CRLF 等）やフォーマット変更に脆弱なため、cargo に解決させる。
+#    rust-sdk/Cargo.toml の [package] version を上記で更新済みなので、cargo check が Cargo.lock の
+#    kijuku-db エントリを NEW_VERSION に同期する（ワークスペース構成のため lock はルートに1つ）。
+#    ※ ビルドに失敗する状態なら push すべきでないため、cargo check が安全網にもなる。
+if ! ( cd "$PROJECT_ROOT" && cargo check --quiet ); then
+  echo "Error: cargo check が失敗しました（ビルドエラー）。version を bump して push する前に修正してください。" >&2
+  exit 1
+fi
 
 echo "更新ファイル:"
 echo "  - rust-sdk/Cargo.toml"
 echo "  - ts-sdk/package.json"
 echo "  - rust-sdk/README.md"
 echo "  - rust-sdk/src/bin/cli.rs"
-echo "  - rust-sdk/Cargo.lock"
+echo "  - Cargo.lock (cargo check が更新)"
 
 if [ "$DRY_RUN" = "1" ]; then
   echo ""
   echo "[dry-run] commit / push をスキップしました。git diff で確認してください。"
-  echo "戻す場合: git restore rust-sdk/Cargo.toml ts-sdk/package.json rust-sdk/README.md rust-sdk/src/bin/cli.rs rust-sdk/Cargo.lock"
+  echo "戻す場合: git restore rust-sdk/Cargo.toml ts-sdk/package.json rust-sdk/README.md rust-sdk/src/bin/cli.rs Cargo.lock"
   exit 0
 fi
 
 # commit & push
-git add -A
+# 更新した4ファイル + cargo check で更新されたルート Cargo.lock のみを明示的に add する。
+# git add -A は作業中のファイルや未追跡ファイル（一時ファイル・機密情報等）を意図せず巻き込む危険があるため使用しない。
+git add "$CARGO_TOML" "$PACKAGE_JSON" "$README" "$CLI_RS" "$PROJECT_ROOT/Cargo.lock"
 git commit -m "chore: bump version to $NEW_VERSION"
 
 echo "push 中..."
