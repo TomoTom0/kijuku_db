@@ -320,6 +320,48 @@ export class BackupManager {
   }
 
   /**
+   * migrate 実行前に現在の DB を tmp/ へ snapshot する（設計 §7.3「migrate 前 snapshot 必須」）。
+   *
+   * enabled に関わらず常時退避する（設計 §7.3・migrate 前 snapshot 必須）。失敗時は例外を伝播し
+   * 呼び出し側の migrate を中止させる（Rust の `create_pre_migrate_snapshot` と同等）。
+   * WAL チェックポイント後にファイルコピーする。
+   */
+  createPreMigrateSnapshot(): string | undefined {
+    // `:memory:` 等、ファイル実体のない DB は snapshot 対象外（インメモリ DB のディスク
+    // snapshot は無意味）。本番（stg/prod のファイル DB）では常時 snapshot する（設計 §7.3）。
+    if (!this.isFileBackedDb()) return undefined;
+    const timestamp = currentTimestampStr();
+    const tmpDir = path.join(this.backupDir, 'tmp');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const preMigratePath = path.join(
+      tmpDir,
+      `${this.dbStem}.${timestamp}-pre_migrate.db`,
+    );
+    this.db.pragma('wal_checkpoint(TRUNCATE)');
+    fs.copyFileSync(this.dbPath, preMigratePath);
+    return preMigratePath;
+  }
+
+  /**
+   * promote 実行前に prod を退避する（設計 §7.2/§4.5）。
+   * enabled に関わらず常時退避。リスト除外フィルタでユーザー向け一覧から非表示。
+   * ファイル実体のない DB（`:memory:` 等）では undefined を返す（createPreMigrateSnapshot と同じ前提）。
+   */
+  createPrePromoteSnapshot(): string | undefined {
+    if (!this.isFileBackedDb()) return undefined;
+    const timestamp = currentTimestampStr();
+    const tmpDir = path.join(this.backupDir, 'tmp');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const prePromotePath = path.join(
+      tmpDir,
+      `${this.dbStem}.${timestamp}-pre_promote.db`,
+    );
+    this.db.pragma('wal_checkpoint(TRUNCATE)');
+    fs.copyFileSync(this.dbPath, prePromotePath);
+    return prePromotePath;
+  }
+
+  /**
    * バックアップを復元する
    *
    * 復元前に現在の状態を tmp/ へ自動退避する（TASK-149）
@@ -331,8 +373,9 @@ export class BackupManager {
       throw new Error('No backup found matching selector');
     }
 
-    // 1. 現在のDBを tmp/ へ退避
-    if (this.enabled) {
+    // 1. 現在のDBを tmp/ へ退避（enabled に関わらず常時退避・設計 §7.2）。
+    //    ファイル実体のない DB（`:memory:` 等）では skip（snapshot 対象外）。
+    if (this.isFileBackedDb()) {
       const timestamp = currentTimestampStr();
       const tmpDir = path.join(this.backupDir, 'tmp');
       fs.mkdirSync(tmpDir, { recursive: true });
@@ -413,6 +456,16 @@ export class BackupManager {
       for (const name of fs.readdirSync(subdir)) {
         const parsed = parseBackupFilename(name, this.dbStem);
         if (!parsed) continue;
+
+        // pre-stash（pre_migrate/pre_restore/pre_promote）は運用用ロールバックファイルで
+        // ユーザー向け一覧から除外する（設計 §7.2/§7.3・§8・Rust backup.rs と同等）
+        if (
+          name.endsWith('-pre_migrate.db') ||
+          name.endsWith('-pre_restore.db') ||
+          name.endsWith('-pre_promote.db')
+        ) {
+          continue;
+        }
 
         // auto 以外は .db のみ
         if (scope !== 'auto' && parsed.extension !== 'db') continue;
@@ -624,6 +677,14 @@ export class BackupManager {
 
   // ---- private helpers ----
 
+  /**
+   * ファイル実体のある DB（stg/prod 等の本番運用）か？
+   * `:memory:` や未作成ファイルは snapshot/退避対象外（インメモリ DB のディスク snapshot は無意味）。
+   */
+  private isFileBackedDb(): boolean {
+    return this.dbPath !== ':memory:' && fs.existsSync(this.dbPath);
+  }
+
   private async copyDbTo(dstPath: string): Promise<void> {
     await this.db.backup(dstPath, {
       progress: (info) => {
@@ -631,6 +692,20 @@ export class BackupManager {
         return 200;
       },
     });
+  }
+
+  /**
+   * 任意 src→dst の Online Backup コピー（設計 §4.5・sync/promote 基盤）。
+   * BackupManager インスタンスに依存しない static メソッド。src は読み取り専用で開く。
+   * Rust の `BackupManager::copy_db_online` と同等。
+   */
+  static async copyDbOnline(src: string, dst: string): Promise<void> {
+    const srcDb = new Database(src, { readonly: true, timeout: 5000 });
+    try {
+      await srcDb.backup(dst);
+    } finally {
+      srcDb.close();
+    }
   }
 
   /** 今日のフルバックアップを探す（差分の基底候補） */

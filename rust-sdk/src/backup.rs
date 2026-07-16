@@ -462,8 +462,9 @@ impl BackupManager {
             .select_backup(selector)?
             .ok_or_else(|| KijukuError::Other("No backup found matching selector".to_string()))?;
 
-        // 1. 現在のDBを tmp/ へ退避
-        if self.enabled {
+        // 1. 現在のDBを tmp/ へ退避（enabled に関わらず常時退避・設計 §7.2）。
+        //    Backup の conn 借用をブロックスコープに閉じ、後続の復元借用と衝突させない。
+        {
             let timestamp = current_timestamp_str();
             let tmp_dir = self.backup_dir.join("tmp");
             fs::create_dir_all(&tmp_dir)?;
@@ -502,6 +503,39 @@ impl BackupManager {
         }
 
         Ok(backup_info.path)
+    }
+
+    /// migrate 実行前に現在の DB を `backup/tmp/` へ退避する（設計 §7.3・TASK-42 P0）。
+    ///
+    /// `enabled=false` の場合は no-op（`Ok(None)`）。migrate でスキーマ破損が起きた場合の
+    /// 即時巻き戻し（§8 即時復旧）の前提。stg/admin 経路の migrate でのみ意味を持ち、
+    /// prod 読込経路では migrate 自体が呼ばれない（§5.1）ため snapshot も走らない。
+    /// 保持期間等の詳細は P2（§15-14）。
+    pub fn create_pre_migrate_snapshot(&self) -> Result<Option<String>> {
+        // enabled に関わらず常時退避（設計 §7.3・migrate 前 snapshot 必須）
+        let timestamp = current_timestamp_str();
+        let tmp_dir = self.backup_dir.join("tmp");
+        fs::create_dir_all(&tmp_dir)?;
+        let pre_migrate_path = tmp_dir.join(format!(
+            "{}.{}-pre_migrate.db",
+            self.db_stem, timestamp
+        ));
+        self.copy_db_to(&pre_migrate_path)?;
+        Ok(Some(pre_migrate_path.to_string_lossy().to_string()))
+    }
+
+    /// promote 実行前に prod を退避する（設計 §7.2/§4.5）。
+    /// enabled に関わらず常時退避。リスト除外フィルタでユーザー向け一覧から非表示。
+    pub fn create_pre_promote_snapshot(&self) -> Result<Option<String>> {
+        let timestamp = current_timestamp_str();
+        let tmp_dir = self.backup_dir.join("tmp");
+        fs::create_dir_all(&tmp_dir)?;
+        let pre_promote_path = tmp_dir.join(format!(
+            "{}.{}-pre_promote.db",
+            self.db_stem, timestamp
+        ));
+        self.copy_db_to(&pre_promote_path)?;
+        Ok(Some(pre_promote_path.to_string_lossy().to_string()))
     }
 
     /// バックアップ一覧を取得（新しい順）
@@ -568,6 +602,15 @@ impl BackupManager {
             for entry in fs::read_dir(&subdir)? {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().to_string();
+
+                // pre-stash（pre_migrate/pre_restore/pre_promote）は運用用ロールバックファイルで
+                // ユーザー向け backup 一覧から除外する（設計 §7.2/§7.3・§8）。§8 復旧は既知パス経由。
+                if name.ends_with("-pre_migrate.db")
+                    || name.ends_with("-pre_restore.db")
+                    || name.ends_with("-pre_promote.db")
+                {
+                    continue;
+                }
 
                 if let Some(parsed) = parse_backup_filename(&name, &self.db_stem) {
                     // tmp と manual は .db のみ
@@ -729,6 +772,41 @@ impl BackupManager {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
         src_conn.busy_timeout(std::time::Duration::from_millis(self.busy_timeout_ms))?;
+        let bk = rusqlite::backup::Backup::new(&src_conn, &mut dst_conn)?;
+        bk.run_to_completion(1000, std::time::Duration::from_millis(100), None)?;
+        Ok(())
+    }
+
+    /// 任意 src→dst の Online Backup コピー（設計 §4.5・sync/promote 基盤）。
+    /// BackupManager インスタンスに依存しない関連関数。src は読み取り専用で開く。
+    /// busy エラー時は固定間隔でリトライ。既存 `copy_db_to` と同等だが src をパラメータ化。
+    pub fn copy_db_online(src: &Path, dst: &Path) -> Result<()> {
+        const RETRY_INTERVALS_MS: [u64; 5] = [50, 100, 200, 500, 1000];
+        match Self::try_copy_db_online(src, dst) {
+            Ok(()) => Ok(()),
+            Err(e) if !is_busy_error(&e) => Err(e),
+            Err(e) => {
+                let mut last_err = e;
+                for &interval_ms in &RETRY_INTERVALS_MS {
+                    std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+                    match Self::try_copy_db_online(src, dst) {
+                        Ok(()) => return Ok(()),
+                        Err(e) if is_busy_error(&e) => last_err = e,
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(last_err)
+            }
+        }
+    }
+
+    fn try_copy_db_online(src: &Path, dst: &Path) -> Result<()> {
+        let mut dst_conn = rusqlite::Connection::open(dst)?;
+        let src_conn = rusqlite::Connection::open_with_flags(
+            src,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        src_conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         let bk = rusqlite::backup::Backup::new(&src_conn, &mut dst_conn)?;
         bk.run_to_completion(1000, std::time::Duration::from_millis(100), None)?;
         Ok(())

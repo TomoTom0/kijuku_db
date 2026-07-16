@@ -191,6 +191,121 @@ pub fn load_config(
     config
 }
 
+// ============================================================
+// 本番DB保護: target 解決（設計 §13・TASK-42 P0 Step3）
+// ============================================================
+
+/// 操作対象 DB。デフォルトは `Stg`（設計 §13.2「デフォルト stg・prod は明示フラグ」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// 本番 DB。readonly + migrate skip（設計 §5.1）。
+    Prod,
+    /// ステージング DB。RW + migrate 実行（LLM の通常作業環境）。
+    Stg,
+}
+
+impl Default for Target {
+    fn default() -> Self {
+        Target::Stg
+    }
+}
+
+impl Target {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Target::Prod => "prod",
+            Target::Stg => "stg",
+        }
+    }
+
+    /// 文字列から target へ変換（大文字小文字無視・不正値は None）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "prod" => Some(Target::Prod),
+            "stg" | "stage" | "staging" => Some(Target::Stg),
+            _ => None,
+        }
+    }
+}
+
+/// target 解決の結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetResolution {
+    pub target: Target,
+    /// 解決済み DB ファイルパス。
+    pub db_path: String,
+    /// prod なら true（readonly open・設計 §5.1）。
+    pub readonly: bool,
+    /// prod なら false（migrate skip・設計 §5.1）。
+    pub should_migrate: bool,
+}
+
+/// 環境変数読込の抽象化（テストでモック可能にするため）。
+pub trait EnvProvider {
+    fn get(&self, key: &str) -> Option<String>;
+}
+
+/// `std::env::var` を読む本番用実装。
+pub struct SystemEnv;
+
+impl EnvProvider for SystemEnv {
+    fn get(&self, key: &str) -> Option<String> {
+        std::env::var(key).ok()
+    }
+}
+
+const DEFAULT_PROD_DB: &str = "kijuku.db";
+const DEFAULT_STG_DB: &str = "kijuku.stg.db";
+
+/// target と db_path を解決する純粋関数（設計 §13）。
+///
+/// 優先順位（CLI 引数が常に勝つ）:
+/// - target: `cli_target` > `KIJUKU_TARGET`(env) > デフォルト `Stg`
+/// - db_path: `cli_db` > target 別 env（prod=`KIJUKU_DB_PATH` / stg=`KIJUKU_STG_DB_PATH`）
+///   > target 別デフォルト（prod=`kijuku.db` / stg=`kijuku.stg.db`）
+///
+/// readonly / should_migrate は target から導出（prod→readonly=true・migrate skip）。
+pub fn resolve_target(
+    cli_target: Option<Target>,
+    cli_db: Option<&str>,
+    env: &dyn EnvProvider,
+) -> TargetResolution {
+    let target = cli_target
+        .or_else(|| env.get("KIJUKU_TARGET").and_then(|s| Target::parse(&s)))
+        .unwrap_or_default();
+
+    let db_path = cli_db
+        .map(|s| s.to_string())
+        .or_else(|| match target {
+            Target::Prod => env.get("KIJUKU_DB_PATH"),
+            Target::Stg => env.get("KIJUKU_STG_DB_PATH"),
+        })
+        .unwrap_or_else(|| match target {
+            Target::Prod => DEFAULT_PROD_DB.to_string(),
+            Target::Stg => DEFAULT_STG_DB.to_string(),
+        });
+
+    let readonly = matches!(target, Target::Prod);
+    TargetResolution {
+        target,
+        db_path,
+        readonly,
+        should_migrate: !readonly,
+    }
+}
+
+/// prod と stg の両 DB パスを環境変数/デフォルトから解決する（sync 用・設計 §4.2）。
+///
+/// sync は prod(RO)→stg(RW) のファイルコピーで両パスを要するが、`resolve_target` は
+/// 単一 target しか解決しないため、Prod と Stg をそれぞれ解決する。
+/// `cli_db` / `KIJUKU_TARGET` は無視し、それぞれ `KIJUKU_DB_PATH` / `KIJUKU_STG_DB_PATH`
+/// （未設定時はデフォルト `kijuku.db` / `kijuku.stg.db`）を用いる。
+pub fn resolve_prod_and_stg_paths(env: &dyn EnvProvider) -> (String, String) {
+    let prod = resolve_target(Some(Target::Prod), None, env).db_path;
+    let stg = resolve_target(Some(Target::Stg), None, env).db_path;
+    (prod, stg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -319,5 +434,112 @@ keep_interval_secs = 3600
         assert_eq!(tiers[0].keep_interval_secs, 0);
         assert_eq!(tiers[1].max_age_secs, 86400);
         assert_eq!(tiers[1].keep_interval_secs, 3600);
+    }
+
+    // ---- target 解決器のテスト（設計 §13・TASK-42 P0 Step3）----
+
+    use std::collections::HashMap;
+
+    struct MockEnv {
+        vars: HashMap<String, String>,
+    }
+    impl MockEnv {
+        fn empty() -> Self {
+            Self {
+                vars: HashMap::new(),
+            }
+        }
+        fn with(mut self, k: &str, v: &str) -> Self {
+            self.vars.insert(k.to_string(), v.to_string());
+            self
+        }
+    }
+    impl EnvProvider for MockEnv {
+        fn get(&self, key: &str) -> Option<String> {
+            self.vars.get(key).cloned()
+        }
+    }
+
+    #[test]
+    fn test_resolve_target_default_is_stg() {
+        let r = resolve_target(None, None, &MockEnv::empty());
+        assert_eq!(r.target, Target::Stg);
+        assert_eq!(r.db_path, "kijuku.stg.db");
+        assert!(!r.readonly);
+        assert!(r.should_migrate);
+    }
+
+    #[test]
+    fn test_resolve_target_cli_beats_env() {
+        // CLI --target prod が KIJUKU_TARGET=stg に勝つ
+        let r = resolve_target(Some(Target::Prod), None, &MockEnv::empty().with("KIJUKU_TARGET", "stg"));
+        assert_eq!(r.target, Target::Prod);
+        assert!(r.readonly);
+        assert!(!r.should_migrate);
+        assert_eq!(r.db_path, "kijuku.db"); // prod デフォルト
+    }
+
+    #[test]
+    fn test_resolve_target_env_beats_default() {
+        let r = resolve_target(None, None, &MockEnv::empty().with("KIJUKU_TARGET", "prod"));
+        assert_eq!(r.target, Target::Prod);
+        assert!(r.readonly);
+    }
+
+    #[test]
+    fn test_resolve_target_invalid_env_falls_back_to_stg() {
+        let r = resolve_target(None, None, &MockEnv::empty().with("KIJUKU_TARGET", "bogus"));
+        assert_eq!(r.target, Target::Stg);
+    }
+
+    #[test]
+    fn test_resolve_target_db_cli_beats_all() {
+        // --db が target 別 env/デフォルトに勝つ（target=prod でも --db を尊重）
+        let r = resolve_target(
+            Some(Target::Prod),
+            Some("/custom/path.db"),
+            &MockEnv::empty().with("KIJUKU_DB_PATH", "/env/prod.db"),
+        );
+        assert_eq!(r.db_path, "/custom/path.db");
+        assert!(r.readonly); // readonly は target から導出（--db には依存しない）
+    }
+
+    #[test]
+    fn test_resolve_target_db_env_per_target() {
+        // prod + KIJUKU_DB_PATH
+        let r = resolve_target(
+            Some(Target::Prod),
+            None,
+            &MockEnv::empty().with("KIJUKU_DB_PATH", "/env/prod.db"),
+        );
+        assert_eq!(r.db_path, "/env/prod.db");
+        // stg + KIJUKU_STG_DB_PATH
+        let r = resolve_target(
+            Some(Target::Stg),
+            None,
+            &MockEnv::empty().with("KIJUKU_STG_DB_PATH", "/env/stg.db"),
+        );
+        assert_eq!(r.db_path, "/env/stg.db");
+    }
+
+    #[test]
+    fn test_resolve_target_stg_ignores_prod_env() {
+        // target=stg のとき KIJUKU_DB_PATH(prod用) は無視して stg デフォルト
+        let r = resolve_target(
+            Some(Target::Stg),
+            None,
+            &MockEnv::empty().with("KIJUKU_DB_PATH", "/env/prod.db"),
+        );
+        assert_eq!(r.db_path, "kijuku.stg.db");
+    }
+
+    #[test]
+    fn test_target_parse_variants() {
+        assert_eq!(Target::parse("prod"), Some(Target::Prod));
+        assert_eq!(Target::parse("PROD"), Some(Target::Prod));
+        assert_eq!(Target::parse("stg"), Some(Target::Stg));
+        assert_eq!(Target::parse("staging"), Some(Target::Stg));
+        assert_eq!(Target::parse("  prod "), Some(Target::Prod));
+        assert_eq!(Target::parse("nope"), None);
     }
 }

@@ -25,6 +25,7 @@ kijuku-cli --db <dbファイルのパス> [--verbose] <サブコマンド> [オ�
 | `--db <path>` | データベースファイルのパス（省略時: `./kijuku.db`） |
 | `--verbose` | 実行したSQLをstderrに出力する（デバッグ用） |
 | `--backend <BACKEND>` | バックエンド（`local` / `d1`）。`d1` は `D1_ACCOUNT_ID` / `D1_DATABASE_ID` 環境変数と事前の `wrangler login` が必要（省略時: `local`） |
+| `--media-root <path>` | ファイル操作（`file` / `trash` サブコマンド）のサンドボックス境界。media root の**絶対パス**を指定。`file` / `trash` サブコマンドで必須（未指定時は SDK がエラーを返す） |
 | `-V`, `--version` | バージョンを表示して終了する |
 
 **例:**
@@ -44,7 +45,7 @@ TypeScript SDKの `RemoteKijukuDB` はこのモードを使用してSSH経由で
 echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.db
 ```
 
-**stdin操作一覧（43種類）:**
+**stdin操作一覧（55種類）:**
 
 | カテゴリ | 操作名 | 説明 | 主なパラメータ |
 |---------|--------|------|--------------|
@@ -95,6 +96,14 @@ echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.d
 | | `setBackupLabel` | 事後ラベル付与 | `id`, `label?` |
 | | `setBackupNote` | 事後メモ付与 | `id`, `note?` |
 | | `getBackupMeta` | 事後メタ取得 | `id` |
+| **DB複製** | `sync` | prod(RO)→stg(RW) フル複製（設計 §4.2） | `from`, `to` |
+| **ファイル操作（media root）** | `mediaCp` | ファイル/ディレクトリ複製（dry-run ファースト・上書きは trash 経由） | `src`, `dst`, `options?` |
+| | `mediaMv` | ファイル/ディレクトリ移動（dry-run ファースト・上書きは trash 経由） | `src`, `dst`, `options?` |
+| | `mediaSync` | ディレクトリ同期（safe モード・余分/上書きは trash 経由） | `src`, `dst`, `options?` |
+| | `moveToTrash` | trash へ論理移動 | `target_rel`, `operation?`, `reason?` |
+| | `listTrash` | trash エントリ一覧 | なし |
+| | `restoreFromTrash` | trash から復元（衝突時はエラー） | `id` |
+| | `purgeTrash` | trash を物理削除（dry-run ファースト） | `ids?`, `dry_run?` |
 
 **使用例:**
 
@@ -209,6 +218,22 @@ kijuku-cli --db ./data/kijuku.db set-backup-label --id 20260707120000-000
 
 付与したラベル・メモは `list-backups` で表示されます。
 
+### sync-db
+
+prod(RO)→stg(RW) の DB フル複製を行います（設計 §4.2・本番DB保護 P1）。LLM 編集用の stg を prod から最新化します。stg 接続を開かず、Online Backup API で prod を読み取り専用コピーして stg を新規生成（既存 stg は完全上書き）します。
+
+```bash
+# prod → stg を複製
+kijuku-cli --db ./data/kijuku.db sync-db --from ./data/kijuku.db --to ./data/kijuku.stg.db
+
+# または stdin 操作で
+echo '{"operation":"sync","params":{"from":"./data/kijuku.db","to":"./data/kijuku.stg.db"}}' | kijuku-cli --db ./data/kijuku.db
+```
+
+- `--from`/`--to` を省略した場合は環境変数（`KIJUKU_DB_PATH`/`KIJUKU_STG_DB_PATH`）とデフォルトから解決します
+- `--from` と `--to` が同一パスの場合はエラーになります
+- **排他前提**: stg（`--to`）に接続中のプロセスがないこと（呼出側の責任）
+
 ### check-thumbnail
 
 メディアのサムネイル状態をチェックします。DBの `thumbnail_path` と実ファイルの整合性を確認します。
@@ -281,6 +306,56 @@ kijuku-cli --db ./data/kijuku.db update-exist --dry-run
 # フィルタを指定して対象を絞り込む
 kijuku-cli --db ./data/kijuku.db update-exist --filter '{"media_type":"comic"}'
 ```
+
+### file
+
+media root 配下のファイル操作（`cp` / `mv` / `sync`）。dry-run ファーストで、上書き・余分ファイルは trash 経由で退避されます。`--media-root` が必須です。結果は1行JSON（`CommandResponse`）で出力されます。
+
+```bash
+# dry-run（デフォルト・変更せず計画のみ出力）
+kijuku-cli --db ./data/kijuku.db --media-root /media file cp a/b.jpg c/b.jpg
+
+# 変更を適用
+kijuku-cli --db ./data/kijuku.db --media-root /media file cp a/b.jpg c/b.jpg --apply
+
+# 移動・同期も同様
+kijuku-cli --db ./data/kijuku.db --media-root /media file mv a/b.jpg c/b.jpg --apply
+kijuku-cli --db ./data/kijuku.db --media-root /media file sync src/ dst/ --apply
+```
+
+- `src` / `dst`: media root からの相対パス
+- `--apply`: 実際に変更を適用（省略時は dry-run）
+- `--update-db`: DB の `Media.path` を追従（当面はフラグのみ受付）
+
+パストラバーサル（`../` や絶対パスによる root 外アクセス）や保護パス（`.trash` 直下）への操作は SDK が拒否します。
+
+### trash
+
+trash（論理削除）の操作（`move` / `list` / `restore` / `purge`）。`--media-root` が必須です。結果は1行JSONで出力されます。
+
+```bash
+# trash へ移動（論理削除・物理削除はしない）
+kijuku-cli --db ./data/kijuku.db --media-root /media trash move old/vid.mp4 --reason "cleanup"
+
+# trash 操作の原因を指定（delete / overwrite / sync_extra。省略時: delete）
+kijuku-cli --db ./data/kijuku.db --media-root /media trash move old/vid.mp4 --operation overwrite
+
+# trash エントリ一覧
+kijuku-cli --db ./data/kijuku.db --media-root /media trash list
+
+# trash から復元（元の位置へ・衝突時はエラー）
+kijuku-cli --db ./data/kijuku.db --media-root /media trash restore <id>
+
+# trash を物理削除（dry-run）
+kijuku-cli --db ./data/kijuku.db --media-root /media trash purge --dry-run
+
+# 特定 ID のみ物理削除（複数指定可）・適用
+kijuku-cli --db ./data/kijuku.db --media-root /media trash purge --id <id1> --id <id2>
+```
+
+- `move`: 論理削除（`file cp/mv/sync` の上書き時にも内部で使われます）。`purge` と違い物理削除しません
+- `restore`: trash から元の位置へ復元。同名ファイルが既存だとエラーになります
+- `purge`: 物理削除。`--id` 省略時は全エントリ。`--dry-run` で対象のみ確認
 
 ### hash
 

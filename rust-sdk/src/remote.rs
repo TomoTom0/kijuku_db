@@ -8,6 +8,8 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use std::env;
 
+use crate::config::Target;
+
 /// リモート接続設定
 #[derive(Debug, Clone)]
 pub struct RemoteConfig {
@@ -19,10 +21,17 @@ pub struct RemoteConfig {
     pub username: Option<String>,
     /// SSH秘密鍵のパス
     pub private_key_path: Option<PathBuf>,
-    /// リモートのDBパス
+    /// リモートの prod DB パス
     pub db_path: Option<String>,
+    /// リモートの stg DB パス（None 時は db_path から `<stem>.stg.db` を導出・設計 §4.1）
+    pub stg_db_path: Option<String>,
     /// リモートのバイナリパス
     pub binary_path: Option<String>,
+    /// リモートホスト上の media root（ファイル操作APIのサンドボックス境界）。
+    /// 未設定の場合、リモートでのファイル操作APIはエラーで拒否される。
+    pub media_root: Option<String>,
+    /// 操作対象 DB（未設定 = デフォルト stg・設計 §13）。prod は readonly + migrate skip。
+    pub target: Target,
 }
 
 impl Default for RemoteConfig {
@@ -33,7 +42,10 @@ impl Default for RemoteConfig {
             username: None,
             private_key_path: None,
             db_path: Some(String::from("~/.local/share/kijuku/kijuku.db")),
+            stg_db_path: None,
             binary_path: Some(String::from("~/.local/bin/kijuku-cli")),
+            media_root: None,
+            target: Target::default(),
         }
     }
 }
@@ -57,6 +69,74 @@ struct CommandResponse {
 #[derive(Clone)]
 pub struct RemoteKijukuDB {
     config: RemoteConfig,
+}
+
+/// リモートシェルコマンドに埋め込むパスを安全にクォートする。
+/// `~` / `~/...` は `$HOME` に展開し、それ以外はシングルクォートで囲む（`'` はエスケープ）。
+fn escape_for_remote_shell(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("~/") {
+        return format!("\"$HOME\"/'{}'", rest.replace('\'', "'\\''"));
+    }
+    if s == "~" {
+        return "\"$HOME\"".to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// リモートの prod DB パスから stg DB パスを導出する（設計 §4.1）。
+///
+/// `<stem>.db` → `<stem>.stg.db`（拡張子の前に `.stg` を挿入）。
+/// 拡張子無しは `<path>.stg.db`。`~` 含むリモートパスもそのまま処理（rfind で最後の `.` を使用）。
+fn derive_stg_db_path(prod_path: &str) -> String {
+    match prod_path.rfind('.') {
+        // ディレクトリ区切りより後ろにある最後の `.` を拡張子区切りとみなす
+        Some(dot) if dot > prod_path.rfind('/').unwrap_or(0) => {
+            format!("{}.stg{}", &prod_path[..dot], &prod_path[dot..])
+        }
+        _ => format!("{}.stg.db", prod_path),
+    }
+}
+
+/// `RemoteConfig` から target に応じたリモート DB パスを解決する（設計 §4.1・§13）。
+///
+/// - prod: `db_path`（未設定時は prod デフォルト）
+/// - stg: `stg_db_path`、未設定なら `db_path` から導出、それも無ければ stg デフォルト
+fn resolve_remote_db_path(config: &RemoteConfig) -> String {
+    const DEFAULT_PROD: &str = "~/.local/share/kijuku/kijuku.db";
+    const DEFAULT_STG: &str = "~/.local/share/kijuku/kijuku.stg.db";
+    match config.target {
+        Target::Prod => config
+            .db_path
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PROD.to_string()),
+        Target::Stg => config
+            .stg_db_path
+            .clone()
+            .or_else(|| config.db_path.as_deref().map(derive_stg_db_path))
+            .unwrap_or_else(|| DEFAULT_STG.to_string()),
+    }
+}
+
+/// リモートで実行する CLI コマンド文字列を組み立てる（テスト容易化のため分離）。
+///
+/// `--target` を常に付与する（設計 §13「CLI が常に勝つ」）。これによりリモート側の
+/// `resolve_target` が target から readonly を正しく導出し、prod を RW で開く保護ホールを防ぐ。
+fn build_remote_command(
+    binary_path: &str,
+    db_path: &str,
+    target: Target,
+    media_root: Option<&str>,
+) -> String {
+    let base = format!(
+        "{} --db {} --target {}",
+        escape_for_remote_shell(binary_path),
+        escape_for_remote_shell(db_path),
+        target.as_str(),
+    );
+    match media_root {
+        Some(root) => format!("{} --media-root {}", base, escape_for_remote_shell(root)),
+        None => base,
+    }
 }
 
 impl RemoteKijukuDB {
@@ -161,11 +241,7 @@ impl RemoteKijukuDB {
 
     /// リモートでJSONコマンドを実行
     fn execute_remote_command(&self, request: CommandRequest) -> Result<CommandResponse> {
-        let remote_db_path = self
-            .config
-            .db_path
-            .as_deref()
-            .unwrap_or("~/.local/share/kijuku/kijuku.db");
+        let remote_db_path = resolve_remote_db_path(&self.config);
         let remote_binary_path = self
             .config
             .binary_path
@@ -180,7 +256,12 @@ impl RemoteKijukuDB {
             .channel_session()
             .map_err(|e| KijukuError::Other(format!("Failed to open channel: {}", e)))?;
 
-        let command = format!("{} --db {}", remote_binary_path, remote_db_path);
+        let command = build_remote_command(
+            remote_binary_path,
+            &remote_db_path,
+            self.config.target,
+            self.config.media_root.as_deref(),
+        );
         channel
             .exec(&command)
             .map_err(|e| KijukuError::Other(format!("Failed to execute command: {}", e)))?;
@@ -238,6 +319,156 @@ impl RemoteKijukuDB {
             ));
         }
         Ok(())
+    }
+
+    /// `src` を `dst` へ複製する（リモート CLI に委譲・dry-run ファースト・上書きは trash 経由）。
+    pub fn media_cp(
+        &self,
+        src: &str,
+        dst: &str,
+        opts: &crate::file_ops::FileOpOptions,
+    ) -> Result<crate::file_ops::FileOpResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "mediaCp".to_string(),
+            params: serde_json::json!({ "src": src, "dst": dst, "options": opts }),
+        })?;
+        self.check_response(response)
+    }
+
+    /// `src` を `dst` へ移動する（リモート CLI に委譲・dry-run ファースト・上書きは trash 経由）。
+    pub fn media_mv(
+        &self,
+        src: &str,
+        dst: &str,
+        opts: &crate::file_ops::FileOpOptions,
+    ) -> Result<crate::file_ops::FileOpResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "mediaMv".to_string(),
+            params: serde_json::json!({ "src": src, "dst": dst, "options": opts }),
+        })?;
+        self.check_response(response)
+    }
+
+    /// `src`（ディレクトリ）の内容を `dst` へ同期する（リモート CLI に委譲・safe モード）。
+    pub fn media_sync(
+        &self,
+        src: &str,
+        dst: &str,
+        opts: &crate::file_ops::FileOpOptions,
+    ) -> Result<crate::file_ops::FileOpResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "mediaSync".to_string(),
+            params: serde_json::json!({ "src": src, "dst": dst, "options": opts }),
+        })?;
+        self.check_response(response)
+    }
+
+    /// `target_rel` を trash へ移動する（リモート CLI に委譲・論理削除・物理削除はしない）。
+    pub fn move_to_trash(
+        &self,
+        target_rel: &str,
+        operation: crate::trash::TrashOperation,
+        reason: Option<&str>,
+    ) -> Result<crate::trash::TrashId> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "moveToTrash".to_string(),
+            params: serde_json::json!({ "target_rel": target_rel, "operation": operation, "reason": reason }),
+        })?;
+        self.check_response(response)
+    }
+
+    /// trash 内のエントリ一覧を返す（リモート CLI に委譲）。
+    pub fn list_trash(&self) -> Result<Vec<crate::trash::TrashEntry>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "listTrash".to_string(),
+            params: serde_json::json!({}),
+        })?;
+        self.check_response(response)
+    }
+
+    /// trash から `id` のエントリを復元する（リモート CLI に委譲）。戻り値はリモートホスト上の絶対パス。
+    pub fn restore_from_trash(&self, id: &str) -> Result<String> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "restoreFromTrash".to_string(),
+            params: serde_json::json!({ "id": id }),
+        })?;
+        self.check_response(response)
+    }
+
+    /// trash 内のエントリを物理削除する（リモート CLI に委譲・dry-run ファースト）。
+    pub fn purge_trash(&self, ids: Option<&[String]>, dry_run: bool) -> Result<Vec<String>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "purgeTrash".to_string(),
+            params: serde_json::json!({ "ids": ids, "dry_run": dry_run }),
+        })?;
+        self.check_response(response)
+    }
+
+    /// ローカルの `local_path` をリモートの `remote_rel`（media root 相対）へアップロード（SFTP・ストリーミング）。
+    pub fn upload(&self, local_path: &std::path::Path, remote_rel: &str) -> Result<()> {
+        let remote_abs = self.resolve_remote_within_root(remote_rel)?;
+        let sess = self.connect()?;
+        let sftp = sess
+            .sftp()
+            .map_err(|e| KijukuError::Other(format!("SFTP セッション確立失敗: {}", e)))?;
+        if let Some(parent) = remote_abs.parent() {
+            Self::ensure_remote_dir(&sftp, parent);
+        }
+        let mut local = std::fs::File::open(local_path)?;
+        let mut remote = sftp
+            .create(&remote_abs)
+            .map_err(|e| KijukuError::Other(format!("リモートファイル作成失敗: {}", e)))?;
+        std::io::copy(&mut local, &mut remote)?;
+        Ok(())
+    }
+
+    /// リモートの `remote_rel`（media root 相対）をローカルの `local_path` へダウンロード（SFTP・ストリーミング）。
+    pub fn download(&self, remote_rel: &str, local_path: &std::path::Path) -> Result<()> {
+        let remote_abs = self.resolve_remote_within_root(remote_rel)?;
+        let sess = self.connect()?;
+        let sftp = sess
+            .sftp()
+            .map_err(|e| KijukuError::Other(format!("SFTP セッション確立失敗: {}", e)))?;
+        let mut remote = sftp
+            .open(&remote_abs)
+            .map_err(|e| KijukuError::Other(format!("リモートファイルオープン失敗: {}", e)))?;
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut local = std::fs::File::create(local_path)?;
+        std::io::copy(&mut remote, &mut local)?;
+        Ok(())
+    }
+
+    /// リモートの `remote_rel` を media root 配下に解決し、保護パス（`.trash` 等）を拒否する。
+    /// リモート FS を canonicalize できないため lexical 解決のみ（FS アクセス無し）。
+    fn resolve_remote_within_root(&self, remote_rel: &str) -> Result<std::path::PathBuf> {
+        let media_root = self.config.media_root.as_ref().ok_or_else(|| {
+            KijukuError::Validation(
+                "media root is not configured; set RemoteConfig.media_root to use upload/download"
+                    .to_string(),
+            )
+        })?;
+        let root = std::path::Path::new(media_root);
+        let abs = crate::media_path::resolve_within_root(root, remote_rel)?;
+        let root_normalized = crate::media_path::normalize_lexical(root);
+        let protected = vec![crate::media_path::trash_dir(&root_normalized)];
+        if crate::media_path::is_protected(&abs, &protected) {
+            return Err(KijukuError::Validation(format!(
+                "remote path is a protected path ({}); refused",
+                remote_rel
+            )));
+        }
+        Ok(abs)
+    }
+
+    /// リモートディレクトリを再帰作成する（`mkdir -p` 相当・既存は無視）。
+    fn ensure_remote_dir(sftp: &ssh2::Sftp, path: &std::path::Path) {
+        let mut current = std::path::PathBuf::new();
+        for comp in path.components() {
+            current.push(comp);
+            let _ = sftp.mkdir(&current, 0o755);
+        }
     }
 
     /// マイグレーションを実行
@@ -1122,10 +1353,137 @@ mod tests {
             private_key_path: Some(PathBuf::from("/home/user/.ssh/id_rsa")),
             db_path: Some("/path/to/db.db".to_string()),
             binary_path: Some("/path/to/binary".to_string()),
+            media_root: None,
+            ..Default::default()
         };
 
         assert_eq!(config.ssh_host, "example.com");
         assert_eq!(config.port, Some(2222));
         assert_eq!(config.username, Some("testuser".to_string()));
+    }
+
+    #[test]
+    fn build_remote_command_with_media_root() {
+        let cmd = build_remote_command(
+            "~/.local/bin/kijuku-cli",
+            "~/.local/share/kijuku/kijuku.db",
+            Target::Stg,
+            Some("/media/root"),
+        );
+        assert!(cmd.contains("--media-root"), "cmd: {cmd}");
+        // `~` は `$HOME` に展開される
+        assert!(cmd.contains("\"$HOME\""), "cmd: {cmd}");
+        assert!(cmd.contains("--db"), "cmd: {cmd}");
+        // target が常に付与される（設計 §13）
+        assert!(cmd.contains("--target stg"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn build_remote_command_without_media_root() {
+        let cmd = build_remote_command(
+            "/usr/bin/kijuku-cli",
+            "/var/db/kijuku.db",
+            Target::Prod,
+            None,
+        );
+        assert!(!cmd.contains("--media-root"), "cmd: {cmd}");
+        assert!(cmd.contains("--db"), "cmd: {cmd}");
+        // prod は --target prod で readonly 伝達（設計 §5.1・§13）
+        assert!(cmd.contains("--target prod"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn build_remote_command_quotes_special_chars() {
+        // 空白・シングルクォートを含むパスが安全にクォートされる
+        let cmd = build_remote_command(
+            "/path/to/binary",
+            "/path/with space/db",
+            Target::Stg,
+            Some("/media/it's"),
+        );
+        assert!(cmd.contains("'/path/with space/db'"), "cmd: {cmd}");
+        // シングルクォートは `'\''` にエスケープされる
+        assert!(cmd.contains("'\\''"), "cmd: {cmd}");
+    }
+
+    #[test]
+    fn derive_stg_db_path_inserts_stg_before_extension() {
+        assert_eq!(derive_stg_db_path("~/.local/share/kijuku/kijuku.db"), "~/.local/share/kijuku/kijuku.stg.db");
+        assert_eq!(derive_stg_db_path("kijuku.db"), "kijuku.stg.db");
+        assert_eq!(derive_stg_db_path("/var/db/my.db"), "/var/db/my.stg.db");
+        // 拡張子無し
+        assert_eq!(derive_stg_db_path("/var/db/kijulu"), "/var/db/kijulu.stg.db");
+        // ディレクトリ名のドットは拡張子と誤認しない
+        assert_eq!(derive_stg_db_path("/foo.bar/kijuku.db"), "/foo.bar/kijuku.stg.db");
+    }
+
+    #[test]
+    fn resolve_remote_db_path_per_target() {
+        // prod: db_path をそのまま
+        let prod = RemoteConfig {
+            target: Target::Prod,
+            db_path: Some("~/.local/share/kijuku/kijuku.db".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_remote_db_path(&prod), "~/.local/share/kijuku/kijuku.db");
+
+        // stg: stg_db_path があればそれを優先
+        let stg_explicit = RemoteConfig {
+            target: Target::Stg,
+            db_path: Some("~/.local/share/kijuku/kijuku.db".to_string()),
+            stg_db_path: Some("/custom/stg.db".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_remote_db_path(&stg_explicit), "/custom/stg.db");
+
+        // stg: stg_db_path 無し → db_path から導出
+        let stg_derived = RemoteConfig {
+            target: Target::Stg,
+            db_path: Some("~/.local/share/kijuku/kijuku.db".to_string()),
+            stg_db_path: None,
+            ..Default::default()
+        };
+        assert_eq!(resolve_remote_db_path(&stg_derived), "~/.local/share/kijuku/kijuku.stg.db");
+
+        // stg: 両方無し → stg デフォルト
+        let stg_default = RemoteConfig {
+            target: Target::Stg,
+            db_path: None,
+            stg_db_path: None,
+            ..Default::default()
+        };
+        assert_eq!(resolve_remote_db_path(&stg_default), "~/.local/share/kijuku/kijuku.stg.db");
+    }
+
+    #[test]
+    fn resolve_remote_within_root_errors_when_unset() {
+        let remote = RemoteKijukuDB::new(RemoteConfig::default());
+        assert!(remote.resolve_remote_within_root("a/b.jpg").is_err());
+    }
+
+    #[test]
+    fn resolve_remote_within_root_rejects_traversal() {
+        let config = RemoteConfig {
+            ssh_host: "localhost".to_string(),
+            media_root: Some("/media".to_string()),
+            ..Default::default()
+        };
+        let remote = RemoteKijukuDB::new(config);
+        assert!(remote.resolve_remote_within_root("../escape").is_err());
+        assert!(remote.resolve_remote_within_root("/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn resolve_remote_within_root_rejects_protected() {
+        let config = RemoteConfig {
+            ssh_host: "localhost".to_string(),
+            media_root: Some("/media".to_string()),
+            ..Default::default()
+        };
+        let remote = RemoteKijukuDB::new(config);
+        // `.trash` 配下は保護パス
+        assert!(remote.resolve_remote_within_root(".trash/xxx").is_err());
+        // 正常な相対パスは許可
+        assert!(remote.resolve_remote_within_root("a/b.jpg").is_ok());
     }
 }

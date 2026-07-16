@@ -3,6 +3,8 @@
  * Kijuku DB CLI ツール
  */
 import { KijukuDB, RemoteKijukuDB } from './index.js';
+import { resolveTarget, parseTarget, systemEnv } from './config.js';
+import type { Target } from './config.js';
 import { startServer } from './server/index.js';
 import fs from 'fs';
 import path from 'path';
@@ -114,6 +116,7 @@ function showHelp(): void {
   console.log('オプション:');
   console.log('  --db <path>              データベースファイルのパス（デフォルト: ./kijuku.db）');
   console.log('                           リモートDB: host:path 形式（例: as5202:/home/user/kijuku.db）');
+  console.log('  --target <prod|stg>      操作対象DB。prod は readonly + migrate skip（設計 §13・既定 stg）');
   console.log('  --additional-columns <cols>  追加カラムのリスト（カンマ区切り、importコマンドのみ）');
   console.log('  --port <number>          サーバーのポート番号（デフォルト: 40001、serverコマンドのみ）');
   console.log('  --password <password>    認証パスワード（省略時は自動生成、serverコマンドのみ）');
@@ -163,10 +166,35 @@ function parseArgs(args: string[]): {
 }
 
 /**
- * データベースパスを取得
+ * CLI オプションから target・dbPath・readonly・shouldMigrate を解決する（設計 §13）。
+ *
+ * `--target` または `KIJUKU_TARGET` 環境変数で prod/stg 制御（resolveTarget に委譲）。
+ * 未指定時は後方互換のため従来の `./kijuku.db` + RW を維持する。
  */
-function getDbPath(options: Record<string, string>): string {
-  return options.db || process.env.DATABASE_PATH || './kijuku.db';
+interface CliDbResolution {
+  dbPath: string;
+  readonly: boolean;
+  shouldMigrate: boolean;
+  target: Target;
+}
+
+function resolveCliDb(options: Record<string, string>): CliDbResolution {
+  const useTarget = !!(options.target || systemEnv('KIJUKU_TARGET'));
+  if (useTarget) {
+    const r = resolveTarget(parseTarget(options.target), options.db, systemEnv);
+    return {
+      dbPath: r.dbPath,
+      readonly: r.readonly,
+      shouldMigrate: r.shouldMigrate,
+      target: r.target,
+    };
+  }
+  return {
+    dbPath: options.db || process.env.DATABASE_PATH || './kijuku.db',
+    readonly: false,
+    shouldMigrate: true,
+    target: 'stg',
+  };
 }
 
 /**
@@ -203,20 +231,32 @@ export function parseDbPath(dbPath: string): {
  * DBインスタンスを作成（ローカルまたはリモート）
  *
  * @param dbPath - データベースパス
+ * @param verbose - SQL ログ出力
+ * @param readonly - prod 読込経路なら true（readonly open・設計 §5.1）
+ * @param target - リモート CLI へ伝達する操作対象（remote.ts が --target を付与）
  * @returns KijukuDB または RemoteKijukuDB
  */
-export function createDatabase(dbPath: string, verbose = false): KijukuDB | RemoteKijukuDB {
+export function createDatabase(
+  dbPath: string,
+  verbose = false,
+  readonly = false,
+  target?: Target,
+): KijukuDB | RemoteKijukuDB {
   const parsed = parseDbPath(dbPath);
 
   if (parsed.isRemote) {
     // リモートDB
-    return new RemoteKijukuDB({
+    const cfg: { sshHost: string; dbPath?: string; target?: Target } = {
       sshHost: parsed.sshHost!,
       dbPath: parsed.remotePath,
-    });
+    };
+    if (target !== undefined) cfg.target = target;
+    return new RemoteKijukuDB(cfg);
   } else {
     // ローカルDB
-    return new KijukuDB(parsed.localPath!, { verbose });
+    const opts: { verbose: boolean; readonly?: boolean } = { verbose };
+    if (readonly) opts.readonly = true;
+    return new KijukuDB(parsed.localPath!, opts);
   }
 }
 
@@ -224,10 +264,18 @@ export function createDatabase(dbPath: string, verbose = false): KijukuDB | Remo
  * migrateコマンドを実行
  */
 async function runMigrate(options: Record<string, string>): Promise<void> {
-  const dbPath = getDbPath(options);
+  const res = resolveCliDb(options);
+  const dbPath = res.dbPath;
   const parsed = parseDbPath(dbPath);
 
-  console.log(`データベース: ${dbPath}`);
+  console.log(`データベース: ${dbPath} (target: ${res.target}${res.readonly ? ' / readonly' : ''})`);
+
+  // prod 読込経路（readonly）では migrate をスキップ（設計 §5.1）
+  if (!res.shouldMigrate) {
+    console.log('prod (readonly) のためマイグレーションをスキップします');
+    return;
+  }
+
   console.log('マイグレーションを実行中...');
 
   try {
@@ -236,6 +284,7 @@ async function runMigrate(options: Record<string, string>): Promise<void> {
       const db = new RemoteKijukuDB({
         sshHost: parsed.sshHost!,
         dbPath: parsed.remotePath,
+        target: res.target,
       });
 
       await db.migrate();
@@ -244,7 +293,7 @@ async function runMigrate(options: Record<string, string>): Promise<void> {
     } else {
       // ローカルDB
       const verbose = options.verbose === 'true';
-      const db = new KijukuDB(parsed.localPath!, { verbose });
+      const db = new KijukuDB(parsed.localPath!, { verbose, readonly: res.readonly });
       db.migrate();
 
       const version = db.getSchemaVersion();
@@ -262,11 +311,12 @@ async function runMigrate(options: Record<string, string>): Promise<void> {
  * searchコマンドを実行
  */
 async function runSearch(options: Record<string, string>): Promise<void> {
-  const dbPath = getDbPath(options);
+  const res = resolveCliDb(options);
+  const dbPath = res.dbPath;
   const parsed = parseDbPath(dbPath);
 
   try {
-    const db = createDatabase(dbPath, options.verbose === 'true');
+    const db = createDatabase(dbPath, options.verbose === 'true', res.readonly, res.target);
 
     // フィルタ条件を構築
     const filter: any = {};
@@ -316,7 +366,8 @@ async function runSearch(options: Record<string, string>): Promise<void> {
  * importコマンドを実行
  */
 async function runImport(options: Record<string, string>): Promise<void> {
-  const dbPath = getDbPath(options);
+  const res = resolveCliDb(options);
+  const dbPath = res.dbPath;
   const parsed = parseDbPath(dbPath);
   const filePath = options.file;
 
@@ -331,7 +382,7 @@ async function runImport(options: Record<string, string>): Promise<void> {
   }
 
   try {
-    const db = createDatabase(dbPath, options.verbose === 'true');
+    const db = createDatabase(dbPath, options.verbose === 'true', res.readonly, res.target);
     const ext = path.extname(filePath).toLowerCase();
     const content = fs.readFileSync(filePath, 'utf-8');
 
@@ -455,7 +506,8 @@ async function runImport(options: Record<string, string>): Promise<void> {
  * serverコマンドを実行
  */
 async function runServer(options: Record<string, string>): Promise<void> {
-  const dbPath = getDbPath(options);
+  const res = resolveCliDb(options);
+  const dbPath = res.dbPath;
   const parsed = parseDbPath(dbPath);
 
   if (parsed.isRemote) {
@@ -464,8 +516,14 @@ async function runServer(options: Record<string, string>): Promise<void> {
   }
 
   try {
-    const db = new KijukuDB(parsed.localPath!, { verbose: options.verbose === 'true' });
-    db.migrate();
+    const db = new KijukuDB(parsed.localPath!, {
+      verbose: options.verbose === 'true',
+      readonly: res.readonly,
+    });
+    // prod 読込経路（readonly）では migrate をスキップ（設計 §5.1）
+    if (res.shouldMigrate) {
+      db.migrate();
+    }
 
     const port = options.port ? parseInt(options.port, 10) : 40001;
     const password = options.password;

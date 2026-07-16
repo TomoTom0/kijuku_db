@@ -168,3 +168,72 @@ export function loadConfig(
 
   return config;
 }
+
+// ============================================================
+// 本番DB保護: target 解決（設計 §13・TASK-42 P0 Step3）
+// ============================================================
+
+/** 操作対象 DB。デフォルトは `stg`（設計 §13.2「デフォルト stg・prod は明示フラグ」）。 */
+export const TARGET_VALUES = ['prod', 'stg'] as const;
+export type Target = (typeof TARGET_VALUES)[number];
+
+/** target 解決の結果。 */
+export interface TargetResolution {
+  target: Target;
+  /** 解決済み DB ファイルパス。 */
+  dbPath: string;
+  /** prod なら true（readonly open・設計 §5.1）。 */
+  readonly: boolean;
+  /** prod なら false（migrate skip・設計 §5.1）。 */
+  shouldMigrate: boolean;
+}
+
+const DEFAULT_PROD_DB = 'kijuku.db';
+const DEFAULT_STG_DB = 'kijuku.stg.db';
+
+/** 文字列から target へ変換（大文字小文字無視・不正値は undefined）。 */
+export function parseTarget(s: string | undefined): Target | undefined {
+  if (s === undefined) return undefined;
+  switch (s.trim().toLowerCase()) {
+    case 'prod':
+      return 'prod';
+    case 'stg':
+    case 'stage':
+    case 'staging':
+      return 'stg';
+    default:
+      return undefined;
+  }
+}
+
+/** 環境変数読込の抽象化（テストでモック可能にするため）。 */
+export type EnvGetter = (key: string) => string | undefined;
+
+/** `process.env` を読む本番用実装。 */
+export const systemEnv: EnvGetter = (key) => process.env[key];
+
+/**
+ * target と dbPath を解決する純粋関数（設計 §13）。
+ *
+ * 優先順位（CLI 引数が常に勝つ）:
+ * - target: `cliTarget` > `KIJUKU_TARGET`(env) > デフォルト `stg`
+ * - dbPath: `cliDb` > target 別 env（prod=`KIJUKU_DB_PATH` / stg=`KIJUKU_STG_DB_PATH`）
+ *   > target 別デフォルト（prod=`kijuku.db` / stg=`kijuku.stg.db`）
+ *
+ * readonly / shouldMigrate は target から導出（prod→readonly=true・migrate skip）。
+ */
+export function resolveTarget(
+  cliTarget: Target | undefined,
+  cliDb: string | undefined,
+  env: EnvGetter,
+): TargetResolution {
+  const target = cliTarget ?? parseTarget(env('KIJUKU_TARGET')) ?? 'stg';
+
+  const dbPath =
+    cliDb ??
+    (target === 'prod' ? env('KIJUKU_DB_PATH') : env('KIJUKU_STG_DB_PATH')) ??
+    (target === 'prod' ? DEFAULT_PROD_DB : DEFAULT_STG_DB);
+
+  const readonly = target === 'prod';
+  return { target, dbPath, readonly, shouldMigrate: !readonly };
+}

@@ -32,6 +32,11 @@ import { BackupManager, BackupSelector } from './backup.js';
 import type { BackupInfo, BackupMetaEntry } from './backup.js';
 import * as updateExistModule from './update_exist.js';
 import * as thumbnailModule from './thumbnail.js';
+import * as fileOps from './file_ops.js';
+import * as trash from './trash.js';
+import { requireMediaRoot } from './media_path.js';
+import type { FileOpOptions, FileOpResult } from './file_ops.js';
+import type { TrashEntry, TrashOperation } from './trash.js';
 import type {
   ThumbnailOptions,
   CheckThumbnailResult,
@@ -42,6 +47,9 @@ export * from './types.js';
 export type { UpdateExistOptions, UpdateExistItemResult, UpdateExistResult } from './update_exist.js';
 export * from './errors.js';
 export * from './remote.js';
+export * from './media_path.js';
+export * from './trash.js';
+export * from './file_ops.js';
 export { BackupManager, BackupSelector, defaultRetentionPolicy } from './backup.js';
 export type {
   BackupInfo,
@@ -52,8 +60,8 @@ export type {
   RetentionTier,
   BackupOptions,
 } from './backup.js';
-export { loadConfig, globalConfigPath, defaultKijukuConfig, defaultBackupConfig } from './config.js';
-export type { KijukuConfig, BackupConfig, RetentionTierConfig } from './config.js';
+export { loadConfig, globalConfigPath, defaultKijukuConfig, defaultBackupConfig, parseTarget, resolveTarget, systemEnv } from './config.js';
+export type { KijukuConfig, BackupConfig, RetentionTierConfig, Target, TargetResolution, EnvGetter } from './config.js';
 export { ALLOWED_DISTINCT_FIELDS } from './search.js';
 export { hexToBytes, bytesToHex } from './hash.js';
 export { startServer } from './server/index.js';
@@ -65,31 +73,139 @@ export { AuthManager, generatePassword } from './server/auth.js';
 export class KijukuDB {
   private db: Database.Database;
   private readonly dbPath: string;
+  private readonly mediaRoot?: string;
+  /** readonly（prod 読込）接続か。WAL 設定・migrate をスキップ（設計 §5.1・§5.3）。 */
+  private readonly isReadOnly: boolean;
   private backupManager?: BackupManager;
 
   constructor(dbPath: string, options?: DBOptions) {
     this.dbPath = dbPath;
+    this.isReadOnly = options?.readonly ?? false;
     this.db = new Database(dbPath, {
       timeout: options?.timeout ?? 5000,
-      readonly: options?.readonly ?? false,
+      readonly: this.isReadOnly,
       verbose: options?.verbose ? console.log : undefined,
     });
 
     // SQLite設定
     this.db.pragma('foreign_keys = ON');
-    this.db.pragma('journal_mode = WAL');
+    // WAL は RW 接続のみ。readonly で journal_mode=WAL は書込を伴い失敗する（設計 §5.3）。
+    if (!this.isReadOnly) {
+      this.db.pragma('journal_mode = WAL');
+    }
 
     // バックアップマネージャーの初期化（合意に基づきデフォルトで有効）
     if (options?.backup !== null) {
       this.backupManager = new BackupManager(this.db, dbPath, options?.backup ?? {});
     }
+
+    // media root（ファイル操作APIのサンドボックス境界）
+    this.mediaRoot = options?.mediaRoot;
+  }
+
+  /**
+   * 設定された media root を返す（未設定は undefined）。
+   *
+   * ファイル操作API（cp/mv/sync/upload/download 等）のサンドボックス境界。
+   * 未設定の場合、ファイル操作APIはエラーで拒否される。
+   */
+  getMediaRoot(): string | undefined {
+    return this.mediaRoot;
+  }
+
+  /** src を dst へ複製する（dry-run ファースト、上書きは trash 経由）。 */
+  mediaCp(
+    src: string,
+    dst: string,
+    opts: FileOpOptions = fileOps.defaultFileOpOptions
+  ): FileOpResult {
+    const root = requireMediaRoot(this.mediaRoot);
+    return fileOps.mediaCp(root, src, dst, opts);
+  }
+
+  /** src を dst へ移動する（dry-run ファースト、上書きは trash 経由）。 */
+  mediaMv(
+    src: string,
+    dst: string,
+    opts: FileOpOptions = fileOps.defaultFileOpOptions
+  ): FileOpResult {
+    const root = requireMediaRoot(this.mediaRoot);
+    return fileOps.mediaMv(root, src, dst, opts);
+  }
+
+  /** src（ディレクトリ）の内容を dst へ同期する（safe モード、dry-run ファースト、余分・上書きは trash 経由）。 */
+  mediaSync(
+    src: string,
+    dst: string,
+    opts: FileOpOptions = fileOps.defaultFileOpOptions
+  ): FileOpResult {
+    const root = requireMediaRoot(this.mediaRoot);
+    return fileOps.mediaSync(root, src, dst, opts);
+  }
+
+  /** targetRel を trash へ移動する（論理削除・物理削除はしない）。 */
+  moveToTrash(targetRel: string, operation: TrashOperation, reason?: string): string {
+    const root = requireMediaRoot(this.mediaRoot);
+    return trash.moveToTrash(root, targetRel, operation, reason);
+  }
+
+  /** trash 内のエントリ一覧を返す。 */
+  listTrash(): TrashEntry[] {
+    const root = requireMediaRoot(this.mediaRoot);
+    return trash.listTrash(root);
+  }
+
+  /** trash から id のエントリを復元する（衝突時はエラー）。 */
+  restoreFromTrash(id: string): string {
+    const root = requireMediaRoot(this.mediaRoot);
+    return trash.restoreFromTrash(root, id);
+  }
+
+  /** trash 内のエントリを物理削除する（dry-run ファースト）。 */
+  purgeTrash(ids?: string[], dryRun = false): string[] {
+    const root = requireMediaRoot(this.mediaRoot);
+    return trash.purgeTrash(root, ids, dryRun);
   }
 
   /**
    * マイグレーションを実行
+   *
+   * readonly（prod 読込）接続では拒否する（設計 §5.1「prod 読込経路は migrate skip」）。
+   * CLI の target 解決（resolveTarget）でも prod は shouldMigrate=false となるが、
+   * SDK 直接呼出に対する構造的保護としてここでも明示的に拒否する。
    */
   migrate(): void {
+    if (this.isReadOnly) {
+      throw new Error(
+        'migrate is not allowed on a readonly (prod) connection (設計 §5.1)',
+      );
+    }
+    // migrate 前に snapshot（設計 §7.3「migrate 前 snapshot 必須」・Rust と同等）
+    this.backupManager?.createPreMigrateSnapshot();
     migration.migrate(this.db);
+  }
+
+  /**
+   * prod(RO) → stg(RW) のフル複製（sync・設計 §4.2/§4.5）。
+   *
+   * `BackupManager.copyDbOnline`（Online Backup API）で src を読み取り専用コピーし dst を
+   * 新規生成する。既存 dst と WAL/SHM 副産物（`-wal`/`-shm`）は事前に削除し、stg が WAL モードで
+   * 使用されていた場合の残留を排除して完全な複製を保証する。Rust の `KijukuDB::replicate_db` と同等。
+   *
+   * **排他前提**: dst（stg）に接続中のプロセスがないこと（呼出側の責任・設計 §15-11 P1）。
+   * `src === dst` は誤設定としてエラー。
+   */
+  static async replicateDb(src: string, dst: string): Promise<void> {
+    if (src === dst) {
+      throw new Error(`sync source and destination are the same path: ${src}`);
+    }
+    for (const suffix of ['', '-wal', '-shm']) {
+      const candidate = `${dst}${suffix}`;
+      if (fs.existsSync(candidate)) {
+        fs.unlinkSync(candidate);
+      }
+    }
+    await BackupManager.copyDbOnline(src, dst);
   }
 
   /**

@@ -48,12 +48,15 @@ pub mod error;
 pub mod exec;
 pub mod exec_d1;
 pub mod exec_local;
+pub mod file_ops;
 pub mod hash;
+pub mod media_path;
 pub mod migration;
 pub mod remote;
 pub mod search;
 pub mod server;
 pub mod tag;
+pub mod trash;
 pub mod thumbnail;
 pub mod types;
 pub mod update_exist;
@@ -66,7 +69,10 @@ pub use backend::KijukuBackend;
 pub use bulk_load::{transfer, verify, TransferOptions, TransferReport};
 pub use d1_backend::D1KijukuDB;
 pub use d1_client::D1Config;
-pub use config::{load_config, BackupConfig, KijukuConfig};
+pub use config::{
+    load_config, BackupConfig, EnvProvider, KijukuConfig, SystemEnv, Target, TargetResolution,
+    resolve_prod_and_stg_paths, resolve_target,
+};
 pub use db_value::{SqlParam, SqlRow};
 pub use error::{KijukuError, Result};
 pub use exec::SqlExec;
@@ -136,6 +142,16 @@ impl KijukuDB {
         };
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
+        // busy_timeout: RO/RW 両方で設定（ロック競合時のリトライ待ち・設計 §5.3）。
+        // `DBOptions.timeout`(ms) を流用。未設定時は 5000ms。
+        let busy_timeout_ms = options.timeout.unwrap_or(5000);
+        conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms))?;
+
+        // WAL は RW 接続のみ。readonly で `journal_mode=WAL` は書込を伴うため失敗する（設計 §5.3）。
+        if !options.readonly {
+            conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        }
+
         if options.verbose {
             conn.trace(Some(|sql: &str| eprintln!("[SQL] {sql}")));
         }
@@ -161,6 +177,7 @@ impl KijukuDB {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         let conn = Arc::new(ReentrantMutex::new(conn));
         let exec = LocalExec::new(Arc::clone(&conn));
         Ok(Self {
@@ -169,6 +186,34 @@ impl KijukuDB {
             options: DBOptions::default(),
             backup_manager: None,
         })
+    }
+
+    /// prod(RO) → stg(RW) のフル複製（sync・設計 §4.2/§4.5）。
+    ///
+    /// `copy_db_online`（Online Backup API）で src を読み取り専用コピーし dst を新規生成する。
+    /// 既存 dst と WAL/SHM 副産物（`-wal`/`-shm`）は事前に削除し、stg が WAL モードで
+    /// 使用されていた場合の残留を排除して完全な複製を保証する。
+    ///
+    /// **排他前提**: dst（stg）に接続中のプロセスがないこと（呼出側の責任・設計 §15-11 P1）。
+    /// 接続中のファイルを上書きすると WAL 整合性が壊れるため、CLI の sync は stg 接続を
+    /// 開かずに本メソッドを呼ぶ。`src == dst` は誤設定としてエラー。
+    pub fn replicate_db(src: &Path, dst: &Path) -> Result<()> {
+        if src == dst {
+            return Err(KijukuError::Other(format!(
+                "sync source and destination are the same path: {}",
+                src.display()
+            )));
+        }
+        // 既存 dst + WAL/SHM 副産物を削除（完全な複製のため・設計 §4.2）
+        let dst_str = dst.to_string_lossy();
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate = format!("{}{}", dst_str, suffix);
+            let p = Path::new(&candidate);
+            if p.exists() {
+                std::fs::remove_file(p)?;
+            }
+        }
+        backup::BackupManager::copy_db_online(src, dst)
     }
 
     /// 接続の `Arc` ハンドルを取得（同プロセス内で `LocalExec` 等と共有する用途・内部用）。
@@ -184,9 +229,82 @@ impl KijukuDB {
         &self.options
     }
 
+    /// 設定された media root を返す（未設定は None）。
+    ///
+    /// ファイル操作API（cp/mv/sync/upload/download 等）のサンドボックス境界。
+    /// 未設定の場合、ファイル操作APIはエラーで拒否される。
+    pub fn media_root(&self) -> Option<&str> {
+        self.options.media_root.as_deref()
+    }
+
+    /// `src` を `dst` へ複製する（dry-run ファースト、上書きは trash 経由）。
+    pub fn media_cp(
+        &self,
+        src: &str,
+        dst: &str,
+        opts: &crate::file_ops::FileOpOptions,
+    ) -> Result<crate::file_ops::FileOpResult> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        file_ops::media_cp(&root, src, dst, opts)
+    }
+
+    /// `src` を `dst` へ移動する（dry-run ファースト、上書きは trash 経由）。
+    pub fn media_mv(
+        &self,
+        src: &str,
+        dst: &str,
+        opts: &crate::file_ops::FileOpOptions,
+    ) -> Result<crate::file_ops::FileOpResult> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        file_ops::media_mv(&root, src, dst, opts)
+    }
+
+    /// `src`（ディレクトリ）の内容を `dst` へ同期する（safe モード、dry-run ファースト、余分・上書きは trash 経由）。
+    pub fn media_sync(
+        &self,
+        src: &str,
+        dst: &str,
+        opts: &crate::file_ops::FileOpOptions,
+    ) -> Result<crate::file_ops::FileOpResult> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        file_ops::media_sync(&root, src, dst, opts)
+    }
+
+    /// `target_rel` を trash へ移動する（論理削除・物理削除はしない）。
+    pub fn move_to_trash(
+        &self,
+        target_rel: &str,
+        operation: crate::trash::TrashOperation,
+        reason: Option<&str>,
+    ) -> Result<crate::trash::TrashId> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        crate::trash::move_to_trash(&root, target_rel, operation, reason)
+    }
+
+    /// trash 内のエントリ一覧を返す。
+    pub fn list_trash(&self) -> Result<Vec<crate::trash::TrashEntry>> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        crate::trash::list_trash(&root)
+    }
+
+    /// trash から `id` のエントリを元の位置へ復元する（衝突時はエラー）。
+    pub fn restore_from_trash(&self, id: &str) -> Result<std::path::PathBuf> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        crate::trash::restore_from_trash(&root, id)
+    }
+
+    /// trash 内のエントリを物理削除する（dry-run ファースト）。
+    pub fn purge_trash(&self, ids: Option<&[String]>, dry_run: bool) -> Result<Vec<String>> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        crate::trash::purge_trash(&root, ids, dry_run)
+    }
+
     /// マイグレーションを実行
     #[deprecated(note = "async API を使用してください (KijukuBackend::migrate)")]
     pub fn migrate(&self) -> Result<()> {
+        if let Some(bm) = &self.backup_manager {
+            bm.create_pre_migrate_snapshot()?;
+        }
         let conn = self.conn.lock();
         migration::migrate(&conn)
     }
@@ -1045,6 +1163,9 @@ impl KijukuDB {
 #[async_trait::async_trait]
 impl KijukuBackend for KijukuDB {
     async fn migrate(&self) -> Result<()> {
+        if let Some(bm) = &self.backup_manager {
+            bm.create_pre_migrate_snapshot()?;
+        }
         migration::migrate_async(&self.exec).await
     }
 

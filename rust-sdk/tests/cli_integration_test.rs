@@ -35,6 +35,32 @@ fn execute_cli_command_with_env(db_path: &str, command: Value, env: &[(&str, &st
     serde_json::from_str(&stdout).expect(&format!("JSONパースに失敗: {}", stdout))
 }
 
+/// CLIサブコマンド（file/trash等）を --media-root 付きで実行し、1行JSONレスポンスを取得する。
+fn execute_cli_subcommand(db_path: &str, media_root: &str, sub_args: &[&str]) -> Value {
+    let output = Command::new("cargo")
+        .args(["run", "--bin", "kijuku-cli", "--", "--db", db_path, "--media-root", media_root])
+        .args(sub_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("CLIの起動に失敗");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout).expect(&format!("JSONパースに失敗: {}", stdout))
+}
+
+/// DB 専用サブコマンド（`--media-root` 不要・JSON を返さず人間向けメッセージを出すもの）を
+/// 実行し、stdout 文字列を返す。`sync-db` 等の検証用。
+fn execute_cli_db_subcommand(sub_args: &[&str]) -> String {
+    let output = Command::new("cargo")
+        .args(["run", "--bin", "kijuku-cli", "--"])
+        .args(sub_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("CLIの起動に失敗");
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
 #[test]
 fn test_cli_migrate() {
     let temp_file = NamedTempFile::new().unwrap();
@@ -784,4 +810,169 @@ fn test_cli_version_flag() {
         expected,
         stdout
     );
+}
+
+#[test]
+fn test_cli_file_cp_dry_run_and_apply() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+    let media_dir = TempDir::new().unwrap();
+    let media_root = media_dir.path().to_str().unwrap();
+    std::fs::write(media_dir.path().join("a.txt"), "hello").unwrap();
+
+    // dry-run（デフォルト）: applied=false・ファイル未作成
+    let resp = execute_cli_subcommand(db_path, media_root, &["file", "cp", "a.txt", "b.txt"]);
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["applied"], false);
+    assert!(!media_dir.path().join("b.txt").exists());
+
+    // --apply: applied=true・ファイル作成
+    let resp = execute_cli_subcommand(db_path, media_root, &["file", "cp", "a.txt", "b.txt", "--apply"]);
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["applied"], true);
+    let copied = std::fs::read_to_string(media_dir.path().join("b.txt")).unwrap();
+    assert_eq!(copied, "hello");
+}
+
+#[test]
+fn test_cli_file_rejects_traversal() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+    let media_dir = TempDir::new().unwrap();
+    let media_root = media_dir.path().to_str().unwrap();
+    std::fs::write(media_dir.path().join("a.txt"), "hello").unwrap();
+
+    // パストラバーサル: dst に ../ を含めると拒否
+    let resp = execute_cli_subcommand(db_path, media_root, &["file", "cp", "a.txt", "../escape.txt"]);
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"].as_str().unwrap().contains("media_cpエラー"));
+    assert!(!media_dir.path().parent().unwrap().join("escape.txt").exists());
+}
+
+#[test]
+fn test_cli_trash_roundtrip() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_path = temp_file.path().to_str().unwrap();
+    let media_dir = TempDir::new().unwrap();
+    let media_root = media_dir.path().to_str().unwrap();
+    std::fs::write(media_dir.path().join("target.txt"), "data").unwrap();
+
+    // trash へ移動（論理削除）
+    let resp = execute_cli_subcommand(db_path, media_root, &["trash", "move", "target.txt", "--reason", "cleanup"]);
+    assert_eq!(resp["success"], true);
+    let id = resp["data"].as_str().unwrap().to_string();
+    assert!(!media_dir.path().join("target.txt").exists());
+
+    // 一覧: 1件
+    let resp = execute_cli_subcommand(db_path, media_root, &["trash", "list"]);
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"].as_array().unwrap().len(), 1);
+
+    // 復元（元の位置へ）
+    let resp = execute_cli_subcommand(db_path, media_root, &["trash", "restore", &id]);
+    assert_eq!(resp["success"], true);
+    assert!(media_dir.path().join("target.txt").exists());
+
+    // purge（dry-run）: 対象なしで空配列
+    let resp = execute_cli_subcommand(db_path, media_root, &["trash", "purge", "--dry-run"]);
+    assert_eq!(resp["success"], true);
+}
+
+/// stdin `sync` 操作が prod(RO)→stg(RW) のフル複製を行う（設計 §4.2・TASK-50 C4）。
+/// データ・スキーマバージョンが stg に正しくコピーされることを検証する。
+#[test]
+fn test_cli_sync_replicates_prod_to_stg() {
+    let dir = TempDir::new().unwrap();
+    let prod = dir.path().join("prod.db");
+    let stg = dir.path().join("stg.db");
+    let prod_path = prod.to_str().unwrap();
+
+    // CLI 経由で prod を構築（migrate + データ）
+    execute_cli_command(prod_path, json!({"operation": "migrate", "params": {}}));
+    execute_cli_command(prod_path, json!({
+        "operation": "createMedia",
+        "params": { "data": { "title": "prod作品", "media_type": "comic" } }
+    }));
+    assert!(!stg.exists(), "sync 前は stg が存在しない");
+
+    // sync 操作（stdin）: prod → stg を明示
+    let resp = execute_cli_command(prod_path, json!({
+        "operation": "sync",
+        "params": { "from": prod_path, "to": stg.to_str().unwrap() }
+    }));
+    assert_eq!(resp["success"], true, "sync 成功: {:?}", resp);
+    assert_eq!(resp["data"]["prodPath"], prod_path);
+    assert_eq!(resp["data"]["stgPath"], stg.to_str().unwrap());
+
+    // stg を開いて prod のデータ・スキーマが複製されているか
+    assert!(stg.exists(), "sync 後は stg が存在する");
+    let find = execute_cli_command(stg.to_str().unwrap(), json!({
+        "operation": "findMedia",
+        "params": { "filter": {}, "options": null }
+    }));
+    assert_eq!(find["success"], true);
+    let arr = find["data"].as_array().unwrap();
+    assert_eq!(arr.len(), 1, "prod のメディアが1件複製される");
+    assert_eq!(arr[0]["title"], "prod作品");
+
+    let ver = execute_cli_command(stg.to_str().unwrap(), json!({
+        "operation": "getSchemaVersion",
+        "params": {}
+    }));
+    assert_eq!(ver["data"]["version"], 6, "スキーマバージョンも一致する");
+}
+
+/// stdin `sync` 操作で from == to は誤設定としてエラー（設計 §4.2）。
+#[test]
+fn test_cli_sync_rejects_same_path() {
+    let dir = TempDir::new().unwrap();
+    let same = dir.path().join("same.db");
+    let same_path = same.to_str().unwrap();
+    // DB を実在させる（migrate のみ）
+    execute_cli_command(same_path, json!({"operation": "migrate", "params": {}}));
+
+    let resp = execute_cli_command(same_path, json!({
+        "operation": "sync",
+        "params": { "from": same_path, "to": same_path }
+    }));
+    assert_eq!(resp["success"], false);
+    assert!(
+        resp["error"].as_str().unwrap().contains("same path"),
+        "same-path エラーのべき: {:?}",
+        resp
+    );
+}
+
+/// `sync-db` サブコマンドが prod→stg のフル複製を行う（設計 §4.2・TASK-50 C4）。
+#[test]
+fn test_cli_sync_db_subcommand_replicates() {
+    let dir = TempDir::new().unwrap();
+    let prod = dir.path().join("prod.db");
+    let stg = dir.path().join("stg.db");
+    let prod_path = prod.to_str().unwrap();
+
+    // CLI 経由で prod を構築
+    execute_cli_command(prod_path, json!({"operation": "migrate", "params": {}}));
+    execute_cli_command(prod_path, json!({
+        "operation": "createMedia",
+        "params": { "data": { "title": "prod作品", "media_type": "comic" } }
+    }));
+
+    let out = execute_cli_db_subcommand(&[
+        "sync-db",
+        "--from",
+        prod_path,
+        "--to",
+        stg.to_str().unwrap(),
+    ]);
+    assert!(out.contains("sync 完了"), "stdout: {}", out);
+    assert!(stg.exists(), "sync 後は stg が存在する");
+
+    // stg の内容確認
+    let find = execute_cli_command(stg.to_str().unwrap(), json!({
+        "operation": "findMedia",
+        "params": { "filter": {}, "options": null }
+    }));
+    assert_eq!(find["data"].as_array().unwrap().len(), 1);
+    assert_eq!(find["data"][0]["title"], "prod作品");
 }

@@ -24,6 +24,7 @@ fn test_backup_integration_with_kijukudb() {
             enabled: Some(true),
             ..Default::default()
         }),
+        media_root: None,
     };
 
     let db = KijukuDB::open_with_options(&db_path, options).unwrap();
@@ -269,6 +270,7 @@ fn test_backup_with_actual_database() {
             enabled: Some(true),
             ..Default::default()
         }),
+        media_root: None,
     };
 
     let db = KijukuDB::open_with_options(&db_path, options).unwrap();
@@ -739,4 +741,156 @@ fn test_set_backup_label_and_note() {
 
     // 存在しない id はエラー
     assert!(manager.set_backup_label("20990101000000-000", Some("x")).is_err());
+}
+
+/// migrate 実行前に `backup/tmp/` へ `-pre_migrate.db` が作られる（設計 §7.3・TASK-42 P0 Step2）。
+#[test]
+fn test_pre_migrate_snapshot_created() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("pmig.db");
+    let backup_dir = temp_dir.path().join("backups");
+    let options = DBOptions {
+        backup: Some(BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let db = KijukuDB::open_with_options(&db_path, options).unwrap();
+    db.migrate().unwrap();
+
+    let tmp_dir = backup_dir.join("tmp");
+    let entries: Vec<String> = std::fs::read_dir(&tmp_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        entries.iter().any(|n| n.contains("-pre_migrate.db")),
+        "pre_migrate snapshot が作られるべき: {:?}",
+        entries
+    );
+}
+
+/// `enabled=false` でも pre_migrate snapshot は常時作られる（設計 §7.3「migrate 前 snapshot 必須」・TASK-47 C1）。
+///
+/// `enabled` は自動バックアップの制御フラグであり、migrate 前の安全 snapshot とは独立。
+/// スキーマ破損時の即時巻き戻し（§8）の前提として、enabled に関わらず必ず退避する。
+#[test]
+fn test_pre_migrate_snapshot_created_even_when_disabled() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("pmig_off.db");
+    let backup_dir = temp_dir.path().join("backups_off");
+    let options = DBOptions {
+        backup: Some(BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(false),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let db = KijukuDB::open_with_options(&db_path, options).unwrap();
+    db.migrate().unwrap();
+
+    let tmp_dir = backup_dir.join("tmp");
+    let entries: Vec<String> = std::fs::read_dir(&tmp_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        entries.iter().any(|n| n.contains("-pre_migrate.db")),
+        "enabled=false でも pre_migrate snapshot は常時作られるべき（設計 §7.3）: {:?}",
+        entries
+    );
+}
+
+/// `copy_db_online`（関連関数）が任意 src→dst を Online Backup で完全コピーする（設計 §4.5・TASK-49 C3）。
+///
+/// BackupManager インスタンスに依存せず、src を RO で開いて dst を新規生成する。
+/// sync（prod→stg）・promote の双方の基盤となるファイルコピーの直接検証。
+#[test]
+fn test_copy_db_online_copies_arbitrary_src_to_dst() {
+    let temp_dir = TempDir::new().unwrap();
+    let src = temp_dir.path().join("src.db");
+    let dst = temp_dir.path().join("dst.db");
+
+    // src に DB + データを作成
+    {
+        let conn = rusqlite::Connection::open(&src).unwrap();
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", []).unwrap();
+        conn.execute("INSERT INTO t (v) VALUES (?1)", ["data-1"]).unwrap();
+        conn.execute("INSERT INTO t (v) VALUES (?1)", ["data-2"]).unwrap();
+    }
+    assert!(!dst.exists(), "コピー前は dst が存在しない");
+
+    BackupManager::copy_db_online(&src, &dst).unwrap();
+
+    // dst に同じデータがコピーされる
+    assert!(dst.exists(), "コピー後は dst が存在する");
+    let conn = rusqlite::Connection::open(&dst).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 2, "行数が一致する");
+    let v: String = conn
+        .query_row("SELECT v FROM t WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, "data-1", "レコード内容が一致する");
+}
+
+/// `create_pre_promote_snapshot` が promote 前に prod を `backup/tmp/` へ退避し（設計 §7.2/§4.5・TASK-47 C1）、
+/// 生成物がユーザー向け一覧（list_backups）から除外されることを検証する。
+#[test]
+fn test_pre_promote_snapshot_created_and_excluded_from_list() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("pprom.db");
+    let backup_dir = temp_dir.path().join("backups");
+    let options = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        enabled: Some(true),
+        ..Default::default()
+    };
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", []).unwrap();
+    }
+    let manager = BackupManager::new(&db_path, options).unwrap();
+
+    let snapshot = manager.create_pre_promote_snapshot().unwrap();
+    assert!(snapshot.is_some(), "pre_promote snapshot パスが返るべき");
+    let path = snapshot.unwrap();
+    assert!(
+        path.contains("-pre_promote.db"),
+        "ファイル名に -pre_promote を含むべき: {}",
+        path
+    );
+    assert!(
+        std::path::Path::new(&path).exists(),
+        "snapshot ファイルが実在する"
+    );
+
+    // tmp/ に pre_promote が作られる
+    let tmp_dir = backup_dir.join("tmp");
+    let entries: Vec<String> = std::fs::read_dir(&tmp_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        entries.iter().any(|n| n.contains("-pre_promote.db")),
+        "tmp/ に pre_promote snapshot が作られるべき: {:?}",
+        entries
+    );
+
+    // ユーザー向け一覧（list_backups）からは除外される（運用用ロールバックファイル）
+    let backups = manager.list_backups().unwrap();
+    assert!(
+        backups
+            .iter()
+            .all(|b| !b.path.to_string_lossy().contains("pre_promote")),
+        "pre_promote は list_backups から除外されるべき（{} 個のバックアップ）",
+        backups.len()
+    );
 }

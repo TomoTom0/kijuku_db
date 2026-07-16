@@ -242,6 +242,14 @@ export interface DBOptions {
    * - BackupOptions: 指定の内容で有効
    */
   backup?: BackupOptions | null;
+  /**
+   * media root ディレクトリ（ファイル操作APIのサンドボックス境界）。
+   *
+   * このディレクトリ配下のみファイル操作（cp/mv/sync/upload/download 等）を許可し、
+   * 外への脱出（`..`・絶対パス・シンボリックリンク経由）を拒否する。
+   * 未設定（undefined）の場合、ファイル操作APIはエラーで拒否される。
+   */
+  mediaRoot?: string;
 }
 
 /**

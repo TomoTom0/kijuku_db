@@ -4,18 +4,31 @@
 
 ```
 rust-sdk/tests/              # Rust SDK のインテグレーションテスト
-  backup_test.rs             - バックアップ機能（scope/kind/auto-records.csv/restore）
+  backup_test.rs             - バックアップ機能（scope/kind/auto-records.csv/restore/pre_migrate・pre_promote snapshot/copy_db_online）
+  cli_integration_test.rs    - CLIコマンドのインテグレーションテスト（file/trash/sync-db サブコマンド）
+  d1_test.rs                 - D1バックエンドのテスト
+  db_options_test.rs         - DBOptions（WAL・busy_timeout・readonly 時の WAL skip）
   integration_test.rs        - CRUD・タグ・属性などのDB操作
-  cli_integration_test.rs    - CLIコマンドのインテグレーションテスト
-  remote_test.rs             - リモートDB接続テスト
+  remote_test.rs             - リモートDB接続テスト（--target 配線）
+  sync_test.rs               - sync（prod→stg フル複製・replicate_db/copy_db_online）
 
-rust-sdk/src/config.rs       - config.toml 読み込み（#[cfg(test)] でユニットテスト内蔵）
+rust-sdk/src/                # 内蔵ユニットテスト（#[cfg(test)]）
+  config.rs                  - config.toml 読み込み・target解決（Target/resolve_target）
+  file_ops.rs                - media root 配下ファイル操作（cp/mv/sync）
+  trash.rs                   - 論理削除（move/list/restore/purge）
+  media_path.rs              - media path 安全化・sandbox 境界
 
 ts-sdk/test/
   unit/                      # 純粋関数・モックのテスト（I/O なし）
     create-database.test.ts  - createDatabase() の分岐ロジック
+    db-options.test.ts       - DBOptions/open 挙動（WAL・readonly skip・migrate拒否・pre_migrate snapshot）
     error-handling.test.ts   - エラークラスとハンドラ関数
+    file-ops.test.ts         - media root 配下ファイル操作（cp/mv/sync・dry-run）
+    media-path.test.ts       - media path 安全化・sandbox 境界
     parse-db-path.test.ts    - parseDbPath() のパース処理
+    remote-target.test.ts    - RemoteKijukuDB の --target / stgDbPath 配線
+    target-resolution.test.ts - resolveTarget/parseTarget の target 解決
+    trash.test.ts            - 論理削除（move/list/restore/purge）
   integration/               # 実SQLite・実ファイルシステムを使うテスト
     attribute.test.ts        - メディア追加属性（CRUD・削除）
     backup.test.ts           - BackupManager・BackupSelector
@@ -25,6 +38,7 @@ ts-sdk/test/
     errors.test.ts           - エラーケース
     migration.test.ts        - マイグレーション・スキーマバージョン
     search.test.ts           - 検索・フィルタ・ソート・ページネーション
+    sync.test.ts             - sync（prod→stg フル複製・replicateDb）
     tag.test.ts              - タグCRUD・メディアへの紐付け・使用統計
     thumbnail.test.ts        - checkThumbnail・updateThumbnail・resolveThumbnailPath
     transaction.test.ts      - トランザクション
@@ -80,6 +94,12 @@ cd rust-sdk && cargo test --test backup_test
 | エラーハンドリングの変更 | `ts-sdk/test/unit/error-handling.test.ts`, `ts-sdk/test/integration/errors.test.ts` |
 | CLIコマンドの変更 | `rust-sdk/tests/cli_integration_test.rs`, `ts-sdk/test/integration/workflow.test.ts` |
 | リモートDB接続の変更 | `rust-sdk/tests/remote_test.rs`, `ts-sdk/test/e2e/sdk-remote.test.ts` |
+| ファイル操作（media root内 cp/mv/sync）の変更 | `rust-sdk/src/file_ops.rs`（内蔵）, `ts-sdk/test/unit/file-ops.test.ts`, `rust-sdk/tests/cli_integration_test.rs` |
+| trash（論理削除）機能の変更 | `rust-sdk/src/trash.rs`（内蔵）, `ts-sdk/test/unit/trash.test.ts`, `rust-sdk/tests/cli_integration_test.rs` |
+| media path 安全化の変更 | `rust-sdk/src/media_path.rs`（内蔵）, `ts-sdk/test/unit/media-path.test.ts` |
+| target解決・本番DB保護（readonly/migrate保全）の変更 | `rust-sdk/src/config.rs`（内蔵）, `ts-sdk/test/unit/target-resolution.test.ts`, `rust-sdk/tests/db_options_test.rs` |
+| DBOptions/open 挙動（WAL・readonly）の変更 | `ts-sdk/test/unit/db-options.test.ts`, `rust-sdk/tests/db_options_test.rs` |
+| sync/DB複製（prod→stg）の変更 | `rust-sdk/tests/sync_test.rs`, `rust-sdk/tests/backup_test.rs`, `ts-sdk/test/integration/sync.test.ts`, `rust-sdk/tests/cli_integration_test.rs` |
 
 ## 命名規則
 
