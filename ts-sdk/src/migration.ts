@@ -278,3 +278,29 @@ export function isForeignKeysEnabled(db: Database.Database): boolean {
   const row = db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number };
   return row.foreign_keys === 1;
 }
+
+/**
+ * `PRAGMA integrity_check` の結果（observe gate 用・設計 §3.4・TASK-54）。
+ * 正常時は "ok" 1行、異常時はエラー行が複数返る。全行を `; ` 区切りで結合して返す。
+ */
+export function integrityCheck(db: Database.Database): string {
+  const rows = db.prepare('PRAGMA integrity_check').all() as {
+    integrity_check: string;
+  }[];
+  return rows.map((r) => r.integrity_check).join('; ');
+}
+
+/** 外部キー制約違反（`PRAGMA foreign_key_check`・observe gate 用・設計 §3.4・TASK-54）。空 = 違反なし。 */
+export interface FkViolation {
+  table: string;
+  rowid: number;
+  parent: string | null;
+  fkid: number;
+}
+
+/**
+ * `PRAGMA foreign_key_check` の違反リスト（observe gate 用・設計 §3.4・TASK-54）。空 = 違反なし。
+ */
+export function foreignKeyCheck(db: Database.Database): FkViolation[] {
+  return db.prepare('PRAGMA foreign_key_check').all() as FkViolation[];
+}

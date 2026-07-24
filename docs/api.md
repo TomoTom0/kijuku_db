@@ -1084,6 +1084,26 @@ backups.forEach((backup) => {
 
 ---
 
+#### `listPreStashes(): BackupInfo[]`
+
+pre-stash（即時復旧用ロールバックファイル）の一覧を取得します（設計 [§8](./design/db-protection.md)）。`listBackups` は pre-stash を除外するため、promote/(b)操作が返す `preStashPath` を失った場合の発見経路として使います。
+
+**パラメータ:** なし
+
+**戻り値:** `BackupInfo[]` - pre-stash 情報の配列（id 降順）。`path` はそのまま `BackupSelector.byPath()` で `restore` に渡して prod を即時復旧できます。
+
+**使用例:**
+
+```typescript
+const stashes = db.listPreStashes();
+// path を byPath で restore に渡し prod を即時復旧（§8）
+if (stashes[0]) {
+  db.restore(BackupSelector.byPath(stashes[0].path));
+}
+```
+
+---
+
 #### `backupWithLabel(label: string): Promise<string | null>`
 
 ラベル付き手動バックアップを実行します。
@@ -1634,6 +1654,24 @@ backups.forEach(b => console.log(`${b.name} (${b.scope})`));
 
 ---
 
+#### `listPreStashes(): Promise<BackupInfo[]>`
+
+リモートDBの pre-stash（即時復旧用ロールバックファイル）一覧を取得します（設計 [§8](./design/db-protection.md)）。`listBackups` は pre-stash を除外するため、promote/(b)操作が返す `preStashPath` を失った場合の発見経路として使います。
+
+**戻り値:** `Promise<BackupInfo[]>` - pre-stash 情報の配列（id 降順）。`path` はそのまま `RemoteBackupSelector` の `{ type: 'byPath', path }` で `restore` に渡して prod を即時復旧できます。
+
+**使用例:**
+
+```typescript
+const stashes = await remoteDb.listPreStashes();
+// path を byPath で restore に渡し prod を即時復旧（§8）
+if (stashes[0]) {
+  await remoteDb.restore({ type: 'byPath', path: stashes[0].path });
+}
+```
+
+---
+
 #### `restore(selector?: RemoteBackupSelector, timeoutMs?: number): Promise<string>`
 
 リモートDBをバックアップから復元します。
@@ -1729,6 +1767,7 @@ Rust SDKのメソッドはsnake_caseで、戻り値が`Result<T>`で包まれま
 | `backupWithLabel(label)` | `backup_with_label(&self, label: &str)` | |
 | `restore(selector)` | `restore(&mut self, selector: &BackupSelector) -> Result<PathBuf>` | `&mut self` |
 | `listBackups()` | `list_backups(&self) -> Result<Vec<BackupInfo>>` | |
+| `listPreStashes()` | `list_pre_stashes(&self) -> Result<Vec<BackupInfo>>` | pre-stash 発見経路（§8） |
 | `getBackupManager()` | `get_backup_manager(&self) -> Option<&BackupManager>` | |
 | `getMediaFromBackup(id, sel)` | `get_media_from_backup(&self, id: i64, selector: &BackupSelector)` | |
 | `findMediaFromBackup(f, o, s)` | `find_media_from_backup(&self, filter: &MediaFilter, options: Option<&QueryOptions>, selector: &BackupSelector)` | |

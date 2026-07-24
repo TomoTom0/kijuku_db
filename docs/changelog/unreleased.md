@@ -2,7 +2,34 @@
 
 ## Breaking
 
+### (b) 制限操作（mediaMv/purgeTrash/restore）を stg で拒否（TASK-59）
+
+- 設計 §9 の操作階層化を実装。`mediaMv`/`purgeTrash`/`restore` を破壊的/全床上書きの **(b) stg 制限操作** に分類し、stg（既定 `--target stg`）では環境が**拒否**するようになった（設計 §9.2）
+- 影響: これらの操作は stg では実行できなくなった。prod 直接 `--target prod` で dry-run+trash+pre-stash gate 付きで実行するか、stg のリセットは `sync`（prod→stg 再複製）を使用すること
+- `deleteMedia` は DB-only のまま (a)（FS 物理削除は `moveToTrash`(a) → `purgeTrash`(b) の trash 流で扱い・新規 FS 削除ロジックなし）
+
 ## Added
+
+### 操作階層化 (a)/(b) と (b) 操作の prod 直接 gate（TASK-59 P2-C4）
+
+本番DB保護 P2。設計 §9 の **(a) stg許可 / (b) stg制限** の操作階層化と、(b) 操作の prod 直接実行時の機械的 gate を実装（人間承認不要・環境が担保・§3.2/§5.2/§9.2）。
+
+- **操作分類**（`classify_operation`・破壊度基準）: (b)=`mediaMv`/`purgeTrash`/`restore`。(a)=CRUD/tag/attr/hash/upload + `mediaCp`/`mediaSync`/`moveToTrash`/`restoreFromTrash`/`backup`/`setBackupLabel`/`setBackupNote`。`migrate` は §15-5 で P3（TASK-45）扱いまで現状維持（接続時 auto-migrate + pre_migrate_snapshot）
+- **dispatch gate**（`cli.rs` stdin ハンドラ）: stg+(b) 拒否・prod RO 読込で (a)/(b) 書込拒否・`--target prod` で (b) は prod 直接経路へ（readonly backend を使わず `ProdRwScope` で prod RW を一時取得）
+- **(b) gate** = dry-run + trash + pre-stash（操作種別で適用サブセット切替・§15-13 解決）: DB 層（`restore`）は `ProdRwScope` の排他ロック + pre-stash（§8 即時巻き戻し）→ prod RW 上書き。FS 層（`mediaMv`/`purgeTrash`）は dry-run ファースト + trash 経由（既存 `file_ops`/`trash`）
+- `restore` に `dryRun` param 追加: `true` で復元差分（`diff_with_backup`）を返し prod 不変。Rust CLI/TS Remote で wire
+- **TS parity**: `assertNotStgRestricted` で (b) メソッドを stg で拒否（Local 直接利用の構造的保護）。prod 直接 (b) は Remote（Rust CLI）経由が主経路
+
+**ファイル:** `rust-sdk/src/bin/cli.rs`（`classify_operation`・dispatch gate・`handle_b_operation_prod`・restore dryRun）, `rust-sdk/tests/cli_integration_test.rs`, `ts-sdk/src/{index,remote}.ts`, `ts-sdk/test/unit/readonly-guard.test.ts`, `ts-sdk/test/integration/backup.test.ts`, `docs/design/db-protection.md`（§14.6/§15-13）, `docs/usage/cli/README.md`
+
+### promote の backupOpts を CLI/TS wire で受け渡し可能にし pre-stash 先をカスタマイズ(TASK-62)
+
+- promote の `backupOpts` が `None` 固定だった（`BackupOptions` 系が serde 未実装のため）を解除し、Rust CLI / TS Local / TS Remote の全経路で受け渡し可能にした
+- `BackupOptions`/`RetentionPolicy`/`RetentionTier` に `Serialize`/`Deserialize`（`rename_all="camelCase"`・TS camelCase wire と整合）を追加。TS `BackupOptions` を Rust と完全 parity 化（`busyTimeoutMs`/`retryIntervalsMs` を追加）
+- `backupOpts.backupDir` で pre-stash（promote 前 prod の退避・§8 即時復旧の戻し先）の作成先をカスタマイズ可能（§7.2）。pre-stash 自体は `backupOpts`・`enabled` にかかわらず常時実行
+- CLI: stdin `promote` 操作の params に `backupOpts` を追加。TS CLI には `--backup-opts <json>` フラグを追加（`as` キャスト不使用の型ガードで安全に parse）
+
+**ファイル:** `rust-sdk/src/{backup,bin/cli}.rs`, `ts-sdk/src/{backup,index,remote,cli}.ts`, `rust-sdk/tests/{promote_test,cli_integration_test}.rs`, `ts-sdk/test/integration/promote.test.ts`, `docs/usage/cli/README.md`
 
 ### kijuku-cli に --version / -V フラグを追加(TASK-20)
 
@@ -41,6 +68,49 @@
 - CLI `set-backup-label` / `set-backup-note` サブコマンド、stdin/Remote 対応
 
 **ファイル:** `rust-sdk/src/{backup,lib,diff,bin/cli,remote,types,attribute,hash,tag}.rs`, `ts-sdk/src/{backup,index,diff,remote,types,attribute,hash,tag}.ts`, `docs/design/backup.md`
+
+### 読込先切替 `--read-source` と readonly 書込拒否ガードを追加(TASK-52)
+
+本番DB保護の読込先切替（TASK-43 P1 残A）。prod を readonly で安全に読める読込専用セッションを追加し、書込操作を構造的に拒否。
+
+- CLI `--read-source prod|stg`（+ 環境変数 `KIJUKU_READ_SOURCE`）。優先順位: CLI > env > デフォルト `stg`。read-source 指定時は target に折り畳む（方式A）、`prod` で readonly open + migrate スキップ
+- readonly セッションの書込拒否: CLI は `is_write_operation` で stdin の書込操作を事前拒否、TS SDK は `assertWritable` で32書込メソッドにガード（CLI を経由しないローカル `KijukuDB` 直接利用があるため TS 側ガードが必須）
+- `effective_target()` で read_source をリモート伝達（リモート CLI に `--target` として渡し readonly を導出・設計 §3.5/§13）
+
+**ファイル:** `rust-sdk/src/{remote,bin/cli}.rs`, `ts-sdk/src/{config,index}.ts`, `rust-sdk/tests/cli_integration_test.rs`, `ts-sdk/test/unit/target-resolution.test.ts`
+
+### prod/stg 差分表示 `diff-prod-stg`（要約 + LLM explanation prompt）を追加(TASK-53)
+
+本番DB保護の差分可視化（TASK-43 P1 残B）。prod(RO) と stg（現在DB）を比較し、promote 判断に必要な差分を stg 編集視点で表示する。
+
+- `KijukuDB::diff_with_prod(prod_path, options)`: prod を readonly 別接続で開き snapshot 比較（設計 §15-8）。`compute_diff(current=prod, backup=stg)` でセマンティクス反転（added=stg新規=promoteでprod追加・removed=prodのみ=promoteでprod削除・changed=両方で異なる=promoteで上書き）
+- CLI `diff-prod-stg` サブコマンド（`--prod`/`--detail` 既定 `limited=20`/`--summarize`/`--prompt`）。`--summarize` でテーブル別件数・分布、`--prompt` で LLM レビュー用 explanation prompt を stdout 出力（コピペ可能）
+- 新データ構造 `ProdStgDiffSummary`（counts/totals/distribution）+ 純粋関数 `summarize_diff`/`build_diff_explanation_prompt`。分布は media（byType/byArtistTop/byFlagExist）・media_tags（byTagTop）・attributes（byKey）・hashes（byFilenameTop）、上位 N=10
+- リモート operation `diffProdStg`、TS SDK ミラー（`diffWithProd`/`summarizeDiff`/`buildDiffExplanationPrompt`）。純粋関数はクライアント側計算（設計 §15-15 決定）
+
+**ファイル:** `rust-sdk/src/{lib,diff,remote,bin/cli}.rs`, `ts-sdk/src/{types,diff,index,remote}.ts`, `rust-sdk/tests/{diff_prod_stg_test,cli_integration_test}.rs`, `ts-sdk/test/{unit/diff-summary,unit/diff-prompt,integration/diff-prod-stg}.test.ts`
+
+### 機械的 promote gate `observe` を追加(TASK-54)
+
+本番DB保護の変更後健全性確認（TASK-43 P1 残C）。stg 編集内容が prod に promote してよいか、客観的かつ機械的に判定する gate（人間 gate でない・設計 §3.4/§4.4）。
+
+- `KijukuDB::observe(prod_path, options)`: `diff_with_prod` と同等の差分を計算し `summarize_diff` で要約した上で gate を評価。self は stg（RW）、prod は readonly 別接続（設計 §15-8）。gate 用 DB 検査（integrity/FK/schema_version/golden）は stg 接続を1ロックで実行
+- 評価する gate（`diff::evaluate_gate` 純粋関数）: `PRAGMA integrity_check` == ok / 外部キー整合性（`foreign_key_check` 空 + FK 有効）/ prod-stg の `schema_version` 一致 / 件数・差分上限（`summary.totals` vs `GateConfig.max_added|max_removed|max_changed`）/ 運用者定義 golden assertion（SQL 結果を `expected_min`/`expected_max` で検証）
+- `ObserveResult.passed` が全 gate 合格を表す（promote 可否の客観判定）。fast-promote は導入せず全変更フル gate 統一（安全性優先）
+- CLI `observe` サブコマンド（`--prod`/`--detail` 既定 `summary`/`--max-added`/`--max-removed`/`--max-changed`/`--json`）。リモート operation `observe`、TS SDK ミラー（`observe`/`evaluateGate`/`GateConfig`/`GoldenAssertion`/`ObserveResult`）
+
+**ファイル:** `rust-sdk/src/{lib,diff,remote,bin/cli}.rs`, `ts-sdk/src/{types,diff,index,remote}.ts`, `rust-sdk/tests/observe_test.rs`
+
+### stg 排他（global advisory lock）と sync 元 prod revision 記録を追加(TASK-55)
+
+本番DB保護 P1 の最終ピース（TASK-43・設計 §15-11）。複数セッション/LLM の stg 同時編集による衝突と、prod が同期後に更新された stale な stg の promote を防止する。排他方式は global advisory lock（session別stg は不採用）。
+
+- **排他ロック**: `StgLock::acquire(stg_path)`（RAII・新モジュール `stg_session`）。書込系が `<stg>.lock` の排他ロックを取得。Rust は `fs2` の advisory lock（プロセス終了/クラッシュで OS が自動解放・stale なし）。TS は PID ベースロックファイル（`O_EXCL` 作成 + holder PID 生存確認で stale 回収・新規依存なし）。二重取得は `KijukuError::StgBusy` / `StgBusyError`
+- **sync（revision 記録）**: `replicate_db`/`replicateDb` が先頭でロック取得し、コピー後に sync 元 prod の指紋 `ProdRevision`（schema_version + media/tags/media_tags/media_attributes/media_hashes の件数/max-id）を `<stg>.meta.json` に原子書き込み（tmp→rename・backup-meta パターン）。`compute_prod_revision` で算出
+- **stg 編集セッション**: `KijukuDB::acquire_stg_lock()` / `acquireStgLock()` がインスタンス lifetime でロック保持（`close()`/Drop で解放）。CLI `build_backend` は writable（!readonly）セッションで自動取得
+- **revision 活用（observe gate）**: observe が新 gate `prod_sync_revision` を追加。`<stg>.meta.json` の記録 revision と現 prod revision を比較し、drift（sync 後の prod 更新）があれば不合格 → re-sync 要求。meta なし（旧 stg）は後方互換でスキップ
+
+**ファイル:** `rust-sdk/src/{stg_session,error,lib,bin/cli}.rs`, `ts-sdk/src/{stg-session,index}.ts`, `rust-sdk/Cargo.toml`, `rust-sdk/tests/stg_session_test.rs`, `ts-sdk/test/integration/stg-lock.test.ts`
 
 ## Fixed
 

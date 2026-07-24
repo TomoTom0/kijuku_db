@@ -2,9 +2,10 @@
 /**
  * Kijuku DB CLI ツール
  */
-import { KijukuDB, RemoteKijukuDB } from './index.js';
+import { KijukuDB, RemoteKijukuDB, type PromoteOutcome } from './index.js';
 import { resolveTarget, parseTarget, systemEnv } from './config.js';
 import type { Target } from './config.js';
+import type { BackupOptions } from './backup.js';
 import { startServer } from './server/index.js';
 import fs from 'fs';
 import path from 'path';
@@ -15,6 +16,7 @@ const COMMANDS = {
   search: 'メディアを検索',
   import: 'JSON/CSV/TSVファイルからメディアをインポート',
   server: 'Web GUIサーバーを起動',
+  promote: 'stg→prod への反映 (promote gate 通過後・--prod <prodDbPath> [--backup-opts <json>])',
   docs: 'SDK利用ガイドを表示 (docs [overview|ts|rust|api])',
   help: 'ヘルプを表示',
 };
@@ -117,6 +119,7 @@ function showHelp(): void {
   console.log('  --db <path>              データベースファイルのパス（デフォルト: ./kijuku.db）');
   console.log('                           リモートDB: host:path 形式（例: as5202:/home/user/kijuku.db）');
   console.log('  --target <prod|stg>      操作対象DB。prod は readonly + migrate skip（設計 §13・既定 stg）');
+  console.log('  --read-source <prod|stg> 読込先DB。prod 指定で prod RO 読込専用セッション（設計 §3.5・既定は target に従う）');
   console.log('  --additional-columns <cols>  追加カラムのリスト（カンマ区切り、importコマンドのみ）');
   console.log('  --port <number>          サーバーのポート番号（デフォルト: 40001、serverコマンドのみ）');
   console.log('  --password <password>    認証パスワード（省略時は自動生成、serverコマンドのみ）');
@@ -179,9 +182,19 @@ interface CliDbResolution {
 }
 
 function resolveCliDb(options: Record<string, string>): CliDbResolution {
-  const useTarget = !!(options.target || systemEnv('KIJUKU_TARGET'));
+  const useTarget = !!(
+    options.target ||
+    options.readSource ||
+    systemEnv('KIJUKU_TARGET') ||
+    systemEnv('KIJUKU_READ_SOURCE')
+  );
   if (useTarget) {
-    const r = resolveTarget(parseTarget(options.target), options.db, systemEnv);
+    const r = resolveTarget(
+      parseTarget(options.target),
+      options.db,
+      parseTarget(options.readSource),
+      systemEnv,
+    );
     return {
       dbPath: r.dbPath,
       readonly: r.readonly,
@@ -300,6 +313,83 @@ async function runMigrate(options: Record<string, string>): Promise<void> {
       console.log(`マイグレーション完了 (バージョン: ${version})`);
 
       db.close();
+    }
+  } catch (error) {
+    console.error('エラー:', error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+}
+
+/**
+ * promoteコマンドを実行（stg→prod 反映・設計 §4.5・TASK-58/62）
+ *
+ * `--db` に stg、`--prod` に prod DB パスを指定。gate 合格で prod を上書きし pre-stash を作る。
+ * gate 不合格時は prod を触らず終了（PromoteGateFailedError）。
+ * `--backup-opts <json>` で pre-stash 先（`backupDir` 等）をカスタマイズ（§7.2）。
+ */
+
+/** `--backup-opts` の JSON が BackupOptions として妥当か（as キャスト不使用・TASK-62）。 */
+function isBackupOptions(v: unknown): v is BackupOptions {
+  // 全フィールド省略可能なのでオブジェクトであることのみ検証。各フィールドの型検証は
+  // local では BackupManager・remote では Rust serde に委譲する。
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** `--backup-opts <json>` を BackupOptions に安全にパース（未指定・`true` は undefined）。 */
+function parseBackupOpts(raw: string | undefined): BackupOptions | undefined {
+  if (raw === undefined || raw === 'true') return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.error('エラー: --backup-opts は有効な JSON オブジェクトを指定してください');
+    process.exit(1);
+  }
+  if (!isBackupOptions(parsed)) {
+    console.error('エラー: --backup-opts は JSON オブジェクトを指定してください');
+    process.exit(1);
+  }
+  return parsed;
+}
+
+async function runPromote(options: Record<string, string>): Promise<void> {
+  const res = resolveCliDb(options);
+  const dbPath = res.dbPath;
+  const parsed = parseDbPath(dbPath);
+  const prodPath = options.prod;
+
+  if (!prodPath) {
+    console.error('エラー: --prod <prodDbPath> が必要です（promote 先の prod DB パス）');
+    process.exit(1);
+  }
+  if (res.readonly) {
+    console.error('エラー: promote は readonly セッションから実行できません（--db に stg を指定してください）');
+    process.exit(1);
+  }
+
+  // pre-stash 先のカスタマイズ（§7.2）。省略時はデフォルト tmp/ のみ。
+  const backupOpts = parseBackupOpts(options['backup-opts']);
+
+  console.log(`promote: stg=${dbPath} → prod=${prodPath}`);
+
+  let outcome: PromoteOutcome;
+  try {
+    if (parsed.isRemote) {
+      const db = new RemoteKijukuDB({
+        sshHost: parsed.sshHost!,
+        dbPath: parsed.remotePath,
+        target: res.target,
+      });
+      outcome = await db.promote({ prodDbPath: prodPath, backupOpts });
+    } else {
+      const verbose = options.verbose === 'true';
+      const db = new KijukuDB(parsed.localPath!, { verbose });
+      outcome = await db.promote(prodPath, {}, backupOpts);
+      db.close();
+    }
+    console.log(`promote 完了 (gate passed: ${outcome.observe.passed})`);
+    if (outcome.preStashPath) {
+      console.log(`pre-stash: ${outcome.preStashPath}`);
     }
   } catch (error) {
     console.error('エラー:', error instanceof Error ? error.message : error);
@@ -554,6 +644,9 @@ async function main(): Promise<void> {
       break;
     case 'server':
       await runServer(options);
+      break;
+    case 'promote':
+      await runPromote(options);
       break;
     case 'docs':
       showDocs(options);

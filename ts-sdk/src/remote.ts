@@ -21,9 +21,12 @@ import type {
   ComputeHashResult,
   BackupDiff,
   DiffDetail,
+  ObserveOptions,
+  ObserveResult,
+  PromoteOutcome,
 } from './types.js';
 import type { UpdateExistOptions, UpdateExistResult } from './update_exist.js';
-import type { BackupInfo, BackupScope, BackupKind, BackupMetaEntry } from './backup.js';
+import type { BackupInfo, BackupScope, BackupKind, BackupMetaEntry, BackupOptions } from './backup.js';
 import type { ThumbnailOptions, CheckThumbnailResult, UpdateThumbnailResult } from './types.js';
 import type { FileOpOptions, FileOpResult } from './file_ops.js';
 import { defaultFileOpOptions } from './file_ops.js';
@@ -37,7 +40,21 @@ import type { Target } from './config.js';
 export type RemoteBackupSelector =
   | { type: 'latest' }
   | { type: 'nth'; n: number }
-  | { type: 'byId'; id: string };
+  | { type: 'byId'; id: string }
+  | { type: 'byPath'; path: string };
+
+/** リモート CLI が返す BackupInfo の生 JSON 形状（listBackups/listPreStashes で共有）。 */
+type RemoteBackupInfoRaw = {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: number;
+  scope: string;
+  kind: { type: string; baseId?: string };
+  label?: string;
+  labelSource?: string;
+  note?: string;
+};
 
 /**
  * リモート接続設定
@@ -958,18 +975,27 @@ export class RemoteKijukuDB {
       operation: 'listBackups',
       params: {},
     });
-    const data: Array<{
-      id: string;
-      name: string;
-      path: string;
-      createdAt: number;
-      scope: string;
-      kind: { type: string; baseId?: string };
-      label?: string;
-      labelSource?: string;
-      note?: string;
-    }> = this.checkResponse(response);
-    return data.map((item) => ({
+    const data: RemoteBackupInfoRaw[] = this.checkResponse(response);
+    return data.map((item) => this.convertBackupInfoFromRemote(item));
+  }
+
+  /**
+   * pre-stash（即時復旧用ロールバックファイル）一覧を取得（設計 §8）。
+   * promote/(b)操作が返す preStashPath を呼出側が失った場合の発見経路。
+   * 戻り値の path はそのまま RemoteBackupSelector の byPath で restore に渡せる。
+   */
+  async listPreStashes(): Promise<BackupInfo[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'listPreStashes',
+      params: {},
+    });
+    const data: RemoteBackupInfoRaw[] = this.checkResponse(response);
+    return data.map((item) => this.convertBackupInfoFromRemote(item));
+  }
+
+  /** リモート CLI の BackupInfo JSON を BackupInfo に変換（listBackups/listPreStashes で共有）。 */
+  private convertBackupInfoFromRemote(item: RemoteBackupInfoRaw): BackupInfo {
+    return {
       id: item.id,
       name: item.name,
       path: item.path,
@@ -981,7 +1007,7 @@ export class RemoteKijukuDB {
       label: item.label,
       labelSource: (item.labelSource ?? 'filename') as BackupInfo['labelSource'],
       note: item.note,
-    }));
+    };
   }
 
   // ========== メディアハッシュ操作 ==========
@@ -1110,9 +1136,24 @@ export class RemoteKijukuDB {
   }
 
   /**
-   * バックアップを復元
+   * バックアップを復元（(b) 制限操作・設計 §9.2）。`config.target='prod'` の前提で prod 直接経路
+   * （ProdRwScope + pre-stash gate）で実行する（target=stg のまま呼ぶと (b) 操作として CLI 側で拒否される）。
+   * `dryRun: true` で復元差分を返し prod 不変（§15-13）。
    */
-  async restore(selector: RemoteBackupSelector = { type: 'latest' }, timeoutMs?: number): Promise<string> {
+  async restore(
+    selector?: RemoteBackupSelector,
+    timeoutMs?: number,
+  ): Promise<string>;
+  async restore(
+    selector: RemoteBackupSelector,
+    timeoutMs: number | undefined,
+    dryRun: true,
+  ): Promise<BackupDiff>;
+  async restore(
+    selector: RemoteBackupSelector = { type: 'latest' },
+    timeoutMs?: number,
+    dryRun = false,
+  ): Promise<string | BackupDiff> {
     await this.connect();
     try {
       const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
@@ -1121,10 +1162,13 @@ export class RemoteKijukuDB {
       const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes) * 2;
       const response = await this.executeRemoteCommand({
         operation: 'restore',
-        params: { selector },
+        params: { selector, dryRun },
       }, resolvedTimeoutMs);
       const data = this.checkResponse(response);
-      return data.path;
+      if (dryRun) {
+        return data.diff as BackupDiff;
+      }
+      return data.path as string;
     } finally {
       await this.disconnect();
     }
@@ -1172,6 +1216,83 @@ export class RemoteKijukuDB {
         params: { selector: params.selector, options: params.options },
       }, resolvedTimeoutMs);
       return this.checkResponse(response) as BackupDiff;
+    } finally {
+      await this.disconnect();
+    }
+  }
+  /**
+   * prod(RO) と現在DB(stg) の差分を取得（promote 判断用・設計 §4.4・TASK-53）。
+   * リモート CLI は self=stg 起動を想定し、`prodDbPath` で prod を別途指定する
+   * （build_remote_command は --db を1つしか渡せないため・設計 §4.2/§4.4）。
+   * `prodDbPath` 省略時は CLI 側で prod target のデフォルトパスを解決する。
+   */
+  async diffWithProd(
+    params: { prodDbPath?: string; options?: { detail?: DiffDetail } } = {},
+    timeoutMs?: number,
+  ): Promise<BackupDiff> {
+    await this.connect();
+    try {
+      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
+      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
+      const response = await this.executeRemoteCommand({
+        operation: 'diffProdStg',
+        params: { prodDbPath: params.prodDbPath, options: params.options },
+      }, resolvedTimeoutMs);
+      return this.checkResponse(response) as BackupDiff;
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  /**
+   * stg と prod を比較し機械的 promote gate を評価（promote 可否・設計 §3.4/§4.4・TASK-54）。
+   * リモート CLI の `observe` operation を呼び、`ObserveResult` を受け取る。
+   */
+  async observe(
+    params: { prodDbPath?: string; options?: ObserveOptions } = {},
+    timeoutMs?: number,
+  ): Promise<ObserveResult> {
+    await this.connect();
+    try {
+      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
+      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
+      const response = await this.executeRemoteCommand(
+        {
+          operation: 'observe',
+          params: { prodDbPath: params.prodDbPath, options: params.options },
+        },
+        resolvedTimeoutMs,
+      );
+      return this.checkResponse(response) as ObserveResult;
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  /**
+   * stg→prod へ反映（promote・設計 §4.5・TASK-58/62）。
+   * リモート CLI の `promote` operation を呼び、`PromoteOutcome` を受け取る。
+   * gate 不合格時はリモートから error 文字列が返り `checkResponse` が素の Error を throw する
+   * （Local の `PromoteGateFailedError` とは型が異なる・observe と同じ既存制約）。
+   *
+   * `backupOpts` はそのままリモート CLI の `backupOpts` に受け渡し（pre-stash 先カスタマイズ・§7.2）。
+   */
+  async promote(
+    params: { prodDbPath?: string; options?: ObserveOptions; backupOpts?: BackupOptions } = {},
+    timeoutMs?: number,
+  ): Promise<PromoteOutcome> {
+    await this.connect();
+    try {
+      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
+      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
+      const response = await this.executeRemoteCommand(
+        {
+          operation: 'promote',
+          params: { prodDbPath: params.prodDbPath, options: params.options, backupOpts: params.backupOpts },
+        },
+        resolvedTimeoutMs,
+      );
+      return this.checkResponse(response) as PromoteOutcome;
     } finally {
       await this.disconnect();
     }

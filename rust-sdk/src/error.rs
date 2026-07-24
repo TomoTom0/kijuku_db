@@ -38,6 +38,25 @@ pub enum KijukuError {
     /// サポートされていない操作（D1等の制約）
     #[error("Not supported: {0}")]
     NotSupported(String),
+
+    /// stg が別セッションで使用中（排他ロック取得失敗・設計 §15-11）
+    #[error("Stg is busy (locked by another session): {stg_path}")]
+    StgBusy {
+        stg_path: String,
+        holder_pid: Option<u32>,
+    },
+
+    /// prod が別セッション/promote で使用中（prod 排他ロック取得失敗・設計 §5.3・TASK-56）
+    #[error("Prod is busy (locked by another promote/admin session): {prod_path}")]
+    ProdBusy {
+        prod_path: String,
+        holder_pid: Option<u32>,
+    },
+
+    /// promote gate 不合格（prod に触る前に拒否・設計 §4.5/§6.4・TASK-57）。
+    /// `failed_checks` は `{name}: {detail}` 形式の不合格 gate 一覧。
+    #[error("Promote gate failed (prod not touched): {}", failed_checks.join("; "))]
+    PromoteGateFailed { failed_checks: Vec<String> },
 }
 
 /// きじゅくDBのResult型

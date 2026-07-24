@@ -138,6 +138,12 @@ export class BackupSelector {
   static byId(id: string): BackupSelector {
     return new BackupSelector({ type: 'byId', id });
   }
+  /** 既知パスでバックアップファイルを直接指定する（設計 §8 即時復旧・pre-stash 戻し）。
+   *  listBackups から除外される pre-stash(`...-pre_promote.db` 等)を restore/diff する経路。
+   *  backupDir 配下の .db ファイルのみ許可（selectBackup で検証）。 */
+  static byPath(path: string): BackupSelector {
+    return new BackupSelector({ type: 'byPath', path });
+  }
 
   /** スコープを限定する (TASK-150) */
   scope(scope: BackupScope): BackupSelector {
@@ -155,7 +161,8 @@ type BackupSelectorKind =
   | { type: 'before'; date: Date }
   | { type: 'after'; date: Date }
   | { type: 'closestTo'; date: Date }
-  | { type: 'byId'; id: string };
+  | { type: 'byId'; id: string }
+  | { type: 'byPath'; path: string };
 
 /** バックアップ設定オプション */
 export interface BackupOptions {
@@ -175,6 +182,10 @@ export interface BackupOptions {
   maxAgeDays?: number;
   /** 保持ポリシー */
   retentionPolicy?: RetentionPolicy;
+  /** DBロック時に1回の試行で待機する最大時間（ミリ秒）・Rust parity */
+  busyTimeoutMs?: number;
+  /** DBロック時のリトライ間隔（ミリ秒）のリスト。長さがリトライ回数を決定する・Rust parity */
+  retryIntervalsMs?: number[];
   /** バックアップ進捗コールバック */
   onProgress?: (info: { totalPages: number; remainingPages: number }) => void;
 }
@@ -458,12 +469,9 @@ export class BackupManager {
         if (!parsed) continue;
 
         // pre-stash（pre_migrate/pre_restore/pre_promote）は運用用ロールバックファイルで
-        // ユーザー向け一覧から除外する（設計 §7.2/§7.3・§8・Rust backup.rs と同等）
-        if (
-          name.endsWith('-pre_migrate.db') ||
-          name.endsWith('-pre_restore.db') ||
-          name.endsWith('-pre_promote.db')
-        ) {
+        // ユーザー向け一覧から除外する（設計 §7.2/§7.3・§8・Rust backup.rs と同等）。
+        // §8 復旧は listPreStashes() / byPath 経由で発見・戻しする。
+        if (isPreStashName(name)) {
           continue;
         }
 
@@ -519,6 +527,11 @@ export class BackupManager {
 
   /** 条件に一致するバックアップを選択 */
   selectBackup(selector: BackupSelector): BackupInfo | null {
+    // ByPath は listBackups が pre-stash を除外するため専用経路（§8 即時復旧・既知パス）。
+    // scopeFilter は無視（明示パス優先）。
+    if (selector.kind.type === 'byPath') {
+      return this.selectBackupByPath(selector.kind.path);
+    }
     const backups = selector.scopeFilter
       ? this.listBackupsInScope(selector.scopeFilter)
       : this.listBackups();
@@ -548,6 +561,90 @@ export class BackupManager {
       case 'byId':
         return backups.find((b) => b.id === kind.id) ?? null;
     }
+  }
+
+  /** 既知のバックアップファイルパスから BackupInfo を合成（設計 §8 即時復旧・既知パス経由・Rust backup.rs と同等）。
+   *  listBackups が pre-stash を除外するため、ByPath selector と listPreStashes は指定パスから直接
+   *  BackupInfo を合成する。backupDir 配下の .db ファイルのみ許可（path traversal・外部ファイル参照を拒否）。 */
+  private buildBackupInfoFromPath(filePath: string): BackupInfo {
+    // 実在確認＋絶対パス化。不在は throw。traversal(`..`) も解決後に backupDir 配下チェックで弾かれる。
+    let resolved: string;
+    try {
+      resolved = fs.realpathSync(filePath);
+    } catch {
+      throw new Error(`backup path not found: ${filePath}`);
+    }
+
+    // 拡張子は .db のみ（pre-stash は常にフル .db）。
+    if (!resolved.endsWith('.db')) {
+      throw new Error(`ByPath selector requires a .db file: ${filePath}`);
+    }
+
+    // backupDir 配下のみ許可（path traversal・外部ファイル参照の拒否）。
+    let backupDirResolved: string;
+    try {
+      backupDirResolved = fs.realpathSync(this.backupDir);
+    } catch {
+      throw new Error(`backup_dir not accessible: ${this.backupDir}`);
+    }
+    const underBackupDir =
+      resolved === backupDirResolved || resolved.startsWith(backupDirResolved + path.sep);
+    if (!underBackupDir) {
+      throw new Error(
+        `ByPath selector path must be under backup_dir ${backupDirResolved}: ${filePath}`,
+      );
+    }
+
+    const name = path.basename(resolved);
+    const parsed = parseBackupFilename(name, this.dbStem);
+    const id = parsed ? parsed.id : name;
+    const stat = fs.statSync(resolved);
+
+    // scope は親ディレクトリ名から推導（pre-stash は tmp）。判定不能時は tmp。
+    const parentName = path.basename(path.dirname(resolved));
+    const scope: BackupScope =
+      parentName === 'auto' ? 'auto' : parentName === 'manual' ? 'manual' : 'tmp';
+
+    return {
+      id,
+      name,
+      path: resolved,
+      createdAt: stat.mtime,
+      scope,
+      kind: { type: 'full' },
+      // pre-stash の "pre_promote" 等はユーザー向けラベルではないため undefined で上書き。
+      label: undefined,
+      labelSource: 'filename',
+      note: undefined,
+    };
+  }
+
+  /** ByPath selector のための BackupInfo 合成（設計 §8 即時復旧）。buildBackupInfoFromPath の thin wrapper。 */
+  private selectBackupByPath(filePath: string): BackupInfo {
+    return this.buildBackupInfoFromPath(filePath);
+  }
+
+  /** pre-stash（即時復旧用ロールバックファイル）一覧を取得（設計 §8・Rust backup.rs と同等）。
+   *  `tmp/` 配下の `*-pre_{migrate,restore,promote}.db` を返す。promote/(b)操作が返す
+   *  preStashPath を呼出側が失った場合の発見経路。戻り値の path はそのまま byPath で
+   *  restore に渡せる（backupDir 配下のため）。listBackups と同じく id 降順。
+   *  復旧用途のため、読めないファイル（走査中の削除等）は飛ばす。 */
+  listPreStashes(): BackupInfo[] {
+    const tmpDir = path.join(this.backupDir, 'tmp');
+    if (!fs.existsSync(tmpDir)) return [];
+
+    const stashes: BackupInfo[] = [];
+    for (const name of fs.readdirSync(tmpDir)) {
+      if (!isPreStashName(name)) continue;
+      const filePath = path.join(tmpDir, name);
+      try {
+        stashes.push(this.buildBackupInfoFromPath(filePath));
+      } catch {
+        // 復旧用途: 1ファイルの読み込み失敗（走査中削除等）で一覧全体を落とさない。
+      }
+    }
+
+    return stashes.sort((a, b) => compareBackupIdDesc(a.id, b.id));
   }
 
   /** 条件に一致するバックアップのパスを取得 */
@@ -818,8 +915,8 @@ export class BackupManager {
         }
       }
     } else {
-      // max_age_days / max_backups による削除（auto + manual 対象）
-      const allBackups = this.listBackups().filter((b) => b.scope !== 'tmp');
+      // max_age_days / max_backups による削除（auto のみ対象・manual は対象外＝手動削除のみ §7.4）
+      const allBackups = this.listBackups().filter((b) => b.scope === 'auto');
 
       if (this.maxAgeDays !== undefined) {
         const maxAgeMs = this.maxAgeDays * DAY_SECS * 1000;
@@ -1174,6 +1271,16 @@ interface ParsedFilename {
  *
  * timestamp は YYYYMMDDHHMMSS-mmm の 18 文字固定。
  */
+/** pre-stash（pre_migrate/pre_restore/pre_promote）ロールバックファイルか（設計 §7.2/§7.3・§8）。
+ *  listBackups はこれをユーザー向け一覧から除外し、listPreStashes はこれを抽出する（Rust と同等）。 */
+function isPreStashName(name: string): boolean {
+  return (
+    name.endsWith('-pre_migrate.db') ||
+    name.endsWith('-pre_restore.db') ||
+    name.endsWith('-pre_promote.db')
+  );
+}
+
 function parseBackupFilename(name: string, stem: string): ParsedFilename | null {
   const prefix = `${stem}.`;
   if (!name.startsWith(prefix)) return null;

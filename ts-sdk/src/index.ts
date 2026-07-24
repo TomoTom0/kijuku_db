@@ -19,8 +19,20 @@ import type {
   MediaTagAssoc,
   BackupDiff,
   DiffOptions,
+  ObserveOptions,
+  ObserveResult,
+  PromoteOutcome,
+  GateConfig,
+  GoldenResult,
 } from './types.js';
-import { computeBackupDiff, type BackupSnapshot } from './diff.js';
+import {
+  computeBackupDiff,
+  summarizeDiff,
+  evaluateGate,
+  defaultGateConfig,
+  allGateChecksPassed,
+  type BackupSnapshot,
+} from './diff.js';
 import * as migration from './migration.js';
 import * as crud from './crud.js';
 import * as tag from './tag.js';
@@ -29,11 +41,25 @@ import * as bulk from './bulk.js';
 import * as attribute from './attribute.js';
 import * as hashModule from './hash.js';
 import { BackupManager, BackupSelector } from './backup.js';
-import type { BackupInfo, BackupMetaEntry } from './backup.js';
+import type { BackupInfo, BackupMetaEntry, BackupOptions } from './backup.js';
 import * as updateExistModule from './update_exist.js';
 import * as thumbnailModule from './thumbnail.js';
 import * as fileOps from './file_ops.js';
 import * as trash from './trash.js';
+import {
+  acquireStgLock,
+  acquireProdLock,
+  ProdBusyError,
+  PromoteGateFailedError,
+  computeProdRevision,
+  prodRevisionEqual,
+  readStgMeta,
+  writeStgMeta,
+  type ProdRevision,
+  type StgLock,
+  type StgMeta,
+  type SyncedFrom,
+} from './stg-session.js';
 import { requireMediaRoot } from './media_path.js';
 import type { FileOpOptions, FileOpResult } from './file_ops.js';
 import type { TrashEntry, TrashOperation } from './trash.js';
@@ -64,6 +90,22 @@ export { loadConfig, globalConfigPath, defaultKijukuConfig, defaultBackupConfig,
 export type { KijukuConfig, BackupConfig, RetentionTierConfig, Target, TargetResolution, EnvGetter } from './config.js';
 export { ALLOWED_DISTINCT_FIELDS } from './search.js';
 export { hexToBytes, bytesToHex } from './hash.js';
+export {
+  acquireStgLock,
+  acquireProdLock,
+  computeProdRevision,
+  readStgMeta,
+  writeStgMeta,
+  metaPath,
+  lockPath,
+  StgBusyError,
+  ProdBusyError,
+  PromoteGateFailedError,
+  type ProdRevision,
+  type StgLock,
+  type StgMeta,
+  type SyncedFrom,
+} from './stg-session.js';
 export { startServer } from './server/index.js';
 export { AuthManager, generatePassword } from './server/auth.js';
 
@@ -77,6 +119,8 @@ export class KijukuDB {
   /** readonly（prod 読込）接続か。WAL 設定・migrate をスキップ（設計 §5.1・§5.3）。 */
   private readonly isReadOnly: boolean;
   private backupManager?: BackupManager;
+  /** stg 編集セッションが保持する排他ロック（設計 §15-11）。未取得は undefined。close() で解放。 */
+  private stgLock?: StgLock;
 
   constructor(dbPath: string, options?: DBOptions) {
     this.dbPath = dbPath;
@@ -113,22 +157,54 @@ export class KijukuDB {
     return this.mediaRoot;
   }
 
+  /**
+   * readonly（prod RO 読込専用・設計 §5.1）セッションで書込操作を拒否する。
+   * SDK 直接呼出に対する構造的保護（方式A・Rust の is_write_operation ガードと同等）。
+   * SQLite の SQLITE_READONLY に先立ち、ユーザフレンドリなエラーを投げる。
+   */
+  private assertWritable(opName: string): void {
+    if (this.isReadOnly) {
+      throw new Error(
+        `読込専用セッション（readonly）では書込操作 '${opName}' は実行できません。書込は stg セッション（--target stg）で実行してください（設計 §5.1/§6.2）`,
+      );
+    }
+  }
+
+  /**
+   * (b) 制限操作（設計 §9.2）の実行を拒否する。TS Local は prod 直接 gate を持たないため (b) は常に拒否:
+   * - stg セッション: (b) は環境が制限（拒否）・prod 直接経路（Remote CLI の --target prod）へ誘導。
+   * - prod RO 読込セッション: assertWritable と同様に書込拒否（設計 §5.1）。
+   * prod 直接の dry-run+trash+pre-stash gate 実行は Rust CLI 経由（Remote）が主経路。
+   */
+  private assertNotStgRestricted(opName: string): never {
+    if (this.isReadOnly) {
+      throw new Error(
+        `読込専用セッション（readonly）では書込操作 '${opName}' は実行できません（設計 §5.1）。`,
+      );
+    }
+    throw new Error(
+      `(b) 制限操作 '${opName}' は stg では実行できません。prod 直接（Remote CLI の --target prod）で dry-run+trash+pre-stash gate 付きで実行してください（設計 §9.2）`,
+    );
+  }
+
   /** src を dst へ複製する（dry-run ファースト、上書きは trash 経由）。 */
   mediaCp(
     src: string,
     dst: string,
     opts: FileOpOptions = fileOps.defaultFileOpOptions
   ): FileOpResult {
+    this.assertWritable('mediaCp');
     const root = requireMediaRoot(this.mediaRoot);
     return fileOps.mediaCp(root, src, dst, opts);
   }
 
-  /** src を dst へ移動する（dry-run ファースト、上書きは trash 経由）。 */
+  /** src を dst へ移動する（(b) 制限操作・dry-run ファースト・上書きは trash 経由・設計 §9.2）。 */
   mediaMv(
     src: string,
     dst: string,
     opts: FileOpOptions = fileOps.defaultFileOpOptions
   ): FileOpResult {
+    this.assertNotStgRestricted('mediaMv');
     const root = requireMediaRoot(this.mediaRoot);
     return fileOps.mediaMv(root, src, dst, opts);
   }
@@ -139,12 +215,14 @@ export class KijukuDB {
     dst: string,
     opts: FileOpOptions = fileOps.defaultFileOpOptions
   ): FileOpResult {
+    this.assertWritable('mediaSync');
     const root = requireMediaRoot(this.mediaRoot);
     return fileOps.mediaSync(root, src, dst, opts);
   }
 
   /** targetRel を trash へ移動する（論理削除・物理削除はしない）。 */
   moveToTrash(targetRel: string, operation: TrashOperation, reason?: string): string {
+    this.assertWritable('moveToTrash');
     const root = requireMediaRoot(this.mediaRoot);
     return trash.moveToTrash(root, targetRel, operation, reason);
   }
@@ -157,12 +235,14 @@ export class KijukuDB {
 
   /** trash から id のエントリを復元する（衝突時はエラー）。 */
   restoreFromTrash(id: string): string {
+    this.assertWritable('restoreFromTrash');
     const root = requireMediaRoot(this.mediaRoot);
     return trash.restoreFromTrash(root, id);
   }
 
-  /** trash 内のエントリを物理削除する（dry-run ファースト）。 */
+  /** trash 内のエントリを物理削除する（(b) 制限操作・dry-run ファースト・設計 §9.2）。 */
   purgeTrash(ids?: string[], dryRun = false): string[] {
+    this.assertNotStgRestricted('purgeTrash');
     const root = requireMediaRoot(this.mediaRoot);
     return trash.purgeTrash(root, ids, dryRun);
   }
@@ -175,11 +255,7 @@ export class KijukuDB {
    * SDK 直接呼出に対する構造的保護としてここでも明示的に拒否する。
    */
   migrate(): void {
-    if (this.isReadOnly) {
-      throw new Error(
-        'migrate is not allowed on a readonly (prod) connection (設計 §5.1)',
-      );
-    }
+    this.assertWritable('migrate');
     // migrate 前に snapshot（設計 §7.3「migrate 前 snapshot 必須」・Rust と同等）
     this.backupManager?.createPreMigrateSnapshot();
     migration.migrate(this.db);
@@ -192,20 +268,37 @@ export class KijukuDB {
    * 新規生成する。既存 dst と WAL/SHM 副産物（`-wal`/`-shm`）は事前に削除し、stg が WAL モードで
    * 使用されていた場合の残留を排除して完全な複製を保証する。Rust の `KijukuDB::replicate_db` と同等。
    *
-   * **排他前提**: dst（stg）に接続中のプロセスがないこと（呼出側の責任・設計 §15-11 P1）。
+   * **排他**: 先頭で `<dst>.lock` の排他ロックを取得し（設計 §15-11）、sync 全体を保護する。
+   * 別セッションが stg を編集中なら `StgBusyError`。コピー後に sync 元 prod revision 指紋を
+   * `<dst>.meta.json` に記録し、observe が drift を検出できるようにする。
    * `src === dst` は誤設定としてエラー。
    */
   static async replicateDb(src: string, dst: string): Promise<void> {
     if (src === dst) {
       throw new Error(`sync source and destination are the same path: ${src}`);
     }
-    for (const suffix of ['', '-wal', '-shm']) {
-      const candidate = `${dst}${suffix}`;
-      if (fs.existsSync(candidate)) {
-        fs.unlinkSync(candidate);
+    const lock = acquireStgLock(dst);
+    try {
+      for (const suffix of ['', '-wal', '-shm']) {
+        const candidate = `${dst}${suffix}`;
+        if (fs.existsSync(candidate)) {
+          fs.unlinkSync(candidate);
+        }
       }
+      await BackupManager.copyDbOnline(src, dst);
+      // sync 元 prod revision を src から算出し meta に記録（設計 §15-11）
+      const srcDb = new KijukuDB(src, { readonly: true });
+      try {
+        const revision = computeProdRevision(srcDb.db);
+        writeStgMeta(dst, {
+          syncedFrom: { prodPath: src, revision, syncedAt: new Date().toISOString() },
+        });
+      } finally {
+        srcDb.close();
+      }
+    } finally {
+      lock.release();
     }
-    await BackupManager.copyDbOnline(src, dst);
   }
 
   /**
@@ -233,6 +326,7 @@ export class KijukuDB {
    * メディアを作成
    */
   createMedia(data: MediaInput): Media {
+    this.assertWritable('createMedia');
     const result = crud.createMedia(this.db, data);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -251,6 +345,7 @@ export class KijukuDB {
    * メディアを更新
    */
   updateMedia(id: number, data: Partial<MediaInput>): void {
+    this.assertWritable('updateMedia');
     crud.updateMedia(this.db, id, data);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -261,6 +356,7 @@ export class KijukuDB {
    * メディアを削除
    */
   deleteMedia(id: number): void {
+    this.assertWritable('deleteMedia');
     crud.deleteMedia(this.db, id);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -282,6 +378,7 @@ export class KijukuDB {
    * 複数のメディアを一括作成
    */
   bulkCreateMedia(dataList: MediaInput[]): Media[] {
+    this.assertWritable('bulkCreateMedia');
     const result = bulk.bulkCreateMedia(this.db, dataList);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -293,6 +390,7 @@ export class KijukuDB {
    * 複数のメディアを一括削除
    */
   bulkDeleteMedia(ids: number[]): void {
+    this.assertWritable('bulkDeleteMedia');
     bulk.bulkDeleteMedia(this.db, ids);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -303,6 +401,7 @@ export class KijukuDB {
    * 複数のメディアを一括更新
    */
   bulkUpdateMedia(updates: BulkUpdateItem[]): void {
+    this.assertWritable('bulkUpdateMedia');
     bulk.bulkUpdateMedia(this.db, updates);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -313,6 +412,7 @@ export class KijukuDB {
    * タグを作成
    */
   createTag(name: string): Tag {
+    this.assertWritable('createTag');
     const result = tag.createTag(this.db, name);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -324,6 +424,7 @@ export class KijukuDB {
    * メディアにタグを追加
    */
   addTagToMedia(mediaId: number, tagId: number): void {
+    this.assertWritable('addTagToMedia');
     tag.addTagToMedia(this.db, mediaId, tagId);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -334,6 +435,7 @@ export class KijukuDB {
    * メディアからタグを削除
    */
   removeTagFromMedia(mediaId: number, tagId: number): void {
+    this.assertWritable('removeTagFromMedia');
     tag.removeTagFromMedia(this.db, mediaId, tagId);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -391,6 +493,7 @@ export class KijukuDB {
     value: string | null,
     valueType?: string
   ): void {
+    this.assertWritable('setMediaAttribute');
     attribute.setMediaAttribute(this.db, mediaId, key, value, valueType);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -415,6 +518,7 @@ export class KijukuDB {
    * メディアの属性を削除
    */
   deleteMediaAttribute(mediaId: number, key: string): void {
+    this.assertWritable('deleteMediaAttribute');
     attribute.deleteMediaAttribute(this.db, mediaId, key);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -425,6 +529,7 @@ export class KijukuDB {
    * メディアの全ての属性を削除
    */
   deleteAllMediaAttributes(mediaId: number): void {
+    this.assertWritable('deleteAllMediaAttributes');
     attribute.deleteAllMediaAttributes(this.db, mediaId);
     this.backupManager?.recordOperation().catch((err) => {
       console.error('Backup operation failed:', err);
@@ -434,10 +539,12 @@ export class KijukuDB {
   // ========== メディアハッシュ操作 ==========
 
   addMediaHash(input: MediaHashInput): MediaHash {
+    this.assertWritable('addMediaHash');
     return hashModule.addMediaHash(this.db, input);
   }
 
   addMediaHashes(inputs: MediaHashInput[]): MediaHash[] {
+    this.assertWritable('addMediaHashes');
     return hashModule.addMediaHashes(this.db, inputs);
   }
 
@@ -454,10 +561,12 @@ export class KijukuDB {
   }
 
   deleteMediaHash(itemUuid: string, filename: string, timeRange: string): void {
+    this.assertWritable('deleteMediaHash');
     hashModule.deleteMediaHash(this.db, itemUuid, filename, timeRange);
   }
 
   deleteMediaHashes(itemUuid: string): void {
+    this.assertWritable('deleteMediaHashes');
     hashModule.deleteMediaHashes(this.db, itemUuid);
   }
 
@@ -471,10 +580,12 @@ export class KijukuDB {
     mediaType: string,
     durationSec?: number
   ): ComputeHashResult {
+    this.assertWritable('computeMediaHash');
     return hashModule.computeMediaHash(this.db, itemUuid, mediaPath, mediaType, durationSec);
   }
 
   computeMediaHashes(filter: MediaFilter, options?: QueryOptions, force?: boolean): ComputeHashResult[] {
+    this.assertWritable('computeMediaHashes');
     return hashModule.computeMediaHashes(this.db, filter, options, force);
   }
 
@@ -491,6 +602,7 @@ export class KijukuDB {
 
   /** 手動バックアップを実行（ラベルなし） */
   async backup(): Promise<string | undefined> {
+    this.assertWritable('backup');
     return this.backupManager?.backup(undefined);
   }
 
@@ -499,6 +611,7 @@ export class KijukuDB {
    * @param label バックアップのラベル（例: "before_import"）
    */
   async backupWithLabel(label: string): Promise<string | undefined> {
+    this.assertWritable('backupWithLabel');
     return this.backupManager?.backup(label);
   }
 
@@ -510,19 +623,24 @@ export class KijukuDB {
    * @param selector 復元するバックアップの選択条件（省略時は最新）
    * @returns 復元に使用したバックアップファイルのパス
    */
+  /**
+   * バックアップから復元（(b) 制限操作・設計 §9.2）。TS Local は prod 直接 gate を持たないため常に拒否。
+   * prod 直接実行（dry-run+trash+pre-stash gate）は Remote（Rust CLI の --target prod）経由が主経路。
+   */
   restore(selector: BackupSelector = BackupSelector.latest()): string {
-    if (!this.backupManager) {
-      throw new Error('Backup manager not configured');
-    }
-    const restoredPath = this.backupManager.restore(selector);
-    // restore後にBackupManagerが接続を再オープンするため、KijukuDBの参照も更新
-    this.db = this.backupManager.getDb();
-    return restoredPath;
+    this.assertNotStgRestricted('restore');
   }
 
   /** バックアップ一覧を取得 */
   listBackups(): BackupInfo[] {
     return this.backupManager?.listBackups() ?? [];
+  }
+
+  /** pre-stash（即時復旧用ロールバックファイル）一覧を取得（設計 §8）。
+   *  promote/(b)操作が返す preStashPath を呼出側が失った場合の発見経路。
+   *  戻り値の path はそのまま BackupSelector.byPath() で restore に渡せる。 */
+  listPreStashes(): BackupInfo[] {
+    return this.backupManager?.listPreStashes() ?? [];
   }
 
   /** バックアップマネージャーを取得 */
@@ -538,6 +656,7 @@ export class KijukuDB {
     options?: QueryOptions,
     updateOptions: updateExistModule.UpdateExistOptions = { dry_run: false }
   ): updateExistModule.UpdateExistResult {
+    this.assertWritable('updateExist');
     return updateExistModule.updateExist(this.db, filter, options, updateOptions);
   }
 
@@ -548,6 +667,7 @@ export class KijukuDB {
     filter: MediaFilter = {},
     options?: QueryOptions,
   ): CheckThumbnailResult {
+    this.assertWritable('checkThumbnail');
     return thumbnailModule.checkThumbnail(this.db, filter, options);
   }
 
@@ -559,6 +679,7 @@ export class KijukuDB {
     options?: QueryOptions,
     thumbnailOptions: ThumbnailOptions = {},
   ): UpdateThumbnailResult {
+    this.assertWritable('updateThumbnail');
     const result = thumbnailModule.updateThumbnail(this.db, filter, options, thumbnailOptions);
     if (result.generated > 0) {
       this.backupManager?.recordOperation().catch((err) => {
@@ -573,6 +694,19 @@ export class KijukuDB {
    */
   close(): void {
     this.db.close();
+    this.stgLock?.release();
+    this.stgLock = undefined;
+  }
+
+  /**
+   * stg 編集セッションの排他ロックを取得・保持（設計 §15-11）。
+   *
+   * `<dbPath>.lock` の排他ロックを取得し、`close()` まで保持する。
+   * 別セッションが保持中なら `StgBusyError`。readonly（prod RO 読込）セッションでは呼ばないこと。
+   */
+  acquireStgLock(): void {
+    if (this.stgLock) return; // 既に保持済み（冪等）
+    this.stgLock = acquireStgLock(this.dbPath);
   }
 
   // ========== バックアップからの取得メソッド ==========
@@ -776,14 +910,174 @@ export class KijukuDB {
     return computeBackupDiff(currentSnap, backupSnap, options);
   }
 
+  /**
+   * prod(RO) と現在DB(stg) の差分を取得（promote 判断用・設計 §4.4・TASK-53）。
+   *
+   * prod を readonly 別接続で開き（設計 §15-8）、snapshot を比較する。
+   * `computeBackupDiff(current=prod, backup=stg)` で呼ぶことで stg 編集視点に反転させる
+   * （diffWithBackup は `computeBackupDiff(current=self, backup=backupDB)` で方向が逆）。
+   * prod 読込経路では migrate をスキップ（readonly open のため）。
+   *
+   * - added:   stg のみ（promote で prod に追加）
+   * - removed: prod のみ（promote で prod から削除）
+   * - changed: 両方で異なる（promote で prod が上書き）
+   */
+  diffWithProd(prodDbPath: string, options: DiffOptions = {}): BackupDiff {
+    const prodSnap = new KijukuDB(prodDbPath, { readonly: true }).collectSnapshot();
+    const stgSnap = this.collectSnapshot();
+    // セマンティクス反転: current=prod, backup=stg（diffWithBackup と逆）
+    return computeBackupDiff(prodSnap, stgSnap, options);
+  }
+
+  /**
+   * stg（self）と prod を比較し、機械的 promote gate を評価（設計 §3.4/§4.4・TASK-54）。
+   *
+   * 内部で差分（`diffWithProd` と同等）を計算し `summarizeDiff` で要約した上で、以下の gate を評価:
+   * - `PRAGMA integrity_check` == "ok"
+   * - 外部キー整合性（`foreign_key_check` 空 + FK 有効）
+   * - prod/stg の `schema_version` 一致
+   * - 件数・差分上限（`summary.totals` vs `GateConfig`）
+   * - 運用者定義 golden assertion
+   *
+   * `passed` が全 gate 合格を表す（promote 可否の客観判定・人間 gate でない・設計 §3/§6.4）。
+   */
+  observe(prodDbPath: string, options: ObserveOptions = {}): ObserveResult {
+    const gateConfig: GateConfig = options.gateConfig ?? defaultGateConfig();
+    const diffOptions: DiffOptions = options.diffOptions ?? {};
+
+    // --- prod 側（RO 別接続）: snapshot + schema_version + revision 指紋 ---
+    const prodDb = new KijukuDB(prodDbPath, { readonly: true });
+    const prodSnap = prodDb.collectSnapshot();
+    const prodSchemaVersion = prodDb.getSchemaVersion();
+    const prodRevision = computeProdRevision(prodDb.db);
+
+    // --- stg 側（self）: snapshot + gate 用 DB 検査 ---
+    const stgSnap = this.collectSnapshot();
+    const integrity = migration.integrityCheck(this.db);
+    const fkViolations = migration.foreignKeyCheck(this.db);
+    const fkEnabled = migration.isForeignKeysEnabled(this.db);
+    const stgSchemaVersion = migration.getSchemaVersion(this.db);
+    const goldenResults: GoldenResult[] = gateConfig.goldenAssertions.map((ga) => {
+      try {
+        const raw = this.db.prepare(ga.sql).pluck().get();
+        const count = typeof raw === 'number' ? raw : Number(raw);
+        if (!Number.isFinite(count)) {
+          return { ok: false, error: `non-numeric result: ${String(raw)}` };
+        }
+        return { ok: true, count };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    });
+
+    // --- 差分 → 要約 → gate 評価 ---
+    const diff = computeBackupDiff(prodSnap, stgSnap, diffOptions);
+    const summary = summarizeDiff(diff);
+    const checks = evaluateGate(
+      summary,
+      integrity,
+      fkViolations,
+      fkEnabled,
+      prodSchemaVersion,
+      stgSchemaVersion,
+      goldenResults,
+      gateConfig,
+    );
+
+    // prod_sync_revision gate: sync 元 revision（`<stg>.meta.json`）と現 prod revision を比較し、
+    // prod が sync 後に更新された（stg が stale）なら不合格（設計 §15-11）。
+    // meta なし（旧 stg・後方互換）はスキップ。
+    const meta = readStgMeta(this.dbPath);
+    if (meta) {
+      const drift = !prodRevisionEqual(meta.syncedFrom.revision, prodRevision);
+      checks.push({
+        name: 'prod_sync_revision',
+        passed: !drift,
+        detail: drift
+          ? `prod drifted since sync (recorded media_count=${meta.syncedFrom.revision.mediaCount} / current ${prodRevision.mediaCount}) -> re-sync required`
+          : 'prod unchanged since sync',
+      });
+    }
+
+    return {
+      passed: allGateChecksPassed(checks),
+      prodSchemaVersion,
+      stgSchemaVersion,
+      summary,
+      checks,
+    };
+  }
+
+  /**
+   * stg（self）→ prod への反映（promote・設計 §4.5/§6.4・TASK-58/62）。
+   *
+   * `replicateDb`（sync: prod→stg）の反転。gate 合格で prod を上書きし pre-stash を作る。
+   * gate 不合格時は prod を触る前に `PromoteGateFailedError`（pre-stash も無駄にしない）。
+   * prod RW は本メソッド内部でのみ一時取得（構造的保護・§5.2・人間 gate なし）。成功時の
+   * `preStashPath` は §8 即時復旧の戻し先。
+   *
+   * `backupOpts` で pre-stash 先（`backupDir`）をカスタマイズ可能（省略時は `enabled:false`
+   * 相当・デフォルト `tmp/` のみ・§7.2）。pre-stash 自体は `backupOpts`・`enabled` にかかわらず常時実行。
+   */
+  async promote(
+    prodDbPath: string,
+    options: ObserveOptions = {},
+    backupOpts?: BackupOptions,
+  ): Promise<PromoteOutcome> {
+    if (this.dbPath === prodDbPath) {
+      throw new Error(`promote: stg and prod are the same path: ${prodDbPath}`);
+    }
+
+    // 1. gate 評価 → 不合格なら prod を触る前に拒否（pre-stash も無駄にしない）。
+    const observe = this.observe(prodDbPath, options);
+    if (!observe.passed) {
+      const failedChecks = observe.checks
+        .filter((c) => !c.passed)
+        .map((c) => `${c.name}: ${c.detail}`);
+      throw new PromoteGateFailedError(failedChecks);
+    }
+
+    // 2. prod 排他ロック（§5.3）。別セッション保持中は ProdBusyError。
+    const lock = acquireProdLock(prodDbPath);
+    try {
+      // 3. pre-stash 強制（enabled と独立・常時実行・§7.2）。prod を一時 RW 接続で BackupManager 経由。
+      //    backupOpts 未指定時は enabled:false（auto/manual/meta dir を作らず tmp/ のみ）。
+      let preStashPath: string | undefined;
+      const prodDb = new Database(prodDbPath);
+      try {
+        const bm = new BackupManager(prodDb, prodDbPath, backupOpts ?? { enabled: false });
+        preStashPath = bm.createPrePromoteSnapshot();
+      } finally {
+        prodDb.close();
+      }
+
+      // 4. 既存 prod + WAL/SHM 削除（空 dst 要求・pre-stash 済みで安全・replicateDb と同パターン）。
+      for (const suffix of ['', '-wal', '-shm']) {
+        const candidate = `${prodDbPath}${suffix}`;
+        if (fs.existsSync(candidate)) {
+          fs.unlinkSync(candidate);
+        }
+      }
+
+      // 5. stg → prod コピー（Online Backup API・src=stg を RO で開く・ファイル全体・§15-1）。
+      await BackupManager.copyDbOnline(this.dbPath, prodDbPath);
+
+      return { observe, preStashPath };
+    } finally {
+      lock.release();
+    }
+  }
+
   /** バックアップにラベルを付与（事後）。undefined でクリア */
   setBackupLabel(id: string, label: string | undefined): void {
+    this.assertWritable('setBackupLabel');
     if (!this.backupManager) throw new Error('Backup manager not configured');
     this.backupManager.setBackupLabel(id, label);
   }
 
   /** バックアップにメモを付与（事後）。undefined でクリア */
   setBackupNote(id: string, note: string | undefined): void {
+    this.assertWritable('setBackupNote');
     if (!this.backupManager) throw new Error('Backup manager not configured');
     this.backupManager.setBackupNote(id, note);
   }

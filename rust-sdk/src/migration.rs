@@ -309,6 +309,45 @@ pub fn get_table_info(conn: &Connection, table_name: &str) -> Result<Vec<TableCo
     Ok(columns)
 }
 
+/// 外部キー制約違反の行（`PRAGMA foreign_key_check`）。空 = 整合性OK（observe gate 用・設計 §3.4）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FkViolation {
+    /// 違反のあるテーブル名
+    pub table: String,
+    /// 違反行の rowid
+    pub rowid: i64,
+    /// 親テーブル名（該当なしは NULL）
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// FK 制約の id
+    pub fkid: i64,
+}
+
+/// `PRAGMA integrity_check` の結果（observe gate 用・設計 §3.4）。
+/// 正常時は "ok" 1行、異常時はエラー行が複数返る。全行を `; ` 区切りで結合して返す。
+pub fn integrity_check(conn: &Connection) -> Result<String> {
+    let mut stmt = conn.prepare("PRAGMA integrity_check")?;
+    let rows: std::result::Result<Vec<String>, _> =
+        stmt.query_map([], |row| row.get::<_, String>(0))?.collect();
+    Ok(rows?.join("; "))
+}
+
+/// `PRAGMA foreign_key_check` の違反リスト（observe gate 用・設計 §3.4）。空 = 違反なし。
+pub fn foreign_key_check(conn: &Connection) -> Result<Vec<FkViolation>> {
+    let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+    let rows: std::result::Result<Vec<FkViolation>, _> = stmt
+        .query_map([], |row| {
+            Ok(FkViolation {
+                table: row.get(0)?,
+                rowid: row.get(1)?,
+                parent: row.get(2)?,
+                fkid: row.get(3)?,
+            })
+        })?
+        .collect();
+    Ok(rows?)
+}
+
 // ========== async バックエンド（SqlExec）用 ==========
 //
 // Local と D1 が共有。多文 SQL（schema.sql 全体・テーブル再構築・トリガ）は `execute_raw`

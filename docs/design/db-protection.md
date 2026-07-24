@@ -211,6 +211,7 @@ promote/(b) 後、app/server 稼働中に発覚する不具合の復旧経路（
 - 保持期間: pre-stash は数日・backup trail は retention（§7.4）。
 - 実行経路: (b) 管理操作として prod RW を一時取得（§5.2）。dry-run + pre-stash 強制。
 - 監査: 復旧操作も §10 の監査ログに記録。
+- **発見経路**: `list_backups` は pre-stash を除外するため、promote/(b)操作が返す `pre_stash_path` を呼出側が失った場合は `list_pre_stashes()`（CLI `list-pre-stashes`・TS Remote `listPreStashes`）で `backup/tmp/` 配下の pre-stash を発見できる。戻り値の `path` を `BackupSelector::by_path`（TS Remote は `restore({ type: 'byPath', path })`）で `restore` に渡して即時戻しする。
 
 ---
 
@@ -310,8 +311,10 @@ sync/promote/discard・(b) 操作・observe/diff 結果を記録。**監査は�
 - `migration.rs`・`migration.ts:141-194`（transaction 統一）・`lib.rs:1120-1122`・`index.ts:167`（migrate 前 snapshot）・`backup.rs:466-475,846-922,925-949`・`backup.ts`
 
 ### 14.6 操作階層化 (a)/(b)
-- `file_ops`・`trash`・`migrate`・`restore`: (b) として stg で制限・prod 直接は dry-run+trash+pre-stash 強制
-- `crud`・`hash`・upload: (a) として stg 経由
+- 分類は**破壊度基準**（可逆/追加的操作=(a)、不可逆/全床上書き=(b)）で決定（TASK-59 P2-C4）:
+  - **(b) stg 制限**: `mediaMv`（FS移動・不可逆上書き）・`purgeTrash`（FS物理削除）・`restore`（全床上書き）。stg で環境が拒否・prod 直接（`--target prod`）で dry-run+trash+pre-stash gate 強制（§9.2）。`deleteMedia` の FS 部は trash 統合（`moveToTrash`(a) → `purgeTrash`(b)）で扱い、`deleteMedia` 本体は DB-only (a)。
+  - **(a) stg 許可**: `crud`（create/update/delete/bulk）・`tag`・`attr`・`hash`・`upload`・`mediaCp`/`mediaSync`・`moveToTrash`/`restoreFromTrash`・`backup`/`setBackupLabel`/`setBackupNote`。
+- `migrate` は §15-5 で「stg 経由詳細→P3」とされるため **P3（TASK-45）まで (b) gate 化を繰延**（現状: 接続時 auto-migrate + `create_pre_migrate_snapshot`）。
 
 ### 14.7 設定層（§13）
 - CLI 引数解析（`--target`・`--read-source` 等の追加フラグ）・環境変数読込（`KIJUKU_*`）・優先順位解決
@@ -333,11 +336,14 @@ sync/promote/discard・(b) 操作・observe/diff 結果を記録。**監査は�
 8. **読込先切替の内部実装**: prod RO 別接続（推奨）か `mode=ro`+`query_only=ON` ATTACH か。→ P1。
 9. **読込の既定**: stg 既定（保留中変更可視）でよいか。→ P1。
 10. **observe gate のしきい値**: integrity/FK/件数上限/golden/schema_version の各基準（§3.4）。→ P1。
-11. **複数 LLM/セッションの stg 排他**: session 別 stg か global lock か。promote 対象と sync 元 prod revision の記録。→ P1。
+11. **複数 LLM/セッションの stg 排他**（→ 決定・TASK-55）: **global advisory lock** 方式（session別stg は不採用）。`<stg>.lock` の排他ロックを書込系（sync / stg 編集セッション）が取得（Rust=fs2 advisory lock / TS=PID ベースロックファイル）。sync 元 prod revision 指紋（`ProdRevision` = schema_version + 各テーブル件数/max-id）を `<stg>.meta.json` に記録し、observe の `prod_sync_revision` gate で drift 検出。promote 対象は単一 stg（ロック保持セッション）。
 12. **prod 読込経路の migrate スキップ実装**: `cli.rs:1140-1144` を prod 読込時に飛ばす分岐。→ P0。
-13. **(b) 操作の gate 強度**: prod 直接 (b) の dry-run/trash/pre-stash の強制内容・bulk 操作の FS 再現上限。→ P2。
+13. **(b) 操作の gate 強度**（→ 決定・TASK-59 P2-C4）: (b) gate = dry-run + trash + pre-stash。操作種別で適用サブセットを切替:
+    - **DB 層（`restore`）**: `ProdRwScope`（`<prod>.lock` 排他ロック + pre-stash 強制・§7.2）→ prod RW 一時オープン → 上書き。pre-stash が §8 即時巻き戻しを担保。`dryRun` で復元差分（`diff_with_backup`）を返し prod 不変。
+    - **FS 層（`mediaMv`/`purgeTrash`）**: dry-run ファースト + 上書き/削除は trash 経由（`file_ops`/`trash` に既存）。trash が FS 側の即時巻き戻し経路。
+    - prod RW は (b) 操作の内部でのみ一時取得（`--target prod` の readonly backend は使わない・§5.2）。人間 gate なし・監査は P4（TASK-46）。bulk 操作の FS 再現上限は別途。
 14. **prod 復旧の保持期間**: pre-stash・backup trail の具体的リテンション（§8）。→ P2。
-15. **diff-summarize/LLM prompt の形式**: 圧縮表示の粒度・prompt テンプレート（§4.4）。→ P1。
+15. **diff-summarize/LLM prompt の形式**（→ 決定・TASK-53）: 要約は `ProdStgDiffSummary = {counts, totals, distribution}`。分布は media（`byType`/`byArtistTop`/`byFlagExist`）・media_tags（`byTagTop`）・attributes（`byKey`）・hashes（`byFilenameTop`）、上位 N=10（変動件数降順）。prompt（`build_diff_explanation_prompt`）は4セクション（件数表・代表サンプル・分布・説明指示）+ セマンティクス注記（added=stg新規 等）、`maxSamplesPerSection=10`・`includeDistribution` で分布セクション ON/OFF。純粋関数でクライアント側計算（リモート転送しない・Rust/TS で構造的一致）。
 
 ---
 

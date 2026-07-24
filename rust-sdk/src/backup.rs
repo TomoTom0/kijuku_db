@@ -135,14 +135,16 @@ pub struct BackupMetaStore {
 }
 
 /// 保持ポリシーの1段階
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RetentionTier {
     pub max_age_secs: u64,
     pub keep_interval_secs: u64,
 }
 
 /// 自動バックアップの粗密保持ポリシー
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RetentionPolicy {
     pub tiers: Vec<RetentionTier>,
 }
@@ -171,7 +173,11 @@ pub struct BackupProgress {
 }
 
 /// バックアップ設定オプション
-#[derive(Debug, Clone)]
+///
+/// 全フィールド `Option` かつ `#[serde(default)]` で部分指定を許容（CLI/remote wire・TASK-62）。
+/// `onProgress` のようなコールバックは持たない（Rust 側は純粋なシリアライズ対象）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct BackupOptions {
     /// バックアップ保存先ディレクトリ
     pub backup_dir: Option<String>,
@@ -229,6 +235,8 @@ pub(crate) enum BackupSelectorKind {
     ClosestTo(SystemTime),
     /// ID（タイムスタンプ文字列 YYYYMMDDHHMMSS-mmm）で直接指定
     ById(String),
+    /// 既知パスで直接指定（設計 §8 即時復旧・pre-stash 等、list から除外されるファイル用）
+    ByPath(PathBuf),
 }
 
 impl BackupSelector {
@@ -251,6 +259,15 @@ impl BackupSelector {
     /// ID（タイムスタンプ文字列）でバックアップを直接指定する
     pub fn by_id(id: impl Into<String>) -> Self {
         Self { kind: BackupSelectorKind::ById(id.into()), scope_filter: None }
+    }
+
+    /// 既知パスでバックアップファイルを直接指定する（設計 §8 即時復旧・pre-stash 戻し）。
+    ///
+    /// `list_backups` から除外される pre-stash（`...-pre_promote.db` 等）を restore/diff する経路。
+    /// promote/(b)操作が返す `pre_stash_path` を restore に回す即時復旧ループ（§8）で使用する。
+    /// backup_dir 配下の `.db` ファイルのみ許可（`select_backup` で検証）。
+    pub fn by_path(path: impl Into<PathBuf>) -> Self {
+        Self { kind: BackupSelectorKind::ByPath(path.into()), scope_filter: None }
     }
 
     /// スコープを限定する（TASK-150）
@@ -604,11 +621,9 @@ impl BackupManager {
                 let name = entry.file_name().to_string_lossy().to_string();
 
                 // pre-stash（pre_migrate/pre_restore/pre_promote）は運用用ロールバックファイルで
-                // ユーザー向け backup 一覧から除外する（設計 §7.2/§7.3・§8）。§8 復旧は既知パス経由。
-                if name.ends_with("-pre_migrate.db")
-                    || name.ends_with("-pre_restore.db")
-                    || name.ends_with("-pre_promote.db")
-                {
+                // ユーザー向け backup 一覧から除外する（設計 §7.2/§7.3・§8）。
+                // §8 復旧は list_pre_stashes() / byPath 経由で発見・戻しする。
+                if is_pre_stash_name(&name) {
                     continue;
                 }
 
@@ -662,6 +677,11 @@ impl BackupManager {
 
     /// 条件に一致するバックアップを選択
     pub fn select_backup(&self, selector: &BackupSelector) -> Result<Option<BackupInfo>> {
+        // ByPath は list_backups が pre-stash を除外するため専用経路（§8 即時復旧・既知パス）。
+        // scope_filter は無視（明示パス優先）。
+        if let BackupSelectorKind::ByPath(ref p) = selector.kind {
+            return self.select_backup_by_path(p);
+        }
         let backups = match &selector.scope_filter {
             Some(scope) => self.list_backups_in_scope(scope.clone())?,
             None => self.list_backups()?,
@@ -694,7 +714,122 @@ impl BackupManager {
             // list 結果から一致する id を探す（find_backup_by_id_in_scope は基底フル
             // .db のみを返すため、差分バックアップの直接選択には使えない）。
             BackupSelectorKind::ById(id) => backups.into_iter().find(|b| &b.id == id),
+            // ByPath は select_backup 先頭で early-return するためここには来ない。
+            BackupSelectorKind::ByPath(_) => unreachable!("ByPath handled by early-return"),
         })
+    }
+
+    /// 既知のバックアップファイルパスから BackupInfo を合成（設計 §8 即時復旧・既知パス経由）。
+    ///
+    /// `list_backups` が pre-stash（pre_promote/pre_restore/pre_migrate）を一覧から除外するため、
+    /// ByPath selector と `list_pre_stashes` は list を経由せず指定パスから直接 BackupInfo を合成
+    /// する。backup_dir 配下の `.db` ファイルのみ許可（path traversal・外部ファイル参照を拒否）。
+    /// restore/diff_with_backup/with_backup_db が消費するのは `kind`（Full）と `path` のみで、
+    /// 他フィールドは情報用。
+    fn build_backup_info_from_path(&self, path: &Path) -> Result<BackupInfo> {
+        // canonicalize で実在確認＋絶対パス化。不在は NotFound。traversal(`..`) も解決後に
+        // backup_dir 配下チェックで弾かれる。
+        let path_c = path
+            .canonicalize()
+            .map_err(|_| KijukuError::NotFound(format!("backup path not found: {}", path.display())))?;
+
+        // 拡張子は .db のみ（pre-stash は常にフル .db）。
+        if path_c.extension().and_then(|e| e.to_str()) != Some("db") {
+            return Err(KijukuError::Validation(format!(
+                "ByPath selector requires a .db file: {}",
+                path.display()
+            )));
+        }
+
+        // backup_dir 配下のみ許可（path traversal・外部ファイル参照の拒否）。
+        let backup_dir_c = self.backup_dir.canonicalize().map_err(|_| {
+            KijukuError::Validation(format!(
+                "backup_dir not accessible: {}",
+                self.backup_dir.display()
+            ))
+        })?;
+        if !path_c.starts_with(&backup_dir_c) {
+            return Err(KijukuError::Validation(format!(
+                "ByPath selector path must be under backup_dir {}: {}",
+                backup_dir_c.display(),
+                path.display()
+            )));
+        }
+
+        let name = path_c
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // id は parse_backup_filename から（pre-stash 命名規則に合致）。失敗時はファイル名をフォールバック。
+        let id = parse_backup_filename(&name, &self.db_stem)
+            .map(|p| p.id)
+            .unwrap_or_else(|| name.clone());
+
+        // scope は親ディレクトリ名から推導（pre-stash は tmp）。判定不能時は Tmp。
+        let scope = path_c
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| match n.to_string_lossy().as_ref() {
+                "auto" => Some(BackupScope::Auto),
+                "manual" => Some(BackupScope::Manual),
+                "tmp" => Some(BackupScope::Tmp),
+                _ => None,
+            })
+            .unwrap_or(BackupScope::Tmp);
+
+        let created_at = fs::metadata(&path_c)
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
+        Ok(BackupInfo {
+            id,
+            name,
+            path: path_c,
+            created_at,
+            scope,
+            kind: BackupKind::Full,
+            // pre-stash の "pre_promote" 等はユーザー向けラベルではないため None で上書き。
+            label: None,
+            label_source: LabelSource::Filename,
+            note: None,
+        })
+    }
+
+    /// ByPath selector のための BackupInfo 合成（設計 §8 即時復旧）。`build_backup_info_from_path`
+    /// の thin wrapper（select_backup が Some/None を扱うため Option で包む）。
+    fn select_backup_by_path(&self, path: &Path) -> Result<Option<BackupInfo>> {
+        Ok(Some(self.build_backup_info_from_path(path)?))
+    }
+
+    /// pre-stash（即時復旧用ロールバックファイル）一覧を取得（設計 §8）。
+    ///
+    /// `tmp/` 配下の `*-pre_{migrate,restore,promote}.db` を返す。promote/(b)操作が返す
+    /// `pre_stash_path` を呼出側が失った場合の発見経路。戻り値の `path` はそのまま
+    /// `BackupSelector::by_path` で `restore` に渡せる（backup_dir 配下のため）。
+    /// `list_backups` と同じく id（タイムスタンプ）降順（mtime の非決定回避・TASK-17 同原因）。
+    /// 読めないファイル（走査中の削除等）は飛ばし、一覧全体は失敗させない（復旧用途のため）。
+    pub fn list_pre_stashes(&self) -> Result<Vec<BackupInfo>> {
+        let tmp_dir = self.backup_dir.join("tmp");
+        if !tmp_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut stashes = Vec::new();
+        for entry in fs::read_dir(&tmp_dir)? {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !is_pre_stash_name(&name) {
+                continue;
+            }
+            // 復旧用途: 1ファイルの読み込み失敗（走査中削除等）で一覧全体を落とさない。
+            if let Ok(info) = self.build_backup_info_from_path(&entry.path()) {
+                stashes.push(info);
+            }
+        }
+
+        stashes.sort_by(|a, b| b.id.cmp(&a.id));
+        Ok(stashes)
     }
 
     /// 条件に一致するバックアップのパスを取得
@@ -958,16 +1093,16 @@ impl BackupManager {
                 }
             }
         } else {
-            // max_age_days / max_backups による削除（auto + manual 全バックアップ対象）
+            // max_age_days / max_backups による削除（auto バックアップのみ対象・manual は対象外＝手動削除のみ §7.4）
             let all_backups = self.list_backups()?;
-            let non_tmp: Vec<&BackupInfo> = all_backups
+            let auto_only: Vec<&BackupInfo> = all_backups
                 .iter()
-                .filter(|b| b.scope != BackupScope::Tmp)
+                .filter(|b| b.scope == BackupScope::Auto)
                 .collect();
 
             if let Some(max_age_days) = self.max_age_days {
                 let max_age = std::time::Duration::from_secs(max_age_days * DAY_SECS);
-                for b in &non_tmp {
+                for b in &auto_only {
                     if let Ok(age) = now.duration_since(b.created_at) {
                         if age > max_age {
                             to_delete.push(b.path.clone());
@@ -977,8 +1112,8 @@ impl BackupManager {
             }
 
             if let Some(max_backups) = self.max_backups {
-                if non_tmp.len() > max_backups {
-                    for b in non_tmp.iter().skip(max_backups) {
+                if auto_only.len() > max_backups {
+                    for b in auto_only.iter().skip(max_backups) {
                         if !to_delete.contains(&b.path) {
                             to_delete.push(b.path.clone());
                         }
@@ -1441,6 +1576,14 @@ struct ParsedFilename {
     id: String,
     extension: String,
     label: Option<String>,
+}
+
+/// pre-stash（pre_migrate/pre_restore/pre_promote）ロールバックファイルか（設計 §7.2/§7.3・§8）。
+/// `list_backups` はこれをユーザー向け一覧から除外し、`list_pre_stashes` はこれを抽出する。
+fn is_pre_stash_name(name: &str) -> bool {
+    name.ends_with("-pre_migrate.db")
+        || name.ends_with("-pre_restore.db")
+        || name.ends_with("-pre_promote.db")
 }
 
 /// ファイル名から ID・拡張子・ラベルを解析
@@ -1924,7 +2067,9 @@ mod tests {
         }
 
         let backups = manager.list_backups().unwrap();
-        assert_eq!(backups.len(), 2);
+        // フォールバックモード（retention_policy=None + max_backups）の削除対象は auto のみ。
+        // manual は削除されず全件残る（設計 §7.4・manual は対象外＝手動削除のみ）。
+        assert_eq!(backups.len(), 4, "manual は max_backups の削除対象外（§7.4）");
     }
 
     #[test]
@@ -2078,6 +2223,189 @@ mod tests {
             found.path
         );
         assert!(matches!(found.kind, BackupKind::Full), "kind は Full のべき");
+    }
+
+    /// ByPath selector で pre-stash（list 除外ファイル）を直接選択できる（設計 §8 即時復旧）。
+    #[test]
+    fn test_select_backup_by_path_pre_stash() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = create_test_db(temp_dir.path());
+        let backup_dir = temp_dir.path().join("backups");
+        let tmp_dir = backup_dir.join("tmp");
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let options = BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let manager = BackupManager::new(&db_path, options).unwrap();
+
+        // tmp/ に pre_promote を配置（list_backups は除外するが ByPath は直接合成）
+        let pre = tmp_dir.join("test.20260724000000-000-pre_promote.db");
+        fs::write(&pre, b"dummy pre-stash").unwrap();
+
+        let info = manager
+            .select_backup(&BackupSelector::by_path(&pre))
+            .expect("by_path ok")
+            .expect("Some BackupInfo");
+        assert!(matches!(info.kind, BackupKind::Full), "pre-stash は Full");
+        assert_eq!(info.scope, BackupScope::Tmp);
+        assert_eq!(info.label, None, "pre_promote ラベルは None で上書き");
+        assert!(info.path.ends_with("test.20260724000000-000-pre_promote.db"));
+    }
+
+    /// list_pre_stashes は pre-stash のみを返し list_backups は除外したまま（設計 §8）。
+    /// id（タイムスタンプ）降順。戻り値の path は tmp/ 配下で byPath restore に直接渡せる。
+    #[test]
+    fn test_list_pre_stashes() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = create_test_db(temp_dir.path());
+        let backup_dir = temp_dir.path().join("backups");
+        let tmp_dir = backup_dir.join("tmp");
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let options = BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let manager = BackupManager::new(&db_path, options).unwrap();
+
+        // 3種の pre-stash（タイムスタンプ違い）と通常 backup を tmp/ に配置。
+        fs::write(tmp_dir.join("test.20260724000000-000-pre_promote.db"), b"a").unwrap();
+        fs::write(tmp_dir.join("test.20260724000005-000-pre_restore.db"), b"b").unwrap();
+        fs::write(tmp_dir.join("test.20260724000010-000-pre_migrate.db"), b"c").unwrap();
+        // 通常 backup（list_backups 対象・list_pre_stashes には含まれない）。
+        fs::write(tmp_dir.join("test.20260724000020-000.db"), b"d").unwrap();
+
+        let stashes = manager.list_pre_stashes().expect("list_pre_stashes ok");
+        // id 降順（最新の pre_migrate が先）。
+        let names: Vec<String> = stashes.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "test.20260724000010-000-pre_migrate.db".to_string(),
+                "test.20260724000005-000-pre_restore.db".to_string(),
+                "test.20260724000000-000-pre_promote.db".to_string(),
+            ],
+            "id 降順・pre-stash 3件のみ"
+        );
+        // path は tmp/ 配下（canonicalize 済み・byPath restore に直接渡せる）。
+        let tmp_c = tmp_dir.canonicalize().unwrap();
+        for s in &stashes {
+            assert!(s.path.starts_with(&tmp_c), "tmp 配下: {}", s.path.display());
+            assert!(matches!(s.kind, BackupKind::Full));
+            assert_eq!(s.label, None, "pre-stash ラベルは None");
+        }
+
+        // list_backups は pre-stash を除外し通常 backup のみ。
+        let backups = manager.list_backups().expect("list_backups ok");
+        assert_eq!(backups.len(), 1, "通常 backup のみ: {backups:?}");
+        assert!(backups[0].name.ends_with("-000.db"));
+    }
+
+    /// tmp/ が無い、または pre-stash が無い場合は空 Vec。
+    #[test]
+    fn test_list_pre_stashes_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = create_test_db(temp_dir.path());
+        let backup_dir = temp_dir.path().join("backups");
+
+        // tmp/ を作らない。
+        let options = BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let manager = BackupManager::new(&db_path, options).unwrap();
+        assert!(manager.list_pre_stashes().unwrap().is_empty(), "tmp/ なしは空");
+
+        // tmp/ はあるが pre-stash なし（通常 backup のみ）。
+        let tmp_dir = backup_dir.join("tmp");
+        fs::create_dir_all(&tmp_dir).unwrap();
+        fs::write(tmp_dir.join("test.20260724000000-000.db"), b"x").unwrap();
+        assert!(
+            manager.list_pre_stashes().unwrap().is_empty(),
+            "pre-stash なしは空"
+        );
+    }
+
+    #[test]
+    fn test_select_backup_by_path_rejects_outside_backup_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = create_test_db(temp_dir.path());
+        let backup_dir = temp_dir.path().join("backups");
+        fs::create_dir_all(&backup_dir).unwrap();
+
+        let options = BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let manager = BackupManager::new(&db_path, options).unwrap();
+
+        let outside = temp_dir.path().join("outside.db");
+        fs::write(&outside, b"dummy").unwrap();
+
+        let err = manager
+            .select_backup(&BackupSelector::by_path(&outside))
+            .unwrap_err();
+        assert!(matches!(err, KijukuError::Validation(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn test_select_backup_by_path_rejects_non_db_extension() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = create_test_db(temp_dir.path());
+        let backup_dir = temp_dir.path().join("backups");
+        let tmp_dir = backup_dir.join("tmp");
+        fs::create_dir_all(&tmp_dir).unwrap();
+
+        let options = BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let manager = BackupManager::new(&db_path, options).unwrap();
+
+        let txt = tmp_dir.join("test.20260724000000-000.txt");
+        fs::write(&txt, b"dummy").unwrap();
+
+        let err = manager
+            .select_backup(&BackupSelector::by_path(&txt))
+            .unwrap_err();
+        assert!(matches!(err, KijukuError::Validation(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn test_select_backup_by_path_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = create_test_db(temp_dir.path());
+        let backup_dir = temp_dir.path().join("backups");
+        fs::create_dir_all(&backup_dir).unwrap();
+
+        let options = BackupOptions {
+            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let manager = BackupManager::new(&db_path, options).unwrap();
+
+        let missing = backup_dir.join("tmp").join("nonexistent.db");
+        let err = manager
+            .select_backup(&BackupSelector::by_path(&missing))
+            .unwrap_err();
+        assert!(matches!(err, KijukuError::NotFound(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn test_parse_backup_filename_pre_promote_label() {
+        let parsed = parse_backup_filename("test.20260724000000-000-pre_promote.db", "test");
+        let parsed = parsed.expect("pre_promote parses as labeled .db");
+        assert_eq!(parsed.id, "20260724000000-000");
+        assert_eq!(parsed.extension, "db");
+        assert_eq!(parsed.label.as_deref(), Some("pre_promote"));
     }
 
     #[test]

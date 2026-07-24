@@ -32,6 +32,9 @@ pub struct RemoteConfig {
     pub media_root: Option<String>,
     /// 操作対象 DB（未設定 = デフォルト stg・設計 §13）。prod は readonly + migrate skip。
     pub target: Target,
+    /// 読込先 DB（未指定時は target に従う・設計 §3.5）。prod 指定で prod RO 読込専用セッション。
+    /// `resolve_target` と同じ方式Aで target に折り畳む（read_source が Some なら優先）。
+    pub read_source: Option<Target>,
 }
 
 impl Default for RemoteConfig {
@@ -46,7 +49,16 @@ impl Default for RemoteConfig {
             binary_path: Some(String::from("~/.local/bin/kijuku-cli")),
             media_root: None,
             target: Target::default(),
+            read_source: None,
         }
+    }
+}
+
+impl RemoteConfig {
+    /// read-source を target に折り畳んだ実効 target（方式A・設計 §3.5/§13）。
+    /// read_source が Some ならそちらを優先（prod RO 読込専用セッション）。
+    pub fn effective_target(&self) -> Target {
+        self.read_source.unwrap_or(self.target)
     }
 }
 
@@ -104,7 +116,8 @@ fn derive_stg_db_path(prod_path: &str) -> String {
 fn resolve_remote_db_path(config: &RemoteConfig) -> String {
     const DEFAULT_PROD: &str = "~/.local/share/kijuku/kijuku.db";
     const DEFAULT_STG: &str = "~/.local/share/kijuku/kijuku.stg.db";
-    match config.target {
+    // read-source を target に折り畳む（方式A・設計 §3.5/§13）。
+    match config.effective_target() {
         Target::Prod => config
             .db_path
             .clone()
@@ -259,7 +272,7 @@ impl RemoteKijukuDB {
         let command = build_remote_command(
             remote_binary_path,
             &remote_db_path,
-            self.config.target,
+            self.config.effective_target(),
             self.config.media_root.as_deref(),
         );
         channel
@@ -869,6 +882,26 @@ impl RemoteKijukuDB {
         self.check_response(response)
     }
 
+    /// prod(RO) と現在DB(stg) の差分を取得（promote 判断用・設計 §4.4・TASK-53）。
+    /// リモート CLI は self=stg 起動を想定し、`prod_db_path` で prod を別途指定する
+    /// （`build_remote_command` は --db を1つしか渡せないため・設計 §4.2/§4.4）。
+    /// `prod_db_path` が None の場合は CLI 側で prod target のデフォルトパスを解決する。
+    pub fn diff_with_prod(
+        &self,
+        prod_db_path: Option<&std::path::Path>,
+        options: &crate::diff::DiffOptions,
+    ) -> Result<crate::diff::BackupDiff> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "diffProdStg".to_string(),
+            params: serde_json::json!({
+                "prodDbPath": prod_db_path,
+                "options": serde_json::to_value(options)
+                    .map_err(|e| KijukuError::Other(e.to_string()))?,
+            }),
+        })?;
+        self.check_response(response)
+    }
+
     // --- update_exist ---
 
     /// フィルタで絞り込んだメディアのflag_existをファイル存在状態に基づいて更新する
@@ -1453,6 +1486,62 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_remote_db_path(&stg_default), "~/.local/share/kijuku/kijuku.stg.db");
+    }
+
+    #[test]
+    fn effective_target_prefers_read_source() {
+        // read_source 指定時は target より優先（方式A・設計 §3.5/§13）。
+        // target=Stg でも read_source=Some(Prod) なら prod RO 読込専用セッション。
+        let ro_session = RemoteConfig {
+            target: Target::Stg,
+            read_source: Some(Target::Prod),
+            ..Default::default()
+        };
+        assert_eq!(ro_session.effective_target(), Target::Prod);
+
+        // 逆方向: target=Prod, read_source=Some(Stg) → Stg
+        let flip = RemoteConfig {
+            target: Target::Prod,
+            read_source: Some(Target::Stg),
+            ..Default::default()
+        };
+        assert_eq!(flip.effective_target(), Target::Stg);
+
+        // read_source 未指定時は target に従う（従来通り）
+        let no_read_source = RemoteConfig {
+            target: Target::Stg,
+            read_source: None,
+            ..Default::default()
+        };
+        assert_eq!(no_read_source.effective_target(), Target::Stg);
+    }
+
+    #[test]
+    fn resolve_remote_db_path_prefers_read_source() {
+        // target=Stg でも read_source=Some(Prod) なら prod DB パスを使用（方式A・read_source 優先）。
+        let ro_session = RemoteConfig {
+            target: Target::Stg,
+            read_source: Some(Target::Prod),
+            db_path: Some("~/.local/share/kijuku/kijuku.db".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_remote_db_path(&ro_session),
+            "~/.local/share/kijuku/kijuku.db"
+        );
+
+        // read_source=Some(Stg) なら stg 導出パスを使用（stg_db_path 未指定 → db_path から導出）
+        let stg_read = RemoteConfig {
+            target: Target::Prod,
+            read_source: Some(Target::Stg),
+            db_path: Some("~/.local/share/kijuku/kijuku.db".to_string()),
+            stg_db_path: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_remote_db_path(&stg_read),
+            "~/.local/share/kijuku/kijuku.stg.db"
+        );
     }
 
     #[test]

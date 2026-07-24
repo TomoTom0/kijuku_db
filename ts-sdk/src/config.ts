@@ -216,18 +216,24 @@ export const systemEnv: EnvGetter = (key) => process.env[key];
  * target と dbPath を解決する純粋関数（設計 §13）。
  *
  * 優先順位（CLI 引数が常に勝つ）:
- * - target: `cliTarget` > `KIJUKU_TARGET`(env) > デフォルト `stg`
+ * - read-source: `cliReadSource` > `KIJUKU_READ_SOURCE`(env) > 未指定
+ * - target: `readSource`（指定なら優先・target に折り畳む） > `cliTarget` > `KIJUKU_TARGET`(env) > デフォルト `stg`
  * - dbPath: `cliDb` > target 別 env（prod=`KIJUKU_DB_PATH` / stg=`KIJUKU_STG_DB_PATH`）
  *   > target 別デフォルト（prod=`kijuku.db` / stg=`kijuku.stg.db`）
  *
- * readonly / shouldMigrate は target から導出（prod→readonly=true・migrate skip）。
+ * read-source は target に折り畳む（方式A: read-source=prod は prod RO 読込専用セッション・
+ * 設計 §3.5/§6.2 を「インスタンス使い分け」で実現）。readonly / shouldMigrate は target から導出。
  */
 export function resolveTarget(
   cliTarget: Target | undefined,
   cliDb: string | undefined,
+  cliReadSource: Target | undefined,
   env: EnvGetter,
 ): TargetResolution {
-  const target = cliTarget ?? parseTarget(env('KIJUKU_TARGET')) ?? 'stg';
+  // read-source 解決（設計 §3.5/§13）。
+  const readSource = cliReadSource ?? parseTarget(env('KIJUKU_READ_SOURCE'));
+  // target 解決: read-source（指定なら優先・target に折り畳む） > --target > KIJUKU_TARGET > デフォルト stg。
+  const target = readSource ?? cliTarget ?? parseTarget(env('KIJUKU_TARGET')) ?? 'stg';
 
   const dbPath =
     cliDb ??

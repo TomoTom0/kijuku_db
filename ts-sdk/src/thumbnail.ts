@@ -205,14 +205,17 @@ function updateMediaThumbnail(
       break;
     }
     case 'video': {
+      // 1つ目の switch で video は resolveMediaFilePath 失敗時に early-return 済みなので
+      // ここでは resolvedVideoPath は必ず設定されるが、TS は switch をまたぐ代入を追跡しないためガード。
+      if (!resolvedVideoPath) {
+        return build({ type: 'error', message: '動画ファイルパスが未解決' });
+      }
       cmdResult = spawnSync('ffmpeg', [
         '-ss', '00:00:01', '-i', resolvedVideoPath,
         '-vframes', '1', '-q:v', '2', '-y', expectedPath,
       ]);
       break;
     }
-    case 'music':
-      return build({ type: 'skipped', reason: 'musicはサムネイル対象外' });
   }
 
   const cmdName = media.media_type === 'video' ? 'ffmpeg' : 'convert';

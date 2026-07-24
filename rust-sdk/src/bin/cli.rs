@@ -360,6 +360,8 @@ enum BackupSelectorJson {
     Latest,
     Nth { n: usize },
     ById { id: String },
+    /// 既知パスで直接指定（設計 §8 即時復旧・pre-stash 戻し）
+    ByPath { path: String },
 }
 
 impl BackupSelectorJson {
@@ -368,6 +370,7 @@ impl BackupSelectorJson {
             BackupSelectorJson::Latest => BackupSelector::latest(),
             BackupSelectorJson::Nth { n } => BackupSelector::nth(*n),
             BackupSelectorJson::ById { id } => BackupSelector::by_id(id),
+            BackupSelectorJson::ByPath { path } => BackupSelector::by_path(path),
         }
     }
 }
@@ -412,6 +415,41 @@ struct DiffBackupParams {
     options: Option<DiffOptionsJson>,
 }
 
+/// prod/stg 差分のパラメータ（stdin・設計 §4.4・TASK-53）
+#[derive(Debug, Deserialize, Default)]
+struct DiffProdStgParams {
+    /// prod DB パス（省略時は KIJUKU_DB_PATH / デフォルト）
+    #[serde(default, rename = "prodDbPath")]
+    prod_db_path: Option<String>,
+    options: Option<DiffOptionsJson>,
+}
+
+/// observe（機械的 promote gate）のパラメータ（stdin・設計 §3.4/§4.4・TASK-54）。
+/// `options` は SDK の `ObserveOptions`（camelCase）に直接デシリアライズ。
+#[derive(Debug, Deserialize, Default)]
+struct ObserveParams {
+    /// prod DB パス（省略時は KIJUKU_DB_PATH / デフォルト）
+    #[serde(default, rename = "prodDbPath")]
+    prod_db_path: Option<String>,
+    #[serde(default)]
+    options: kijuku_db::diff::ObserveOptions,
+}
+
+/// promote（stg→prod 反映）のパラメータ（stdin・設計 §4.5・TASK-58/62）。
+/// `ObserveParams` と同形。`backupOpts` で pre-stash 先（`backup_dir`）をカスタマイズ可能
+/// （省略時は `enabled:false` 相当・デフォルト `tmp/` のみ・§7.2）。
+#[derive(Debug, Deserialize, Default)]
+struct PromoteParams {
+    /// prod DB パス（省略時は KIJUKU_DB_PATH / デフォルト）
+    #[serde(default, rename = "prodDbPath")]
+    prod_db_path: Option<String>,
+    #[serde(default)]
+    options: kijuku_db::diff::ObserveOptions,
+    /// pre-stash 先の BackupManager 設定（省略時はデフォルト `tmp/`・§7.2）。
+    #[serde(default, rename = "backupOpts")]
+    backup_opts: Option<kijuku_db::BackupOptions>,
+}
+
 /// バックアップメタ（ラベル）操作のパラメータ
 #[derive(Debug, Deserialize)]
 struct BackupLabelParams {
@@ -436,6 +474,10 @@ struct BackupIdParams {
 #[derive(Debug, Deserialize)]
 struct RestoreParams {
     selector: Option<BackupSelectorJson>,
+    /// (b) 操作の dry-run（設計 §9.2/§15-13）。true なら復元で変化する内容（prod 現状 vs バックアップの
+    /// 差分）を返し prod は変更しない。prod 直接実行時の gate の一部。
+    #[serde(default, rename = "dryRun")]
+    dry_run: bool,
 }
 
 /// sync（prod→stg フル複製）のパラメータ（設計 §4.2）。
@@ -502,7 +544,7 @@ fn not_supported(op: &str) -> CommandResponse {
 fn build_backend(ctx: &CliContext) -> Result<Backend, CommandResponse> {
     match ctx.backend {
         BackendKind::Local => {
-            let db = KijukuDB::open_with_options(
+            let mut db = KijukuDB::open_with_options(
                 &ctx.db_path,
                 DBOptions {
                     backup: Some(BackupOptions::default()),
@@ -513,6 +555,16 @@ fn build_backend(ctx: &CliContext) -> Result<Backend, CommandResponse> {
                 },
             )
             .map_err(|e| CommandResponse::error(format!("データベースのオープンに失敗: {}", e)))?;
+            // stg 書込セッション（!readonly）は排他ロックを取得（設計 §15-11）。
+            // 別セッションが stg 編集中なら StgBusy で拒否。
+            if !ctx.readonly {
+                db.acquire_stg_lock().map_err(|e| {
+                    CommandResponse::error(format!(
+                        "stg の排他ロック取得に失敗しました（別セッションが使用中の可能性）: {}",
+                        e
+                    ))
+                })?;
+            }
             Ok(Backend::Local(db))
         }
         BackendKind::D1 => {
@@ -647,6 +699,10 @@ struct Cli {
     #[arg(long, value_parser = ["prod", "stg"])]
     target: Option<String>,
 
+    /// 読込先（prod / stg・未指定時は target に従う）。prod 指定で prod RO 読込専用セッション（設計 §3.5・方式A）
+    #[arg(long, value_parser = ["prod", "stg"])]
+    read_source: Option<String>,
+
     /// ファイル操作 API（cp/mv/sync/trash/upload/download）のサンドボックス境界（media root のパス）
     #[arg(long)]
     media_root: Option<String>,
@@ -708,6 +764,8 @@ enum Commands {
     },
     /// バックアップ一覧を表示
     ListBackups,
+    /// pre-stash（即時復旧用ロールバックファイル）一覧を表示（設計 §8）
+    ListPreStashes,
     /// バックアップから復元
     Restore {
         /// N番目のバックアップから復元（0が最新、省略時は最新）
@@ -728,6 +786,45 @@ enum Commands {
         /// 詳細度: summary（件数のみ）/ limited=<N> / full
         #[arg(long, default_value = "summary")]
         detail: String,
+    },
+    /// prod と stg（現在DB）の差分を表示（promote 判断用・設計 §4.4）
+    DiffProdStg {
+        /// prod DB パス（省略時は KIJUKU_DB_PATH / デフォルト）
+        #[arg(long)]
+        prod: Option<String>,
+        /// 詳細度: summary / limited=<N> / full
+        #[arg(long, default_value = "limited=20")]
+        detail: String,
+        /// テーブル別件数・分布（ProdStgDiffSummary）を表示
+        #[arg(long)]
+        summarize: bool,
+        /// LLM explanation prompt を stdout に出力（他の出力を抑制）
+        #[arg(long)]
+        prompt: bool,
+    },
+    /// stg と prod を比較し機械的 promote gate を評価（promote 可否・設計 §3.4/§4.4）
+    ///
+    /// integrity/FK/schema_version/件数差分上限 の機械 gate を実行し、全合格で promote 可能と判定。
+    /// 閾値は `--max-added/--max-removed/--max-changed` で上書き可能（デフォルト 5000/1000/5000）。
+    Observe {
+        /// prod DB パス（省略時は KIJUKU_DB_PATH / デフォルト）
+        #[arg(long)]
+        prod: Option<String>,
+        /// 差分の詳細度: summary / limited=<N> / full（observe 本体は件数で判定するため summary で十分）
+        #[arg(long, default_value = "summary")]
+        detail: String,
+        /// promote で prod に追加される行数の上限（`totals.added`）
+        #[arg(long)]
+        max_added: Option<usize>,
+        /// promote で prod から削除される行数の上限（`totals.removed`）
+        #[arg(long)]
+        max_removed: Option<usize>,
+        /// promote で prod が上書きされる行数の上限（`totals.changed`）
+        #[arg(long)]
+        max_changed: Option<usize>,
+        /// 機械可読 JSON で出力（他の出力を抑制）
+        #[arg(long)]
+        json: bool,
     },
     /// バックアップにラベルを付与（事後）
     SetBackupLabel {
@@ -1000,6 +1097,28 @@ fn handle_list_backups_subcommand(ctx: &CliContext) {
     }
 }
 
+/// pre-stash（即時復旧用ロールバックファイル）一覧を表示（設計 §8）。
+/// promote/(b)操作が返す pre_stash_path を失った場合の発見経路。path は byPath restore に直接渡せる。
+fn handle_list_pre_stashes_subcommand(ctx: &CliContext) {
+    let db = match open_and_migrate_db(ctx) {
+        Some(db) => db,
+        None => return,
+    };
+    match db.list_pre_stashes() {
+        Ok(stashes) => {
+            if stashes.is_empty() {
+                println!("pre-stash（即時復旧用ロールバックファイル）はありません");
+                return;
+            }
+            for (i, info) in stashes.iter().enumerate() {
+                // path は byPath restore に直接渡す戻し先（設計 §8 即時復旧）。
+                println!("[{}] {} path={}", i, info.name, info.path.display());
+            }
+        }
+        Err(e) => eprintln!("pre-stash 一覧の取得に失敗: {}", e),
+    }
+}
+
 fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>, id: Option<String>) {
     let mut db = match open_and_migrate_db(ctx) {
         Some(db) => db,
@@ -1076,6 +1195,122 @@ fn handle_diff_backup_subcommand(
     }
 }
 
+/// `diff-prod-stg` サブコマンド: prod(RO) と stg(現在DB) の差分（promote 判断用・設計 §4.4）。
+///
+/// stg 編集視点（added=stg新規=promoteでprod追加 等）で表示。`--prompt` は LLM explanation
+/// prompt を stdout に出力（コピペ可能・他出力抑制）。`--summarize` はテーブル別分布を追加表示。
+fn handle_diff_prod_stg_subcommand(
+    ctx: &CliContext,
+    prod: Option<String>,
+    detail: String,
+    summarize: bool,
+    prompt: bool,
+) {
+    let db = match open_and_migrate_db(ctx) {
+        Some(db) => db,
+        None => return,
+    };
+    let detail_enum = match parse_diff_detail(&detail) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
+    };
+    let options = kijuku_db::diff::DiffOptions {
+        detail: Some(detail_enum),
+    };
+    let (prod_path, _stg) = resolve_sync_paths(prod, None);
+    match db.diff_with_prod(Path::new(&prod_path), &options) {
+        Ok(diff) => {
+            let summary = kijuku_db::diff::summarize_diff(&diff);
+            if prompt {
+                let p = kijuku_db::diff::build_diff_explanation_prompt(
+                    &diff,
+                    &summary,
+                    &kijuku_db::diff::DiffExplanationPromptOptions::default(),
+                );
+                print!("{}", p);
+            } else {
+                print_prod_stg_diff_summary(&diff, &summary, summarize);
+            }
+        }
+        Err(e) => eprintln!("prod/stg 差分の取得に失敗: {}", e),
+    }
+}
+
+/// `observe` サブコマンド: 機械的 promote gate を評価し結果を表示（設計 §3.4/§4.4・TASK-54）。
+fn handle_observe_subcommand(
+    ctx: &CliContext,
+    prod: Option<String>,
+    detail: String,
+    max_added: Option<usize>,
+    max_removed: Option<usize>,
+    max_changed: Option<usize>,
+    json: bool,
+) {
+    let db = match open_and_migrate_db(ctx) {
+        Some(db) => db,
+        None => return,
+    };
+    let detail_enum = match parse_diff_detail(&detail) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
+    };
+    let mut options = kijuku_db::diff::ObserveOptions {
+        diff_options: kijuku_db::diff::DiffOptions {
+            detail: Some(detail_enum),
+        },
+        gate_config: kijuku_db::diff::GateConfig::default(),
+    };
+    if let Some(m) = max_added {
+        options.gate_config.max_added = m;
+    }
+    if let Some(m) = max_removed {
+        options.gate_config.max_removed = m;
+    }
+    if let Some(m) = max_changed {
+        options.gate_config.max_changed = m;
+    }
+    let (prod_path, _stg) = resolve_sync_paths(prod, None);
+    match db.observe(Path::new(&prod_path), &options) {
+        Ok(result) => {
+            if json {
+                match serde_json::to_string_pretty(&result) {
+                    Ok(s) => print!("{}", s),
+                    Err(e) => eprintln!("シリアライズエラー: {}", e),
+                }
+            } else {
+                print_observe_result(&result);
+            }
+        }
+        Err(e) => eprintln!("observe（promote gate）の評価に失敗: {}", e),
+    }
+}
+
+/// observe 結果の人間向け表示
+fn print_observe_result(result: &kijuku_db::diff::ObserveResult) {
+    if result.passed {
+        println!("PROMOTE GATE: PASS（全検査合格・promote 可能）");
+    } else {
+        println!("PROMOTE GATE: FAIL（不合格の検査あり・promote 不可）");
+    }
+    println!(
+        "  schema_version: prod={} stg={}",
+        result.prod_schema_version, result.stg_schema_version
+    );
+    let t = &result.summary.totals;
+    println!("  差分合計: +{} -{} ~{}", t.added, t.removed, t.changed);
+    println!("  gate 検査:");
+    for c in &result.checks {
+        let mark = if c.passed { "OK" } else { "NG" };
+        println!("    [{}] {}: {}", mark, c.name, c.detail);
+    }
+}
+
 /// `--detail` 文字列を DiffDetail に変換（summary / limited=N / full）
 /// 無効値はエラーを返し、デフォルトへのサイレントフォールバックを防ぐ。
 fn parse_diff_detail(s: &str) -> Result<kijuku_db::diff::DiffDetail, String> {
@@ -1136,6 +1371,84 @@ mod tests_parse_diff_detail {
     }
 }
 
+#[cfg(test)]
+mod tests_classify_operation {
+    use super::*;
+
+    #[test]
+    fn classifies_b_restricted_ops() {
+        // (b) stg 制限操作（設計 §9.2・破壊的/全床上書き）。
+        for op in &["mediaMv", "purgeTrash", "restore"] {
+            assert_eq!(
+                classify_operation(op),
+                OpClass::StgRestricted,
+                "{} は (b) StgRestricted のべき",
+                op
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_a_permitted_ops() {
+        // (a) stg 許可操作（設計 §9.1）。代表操作で (a) 帰着を検証。
+        for op in &[
+            "createMedia",
+            "updateMedia",
+            "deleteMedia",
+            "bulkCreateMedia",
+            "createTag",
+            "addTagToMedia",
+            "setMediaAttribute",
+            "addMediaHash",
+            "computeMediaHash",
+            "updateExist",
+            "updateThumbnail",
+            "backup",
+            "setBackupLabel",
+            "mediaCp",
+            "mediaSync",
+            "moveToTrash",
+            "restoreFromTrash",
+            "promote",
+            // migrate は P3 まで現状維持（StgPermitted・TODO-P3/TASK-45）
+            "migrate",
+        ] {
+            assert_eq!(
+                classify_operation(op),
+                OpClass::StgPermitted,
+                "{} は (a) StgPermitted のべき",
+                op
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_read_ops() {
+        // 読込操作は Read。
+        for op in &[
+            "getMedia",
+            "findMedia",
+            "getAllTags",
+            "getMediaAttributes",
+            "getMediaHash",
+            "listBackups",
+            "diffBackup",
+            "diffProdStg",
+            "observe",
+            "getSchemaVersion",
+            "listTrash",
+        ] {
+            assert_eq!(classify_operation(op), OpClass::Read, "{} は Read のべき", op);
+        }
+    }
+
+    #[test]
+    fn unknown_op_is_read() {
+        // 未知操作は Read（既存挙動: execute_command が最終的に「不明な操作」エラー）。
+        assert_eq!(classify_operation("__unknown__"), OpClass::Read);
+    }
+}
+
 fn print_backup_diff_summary(diff: &kijuku_db::diff::BackupDiff) {
     let s = &diff.summary;
     println!(
@@ -1172,6 +1485,137 @@ fn print_backup_diff_summary(diff: &kijuku_db::diff::BackupDiff) {
     }
 }
 
+/// prod/stg 差分の人間可読サマリ（stg 編集視点・設計 §4.4・TASK-53）。
+///
+/// `show_distribution` が true ならテーブル別の偏り（分布）も表示する。
+fn print_prod_stg_diff_summary(
+    diff: &kijuku_db::diff::BackupDiff,
+    summary: &kijuku_db::diff::ProdStgDiffSummary,
+    show_distribution: bool,
+) {
+    let c = &summary.counts;
+    println!("prod/stg 差分（stg 編集視点: promote で prod に反映される内容）:");
+    println!(
+        "  media:      +{} -{} ~{}  (added=stg新規 / removed=prod削除 / changed=上書き)",
+        c.media.added, c.media.removed, c.media.changed
+    );
+    println!("  tags:       +{} -{} ~{}", c.tags.added, c.tags.removed, c.tags.changed);
+    println!("  media_tags: +{} -{}", c.media_tags.added, c.media_tags.removed);
+    println!(
+        "  attributes: +{} -{} ~{}",
+        c.attributes.added, c.attributes.removed, c.attributes.changed
+    );
+    println!("  hashes:     +{} -{} ~{}", c.hashes.added, c.hashes.removed, c.hashes.changed);
+    println!(
+        "  合計:       +{} -{} ~{}",
+        summary.totals.added, summary.totals.removed, summary.totals.changed
+    );
+
+    if !diff.media.added.is_empty() {
+        println!("  [media added: stg 新規 = promote で prod に追加]");
+        for m in diff.media.added.iter().take(10) {
+            println!("    + id={} {}", m.id, m.title);
+        }
+    }
+    if !diff.media.removed.is_empty() {
+        println!("  [media removed: prod のみ = promote で prod から削除]");
+        for m in diff.media.removed.iter().take(10) {
+            println!("    - id={} {}", m.id, m.title);
+        }
+    }
+    if !diff.media.changed.is_empty() {
+        println!("  [media changed: 両方で異なる = promote で prod が上書き]");
+        for ch in diff.media.changed.iter().take(10) {
+            println!("    ~ id={} {} -> {}", ch.current.id, ch.current.title, ch.backup.title);
+        }
+    }
+
+    if show_distribution {
+        println!("  [分布（テーブル別の偏り）]");
+        for (k, v) in &summary.distribution.media.by_type {
+            println!("    media type={}: +{} -{} ~{}", k, v.added, v.removed, v.changed);
+        }
+        for (k, v) in &summary.distribution.media.by_artist_top {
+            println!("    media artist={}: +{} -{} ~{}", k, v.added, v.removed, v.changed);
+        }
+        for (k, v) in &summary.distribution.media.by_flag_exist {
+            println!("    media flag_exist={}: +{} -{} ~{}", k, v.added, v.removed, v.changed);
+        }
+        for (k, v) in &summary.distribution.attributes.by_key {
+            println!("    attr key={}: +{} -{} ~{}", k, v.added, v.removed, v.changed);
+        }
+        for (k, v) in &summary.distribution.media_tags.by_tag_top {
+            println!("    media_tags tag_id={}: +{} -{}", k, v.added, v.removed);
+        }
+        for (k, v) in &summary.distribution.hashes.by_filename_top {
+            println!("    hashes filename={}: +{} -{} ~{}", k, v.added, v.removed, v.changed);
+        }
+    }
+}
+
+/// 操作の階層化分類（設計 §9・TASK-59 P2-C4）。
+///
+/// - `Read`: DB 変更なし（get*/find*/list*/diff*/observe 等）。prod RO 読込・stg 両方で許可。
+/// - `StgPermitted`((a)): stg で許可・promote で prod へ反映（CRUD/tag/attr/hash/upload・
+///   cp/sync/trash系可逆操作）。prod 直接実行は拒否（stg 経由・promote が唯一の prod 反映経路）。
+/// - `StgRestricted`((b)): stg では環境が制限（拒否）。prod 直接でのみ dry-run + trash + pre-stash
+///   のシステム gate を強制して実行（設計 §3.2/§5.2/§9.2）。
+///
+/// `migrate` は設計 §15-5 で「stg 経由詳細→P3」とされ TASK-45（P3「破壊操作(b)扱い」）の対象のため
+/// 本タスクでは `StgPermitted`（現状維持: 接続時 auto-migrate + pre_migrate_snapshot）。正式 (b)
+/// gate 化は P3（TODO-P3）。`promote`/`sync` は専用 gate/経路を持つ特殊操作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpClass {
+    Read,
+    StgPermitted,
+    StgRestricted,
+}
+
+/// 操作名 → 階層化分類（設計 §9）。分類は破壊度基準: 可逆/追加的操作=(a)、不可逆/全床=(b)。
+fn classify_operation(op: &str) -> OpClass {
+    // (b) stg 制限操作（設計 §9.2・prod 直接 gate 必須）。
+    if matches!(op, "mediaMv" | "purgeTrash" | "restore") {
+        return OpClass::StgRestricted;
+    }
+    // (a) stg 許可操作（設計 §9.1）= readonly で拒否すべき書込。promote は stg 起点の専用 gate 操作。
+    if matches!(
+        op,
+        "migrate"
+            | "createMedia"
+            | "updateMedia"
+            | "deleteMedia"
+            | "bulkCreateMedia"
+            | "bulkDeleteMedia"
+            | "bulkUpdateMedia"
+            | "createTag"
+            | "addTagToMedia"
+            | "removeTagFromMedia"
+            | "setMediaAttribute"
+            | "deleteMediaAttribute"
+            | "deleteAllMediaAttributes"
+            | "updateExist"
+            | "checkThumbnail"
+            | "updateThumbnail"
+            | "addMediaHash"
+            | "addMediaHashes"
+            | "deleteMediaHash"
+            | "deleteMediaHashes"
+            | "computeMediaHash"
+            | "computeMediaHashes"
+            | "backup"
+            | "promote"
+            | "setBackupLabel"
+            | "setBackupNote"
+            | "mediaCp"
+            | "mediaSync"
+            | "moveToTrash"
+            | "restoreFromTrash"
+    ) {
+        return OpClass::StgPermitted;
+    }
+    OpClass::Read
+}
+
 async fn handle_stdin(ctx: &CliContext) {
     // 標準入力からJSONコマンドを読み取る
     let mut input = String::new();
@@ -1195,6 +1639,39 @@ async fn handle_stdin(ctx: &CliContext) {
     // 開かずに処理する（接続中の stg 上書きによる WAL 破損を回避・設計 §4.2/§5.3）。
     if request.operation == "sync" {
         let response = handle_sync(&request.params).await;
+        output_response(&response);
+        return;
+    }
+
+    // 操作階層化 gate（設計 §9・TASK-59 P2-C4）。分類に基づき stg/prod で実行可否を振り分け。
+    let class = classify_operation(&request.operation);
+    if ctx.readonly {
+        // prod 読込経路（readonly・設計 §5.1）。
+        match class {
+            OpClass::StgRestricted => {
+                // (b) 操作の prod 直接実行経路（設計 §3.2/§5.2/§9.2）。
+                // readonly backend を使わず ProdRwScope で prod RW を内部取得し dry-run+trash+pre-stash gate を強制。
+                let response = handle_b_operation_prod(ctx, &request).await;
+                output_response(&response);
+                return;
+            }
+            OpClass::StgPermitted => {
+                // (a) 操作の prod 直接実行は拒否。prod 書込は promote((a)反映)/(b)gate 経路のみ。
+                let response = CommandResponse::error(format!(
+                    "読込専用セッション（--target prod readonly）では書込操作 '{}' は実行できません。(a) 操作は stg セッション（--target stg）で実行し promote で prod へ反映してください（設計 §3.2/§5.1）",
+                    request.operation
+                ));
+                output_response(&response);
+                return;
+            }
+            OpClass::Read => {} // Read は下部の readonly backend で処理。
+        }
+    } else if class == OpClass::StgRestricted {
+        // stg 書込セッションで (b) は制限（拒否）・prod 直接 gate 経路へ誘導（設計 §9.2）。
+        let response = CommandResponse::error(format!(
+            "(b) 制限操作 '{}' は stg では実行できません。prod 直接 `--target prod` で dry-run+trash+pre-stash gate 付きで実行してください（設計 §9.2）",
+            request.operation
+        ));
         output_response(&response);
         return;
     }
@@ -1230,6 +1707,7 @@ async fn main() {
     let resolution = resolve_target(
         cli.target.as_deref().and_then(Target::parse),
         cli.db.as_deref(),
+        cli.read_source.as_deref().and_then(Target::parse),
         &SystemEnv,
     );
     let ctx = CliContext {
@@ -1285,11 +1763,41 @@ async fn main() {
         Some(Commands::ListBackups) => {
             handle_list_backups_subcommand(&ctx);
         }
+        Some(Commands::ListPreStashes) => {
+            handle_list_pre_stashes_subcommand(&ctx);
+        }
         Some(Commands::Restore { nth, id }) => {
             handle_restore_subcommand(&ctx, *nth, id.clone());
         }
         Some(Commands::DiffBackup { nth, id, detail }) => {
             handle_diff_backup_subcommand(&ctx, *nth, id.clone(), detail.clone());
+        }
+        Some(Commands::DiffProdStg { prod, detail, summarize, prompt }) => {
+            handle_diff_prod_stg_subcommand(
+                &ctx,
+                prod.clone(),
+                detail.clone(),
+                *summarize,
+                *prompt,
+            );
+        }
+        Some(Commands::Observe {
+            prod,
+            detail,
+            max_added,
+            max_removed,
+            max_changed,
+            json,
+        }) => {
+            handle_observe_subcommand(
+                &ctx,
+                prod.clone(),
+                detail.clone(),
+                *max_added,
+                *max_removed,
+                *max_changed,
+                *json,
+            );
         }
         Some(Commands::SetBackupLabel { id, label }) => {
             handle_set_backup_label_subcommand(&ctx, id.clone(), label.clone());
@@ -1346,6 +1854,18 @@ async fn handle_list_backups(db: &KijukuDB) -> CommandResponse {
     }
 }
 
+/// pre-stash（即時復旧用ロールバックファイル）一覧（設計 §8）。backup_info_to_json を再利用。
+async fn handle_list_pre_stashes(db: &KijukuDB) -> CommandResponse {
+    match db.list_pre_stashes() {
+        Ok(stashes) => {
+            let json_stashes: Vec<serde_json::Value> =
+                stashes.iter().map(backup_info_to_json).collect();
+            CommandResponse::success(serde_json::Value::Array(json_stashes))
+        }
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
 async fn handle_restore(db: &mut KijukuDB, params: &serde_json::Value) -> CommandResponse {
     let params: RestoreParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
@@ -1356,9 +1876,64 @@ async fn handle_restore(db: &mut KijukuDB, params: &serde_json::Value) -> Comman
         .as_ref()
         .map(|s| s.to_selector())
         .unwrap_or_else(BackupSelector::latest);
+    // dry-run（(b) gate・設計 §9.2/§15-13）: 復元で変化する差分（prod 現状 vs バックアップ）を返し prod 不変。
+    if params.dry_run {
+        return match db.diff_with_backup(&selector, &kijuku_db::diff::DiffOptions::default()) {
+            Ok(diff) => match serde_json::to_value(&diff) {
+                Ok(v) => CommandResponse::success(serde_json::json!({"dryRun": true, "diff": v})),
+                Err(e) => CommandResponse::error(format!("シリアライズエラー: {}", e)),
+            },
+            Err(e) => CommandResponse::error(e.to_string()),
+        };
+    }
     match db.restore(&selector) {
         Ok(path) => CommandResponse::success(serde_json::json!({"path": path.to_string_lossy()})),
         Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
+/// (b) 管理操作の prod 直接実行経路（設計 §3.2/§5.2/§9.2・TASK-59 P2-C4）。
+///
+/// `--target prod`（readonly）で (b) 操作（mediaMv/purgeTrash/restore）が起票された際の経路。
+/// readonly backend を使わず `ProdRwScope` で prod の排他ロック + pre-stash を取得した上で
+/// prod RW の `KijukuDB` を一時オープン（migrate skip・恒久接続でない）し、dry-run + trash +
+/// pre-stash の gate を強制して実行する。
+/// - FS 系（mediaMv/purgeTrash）: dry-run ファースト・上書き/削除は trash 経由（file_ops/trash に既存）。
+/// - restore（DB 層）: ProdRwScope の pre-stash が §8 即時巻き戻しを担保。dryRun で差分プレビュー。
+async fn handle_b_operation_prod(ctx: &CliContext, request: &CommandRequest) -> CommandResponse {
+    // ProdRwScope: prod 排他ロック + pre-stash 強制（設計 §5.2/§7.2）。別セッションが promote 中なら ProdBusy。
+    let _scope = match kijuku_db::prod_rw::ProdRwScope::acquire(Path::new(&ctx.db_path), None) {
+        Ok(s) => s,
+        Err(e) => {
+            return CommandResponse::error(format!(
+                "(b)操作の prod RW スコープ取得に失敗しました（別セッションが promote/(b) 実行中の可能性）: {}",
+                e
+            ))
+        }
+    };
+
+    // prod RW の KijukuDB を一時オープン（設計 §5.1 で prod は migrate skip・readonly=false）。
+    let mut db = match KijukuDB::open_with_options(
+        &ctx.db_path,
+        DBOptions {
+            backup: Some(BackupOptions::default()),
+            verbose: ctx.verbose,
+            readonly: false,
+            media_root: ctx.media_root.clone(),
+            ..Default::default()
+        },
+    ) {
+        Ok(db) => db,
+        Err(e) => return CommandResponse::error(format!("prod のオープンに失敗: {}", e)),
+    };
+
+    // TODO-P4(TASK-46): (b)操作の監査ログ記録（操作・対象・pre-stash path・実行者）をここに追加。
+    // 既存ハンドラへディスパッチ（gate は各操作に内包）。
+    match request.operation.as_str() {
+        "restore" => handle_restore(&mut db, &request.params).await,
+        "mediaMv" => handle_media_mv(&db, &request.params).await,
+        "purgeTrash" => handle_purge_trash(&db, &request.params).await,
+        other => CommandResponse::error(format!("(b)操作 '{}' は prod 直接経路で未サポート", other)),
     }
 }
 
@@ -1394,6 +1969,58 @@ async fn handle_diff_backup(db: &KijukuDB, params: &serde_json::Value) -> Comman
     let options = params.options.map(|o| o.to_options()).unwrap_or_default();
     match db.diff_with_backup(&selector, &options) {
         Ok(diff) => match serde_json::to_value(&diff) {
+            Ok(v) => CommandResponse::success(v),
+            Err(e) => CommandResponse::error(format!("シリアライズエラー: {}", e)),
+        },
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
+/// prod/stg 差分取得（stdin operation `diffProdStg`・設計 §4.4・TASK-53）。
+/// リモート CLI は self=stg 起動し、prod パスは params の `prodDbPath` で別途受け取る。
+async fn handle_diff_prod_stg(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: DiffProdStgParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    let (prod_path, _stg) = resolve_sync_paths(params.prod_db_path, None);
+    let options = params.options.map(|o| o.to_options()).unwrap_or_default();
+    match db.diff_with_prod(Path::new(&prod_path), &options) {
+        Ok(diff) => match serde_json::to_value(&diff) {
+            Ok(v) => CommandResponse::success(v),
+            Err(e) => CommandResponse::error(format!("シリアライズエラー: {}", e)),
+        },
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
+/// observe（機械的 promote gate）を stdin operation として実行（設計 §3.4/§4.4・TASK-54）。
+async fn handle_observe(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: ObserveParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    let (prod_path, _stg) = resolve_sync_paths(params.prod_db_path, None);
+    match db.observe(Path::new(&prod_path), &params.options) {
+        Ok(result) => match serde_json::to_value(&result) {
+            Ok(v) => CommandResponse::success(v),
+            Err(e) => CommandResponse::error(format!("シリアライズエラー: {}", e)),
+        },
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
+/// promote（stg→prod 反映）を stdin operation として実行（設計 §4.5・TASK-58/62）。
+/// `backup_opts` で pre-stash 先をカスタマイズ（省略時はデフォルト `tmp/`・§7.2）。
+/// gate 不合格の `PromoteGateFailed` は `e.to_string()` で error 文字列に化ける（observe と同経路）。
+async fn handle_promote(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let params: PromoteParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
+    };
+    let (prod_path, _stg) = resolve_sync_paths(params.prod_db_path, None);
+    match db.promote(Path::new(&prod_path), &params.options, params.backup_opts) {
+        Ok(outcome) => match serde_json::to_value(&outcome) {
             Ok(v) => CommandResponse::success(v),
             Err(e) => CommandResponse::error(format!("シリアライズエラー: {}", e)),
         },
@@ -1529,6 +2156,10 @@ async fn execute_command(backend: &mut Backend, request: &CommandRequest) -> Com
             Some(local) => handle_list_backups(local).await,
             None => not_supported("listBackups"),
         },
+        "listPreStashes" => match backend.as_local() {
+            Some(local) => handle_list_pre_stashes(local).await,
+            None => not_supported("listPreStashes"),
+        },
         "restore" => match backend.as_local_mut() {
             Some(local) => handle_restore(local, &request.params).await,
             None => not_supported("restore"),
@@ -1536,6 +2167,18 @@ async fn execute_command(backend: &mut Backend, request: &CommandRequest) -> Com
         "diffBackup" => match backend.as_local() {
             Some(local) => handle_diff_backup(local, &request.params).await,
             None => not_supported("diffBackup"),
+        },
+        "diffProdStg" => match backend.as_local() {
+            Some(local) => handle_diff_prod_stg(local, &request.params).await,
+            None => not_supported("diffProdStg"),
+        },
+        "observe" => match backend.as_local() {
+            Some(local) => handle_observe(local, &request.params).await,
+            None => not_supported("observe"),
+        },
+        "promote" => match backend.as_local() {
+            Some(local) => handle_promote(local, &request.params).await,
+            None => not_supported("promote"),
         },
         "setBackupLabel" => match backend.as_local() {
             Some(local) => handle_set_backup_label(local, &request.params).await,

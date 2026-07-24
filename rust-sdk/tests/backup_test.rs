@@ -894,3 +894,43 @@ fn test_pre_promote_snapshot_created_and_excluded_from_list() {
         backups.len()
     );
 }
+
+#[test]
+fn test_retention_fallback_keeps_manual_backups() {
+    // フォールバックモード（retention_policy=None + max_backups）でも
+    // manual backup は削除対象外（手動削除のみ・設計 §7.4）
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("retm.db");
+    let backup_dir = temp_dir.path().join("backups");
+    let options = BackupOptions {
+        backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+        enabled: Some(true),
+        max_backups: Some(1),
+        ..Default::default()
+    };
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", []).unwrap();
+    }
+    let manager = BackupManager::new(&db_path, options).unwrap();
+
+    // manual backup を3つ作成
+    for _ in 0..3 {
+        manager.backup(None).unwrap();
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    // max_backups による間引きをトリガ
+    manager.cleanup_old_backups().unwrap();
+
+    let backups = manager.list_backups().unwrap();
+    let manual_count = backups
+        .iter()
+        .filter(|b| b.scope == BackupScope::Manual)
+        .count();
+    assert_eq!(
+        manual_count, 3,
+        "フォールバックモードでも manual は保持されるべき（§7.4）: {} 個残存",
+        manual_count
+    );
+}

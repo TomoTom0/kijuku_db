@@ -26,6 +26,8 @@ kijuku-cli --db <dbファイルのパス> [--verbose] <サブコマンド> [オ�
 | `--verbose` | 実行したSQLをstderrに出力する（デバッグ用） |
 | `--backend <BACKEND>` | バックエンド（`local` / `d1`）。`d1` は `D1_ACCOUNT_ID` / `D1_DATABASE_ID` 環境変数と事前の `wrangler login` が必要（省略時: `local`） |
 | `--media-root <path>` | ファイル操作（`file` / `trash` サブコマンド）のサンドボックス境界。media root の**絶対パス**を指定。`file` / `trash` サブコマンドで必須（未指定時は SDK がエラーを返す） |
+| `--target <prod\|stg>` | 操作対象DB（省略時: `stg`）。`prod` は readonly 接続 + migrate スキップで本番DBを保護（設計 §13・[本番DB保護](../../design/db-protection.md)） |
+| `--read-source <prod\|stg>` | 読込先DB（省略時: `--target` に従う）。`prod` 指定で prod を readonly で読む読込専用セッションになり、書込操作は拒否される（設計 §3.5）。優先順位: `--read-source` > `KIJUKU_READ_SOURCE`(env) > `--target` |
 | `-V`, `--version` | バージョンを表示して終了する |
 
 **例:**
@@ -91,19 +93,23 @@ echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.d
 | | `computeMediaHashes` | 一括ハッシュ計算 | `filter`, `options?`, `force` |
 | **バックアップ** | `backup` | バックアップ作成 | `label?` |
 | | `listBackups` | バックアップ一覧 | なし |
-| | `restore` | バックアップ復元 | `selector?` |
+| | `restore` | バックアップ復元 **(b)** | `selector?`, `dryRun?` |
 | | `diffBackup` | 現在DBとの差分 | `selector?`, `options?` |
 | | `setBackupLabel` | 事後ラベル付与 | `id`, `label?` |
 | | `setBackupNote` | 事後メモ付与 | `id`, `note?` |
 | | `getBackupMeta` | 事後メタ取得 | `id` |
 | **DB複製** | `sync` | prod(RO)→stg(RW) フル複製（設計 §4.2） | `from`, `to` |
+| | `diffProdStg` | prod(RO)/stg 差分（promote 判断用・設計 §4.4） | `prodDbPath?`, `options?` |
+| | `promote` | stg→prod 反映（promote gate 通過後・設計 §4.5） | `prodDbPath?`, `options?`, `backupOpts?` |
 | **ファイル操作（media root）** | `mediaCp` | ファイル/ディレクトリ複製（dry-run ファースト・上書きは trash 経由） | `src`, `dst`, `options?` |
-| | `mediaMv` | ファイル/ディレクトリ移動（dry-run ファースト・上書きは trash 経由） | `src`, `dst`, `options?` |
+| | `mediaMv` | ファイル/ディレクトリ移動 **(b)**（dry-run ファースト・上書きは trash 経由） | `src`, `dst`, `options?` |
 | | `mediaSync` | ディレクトリ同期（safe モード・余分/上書きは trash 経由） | `src`, `dst`, `options?` |
 | | `moveToTrash` | trash へ論理移動 | `target_rel`, `operation?`, `reason?` |
 | | `listTrash` | trash エントリ一覧 | なし |
 | | `restoreFromTrash` | trash から復元（衝突時はエラー） | `id` |
-| | `purgeTrash` | trash を物理削除（dry-run ファースト） | `ids?`, `dry_run?` |
+| | `purgeTrash` | trash を物理削除 **(b)**（dry-run ファースト） | `ids?`, `dry_run?` |
+
+> **(b) 制限操作**（設計 §9・[本番DB保護](../../design/db-protection.md)）: `mediaMv`/`purgeTrash`/`restore` は破壊的/全床上書きのため stg（既定）では**拒否**されます。prod 直接 `--target prod` で起票すると、環境が **dry-run + trash + pre-stash** のシステム gate を強制して実行します（人間承認不要・§3.2/§5.2）。`restore` は `dryRun: true` で復元差分を返し prod を変更しません。stg のリセットは `sync`（prod→stg 再複製）を使用してください。
 
 **使用例:**
 
@@ -164,6 +170,23 @@ kijuku-cli --db ./data/kijuku.db list-backups
 - `scope`: `auto`（自動）/ `manual`（手動）/ `tmp`（一時）
 - `label`: ラベル（未設定の場合は `-`）
 
+### list-pre-stashes
+
+pre-stash（即時復旧用ロールバックファイル）一覧を表示します（設計 [§8](../../design/db-protection.md)）。`list-backups` は pre-stash を除外するため、promote/(b)操作が返す `pre_stash_path` を失った場合の発見経路として使います。
+
+```bash
+kijuku-cli --db ./data/kijuku.db list-pre-stashes
+```
+
+出力例：
+
+```
+[0] kijuku.20260724120000-000-pre_promote.db path=/path/to/backup/tmp/kijuku.20260724120000-000-pre_promote.db
+```
+
+- `path` はそのまま SDK の `BackupSelector.byPath()`（TS Remote は `restore({ type: 'byPath', path })`）で `restore` に渡せ、prod を即時復旧（§8）できます。
+- pre-stash は `backup/tmp/` 配下に `*-pre_{migrate,restore,promote}.db` として保持され（既定で数日）、新しい順に表示されます。
+
 ### restore
 
 バックアップから復元します。復元元のバックアップファイルパスを出力します。
@@ -200,6 +223,28 @@ kijuku-cli --db ./data/kijuku.db diff-backup --detail limited=10
 - `added`: バックアップに在り現在に無い（復元で復活）
 - `removed`: 現在に在りバックアップに無い（復元で失われる）
 - `changed`: 両方に在り内容が異なる（復元で上書き）
+
+### diff-prod-stg
+
+prod（本番・readonly）と現在DB（stg）の差分を表示します（promote 判断用・設計 §4.4・[本番DB保護](../../design/db-protection.md)）。prod を readonly 別接続で開き、stg 編集視点（promote で何が起きるか）で比較します。
+
+```bash
+# prod と stg の差分（件数サマリ・既定 limited=20）
+kijuku-cli --db ./data/kijuku.stg.db diff-prod-stg --prod ./data/kijuku.db
+
+# 各カテゴリ上位10件
+kijuku-cli --db ./data/kijuku.stg.db diff-prod-stg --prod ./data/kijuku.db --detail limited=10
+
+# テーブル別件数・分布（ProdStgDiffSummary）を表示
+kijuku-cli --db ./data/kijuku.stg.db diff-prod-stg --prod ./data/kijuku.db --summarize
+
+# LLM レビュー用 explanation prompt を stdout に出力（コピペ可能）
+kijuku-cli --db ./data/kijuku.stg.db diff-prod-stg --prod ./data/kijuku.db --prompt
+```
+
+- `added`: stg のみ（promote で prod に追加）
+- `removed`: prod のみ（promote で prod から削除）
+- `changed`: 両方で異なる（promote で prod が上書き）
 
 ### set-backup-label / set-backup-note
 
