@@ -132,6 +132,25 @@ console.log(`Schema version: ${version}`);
 
 ---
 
+#### `getServerVersion(): string`
+
+リモート CLI バイナリ自身のバージョンを取得します（TASK-69・自動デプロイのバージョン比較用）。DB アクセス不要・prod/stg 両バックエンドで共通。`MAJOR.MINOR.PATCH` 形式（例: `"0.2.2"`）。
+
+> **Note:** リモート（`RemoteKijukuDB`）では毎 RPC の先頭でこの operation を呼び、クライアント（ローカル CLI）バージョンと比較してリモート CLI が古い場合に自動デプロイします（設計: 後述の自動デプロイ節）。
+
+**パラメータ:** なし
+
+**戻り値:** `string` - CLI バイナリのバージョン（`CARGO_PKG_VERSION`）
+
+**使用例:**
+
+```typescript
+const cliVersion = await db.getServerVersion();
+console.log(`CLI version: ${cliVersion}`);
+```
+
+---
+
 ### メディア操作
 
 #### `createMedia(data: MediaInput): Media`

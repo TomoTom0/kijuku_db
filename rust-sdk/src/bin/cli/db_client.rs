@@ -128,13 +128,13 @@ impl DbClient {
     // --- backup / restore / diff / observe ---
 
     /// バックアップ作成。`label` があればラベル付き（Local は `backup_with_label`、無ければ `backup`）。
-    pub fn backup(&self, label: Option<&str>) -> Result<Option<String>> {
+    pub fn backup(&self, label: Option<&str>, timeout_ms: Option<u32>) -> Result<Option<String>> {
         match self {
             DbClient::Local(d) => match label {
                 Some(l) => d.backup_with_label(l),
                 None => d.backup(),
             },
-            DbClient::Remote(r) => r.backup(label),
+            DbClient::Remote(r) => r.backup(label, timeout_ms),
         }
     }
 
@@ -155,14 +155,14 @@ impl DbClient {
 
     /// バックアップから復元。戻り値は復元先パス文字列（Local の PathBuf を文字列化）。
     /// Local は `&mut self`（DB 再オープンを伴う）のため、このメソッドも `&mut self`。
-    pub fn restore(&mut self, selector: &BackupSelector) -> Result<String> {
+    pub fn restore(&mut self, selector: &BackupSelector, timeout_ms: Option<u32>) -> Result<String> {
         match self {
             DbClient::Local(d) => d
                 .restore(selector)
                 .map(|p| p.to_string_lossy().into_owned()),
             DbClient::Remote(r) => {
                 let value = selector_to_value(selector)?;
-                r.restore(&value)
+                r.restore(&value, timeout_ms)
             }
         }
     }
@@ -172,12 +172,13 @@ impl DbClient {
         &self,
         selector: &BackupSelector,
         options: &DiffOptions,
+        timeout_ms: Option<u32>,
     ) -> Result<BackupDiff> {
         match self {
             DbClient::Local(d) => d.diff_with_backup(selector, options),
             DbClient::Remote(r) => {
                 let value = selector_to_value(selector)?;
-                r.diff_with_backup(&value, options)
+                r.diff_with_backup(&value, options, timeout_ms)
             }
         }
     }
@@ -188,6 +189,7 @@ impl DbClient {
         &self,
         prod: Option<&str>,
         options: &DiffOptions,
+        timeout_ms: Option<u32>,
     ) -> Result<BackupDiff> {
         match self {
             DbClient::Local(d) => {
@@ -196,7 +198,7 @@ impl DbClient {
                 })?;
                 d.diff_with_prod(Path::new(p), options)
             }
-            DbClient::Remote(r) => r.diff_with_prod(None, options),
+            DbClient::Remote(r) => r.diff_with_prod(None, options, timeout_ms),
         }
     }
 
@@ -206,6 +208,7 @@ impl DbClient {
         &self,
         prod: Option<&str>,
         options: &ObserveOptions,
+        timeout_ms: Option<u32>,
     ) -> Result<ObserveResult> {
         match self {
             DbClient::Local(d) => {
@@ -214,7 +217,7 @@ impl DbClient {
                 })?;
                 d.observe(Path::new(p), options)
             }
-            DbClient::Remote(r) => r.observe(None, options),
+            DbClient::Remote(r) => r.observe(None, options, timeout_ms),
         }
     }
 

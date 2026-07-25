@@ -624,7 +624,9 @@ RemoteKijukuDBはKijukuDBと同等の全メソッドを`Promise`で提供しま�
 - メディアCRUD / 検索 / バルク操作
 - タグ操作 / 属性操作
 - `updateExist()` / `checkThumbnail()` / `updateThumbnail()`
-- `getSchemaVersion()` / `getTables()` / `getTableInfo()`
+- `getSchemaVersion()` / `getServerVersion()` / `getTables()` / `getTableInfo()`
+
+**リモート CLI の自動デプロイ（TASK-69）:** 全ての RPC の先頭でリモート `kijuku-cli` のバージョン（`getServerVersion`）を取得し、ローカル（クライアント）より古い場合に自動デプロイします（`local > remote` の厳密大なり・ダウングレード保護・同等なら skip）。デプロイ先は `deploy-local.sh` と同じ実体 `~/.local/kijuku-db/bin/kijuku-cli` + symlink `~/.local/bin/kijuku-cli` 構成。リモートが未存在・または TASK-69 前の古いバイナリ（`getServerVersion` 未対応）でも自動デプロイで回復します。
 
 ### TOML設定ファイル（config）
 

@@ -785,9 +785,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `username` | `String` | ✓ | SSHユーザー名 |
 | `private_key_path` | `Option<PathBuf>` | | 秘密鍵ファイルパス |
 | `db_path` | `Option<String>` | | リモートのDBファイルパス |
-| `binary_path` | `Option<String>` | | リモートのkijuku-cliパス |
+| `binary_path` | `Option<String>` | | リモートのkijuku-cliパス（symlink・未設定時 `~/.local/bin/kijuku-cli`・実体は `~/.local/kijuku-db/bin/`） |
 
 **対応メソッド:** KijukuDBと同等の全メソッドが利用可能です（バックアップ読み取り含む）。
+
+**リモート CLI の自動デプロイ（TASK-69）:** 全ての RPC の先頭でリモート `kijuku-cli` のバージョン（`getServerVersion`）を取得し、ローカル（クライアント）より古い場合に自動デプロイします（`local > remote` の厳密大なり・ダウングレード保護・同等なら skip）。デプロイ先は `deploy-local.sh` と同じ実体 `~/.local/kijuku-db/bin/kijuku-cli` + symlink `~/.local/bin/kijuku-cli` 構成（`binary_path` は symlink 側）。リモートが未存在・または TASK-69 前の古いバイナリ（`getServerVersion` 未対応）でも自動デプロイで回復します。
 
 ---
 

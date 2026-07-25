@@ -149,7 +149,14 @@ kijuku-cli --db ./data/kijuku.db backup
 
 # ラベル付きでバックアップを作成
 kijuku-cli --db ./data/kijuku.db backup --label "before-migration"
+
+# リモートDB（--db <host>:<path>）のSSH RPCタイムアウトを明示（ms）
+kijuku-cli --db user@host:./data/kijuku.db backup --timeout-ms 120000
 ```
+
+> **長操作のタイムアウト（`--timeout-ms <MS>`・リモートDBのみ）:** `backup` / `restore` / `diff-backup` / `diff-prod-stg` / `observe` / `sync-db` / `discard-db` は SSH RPC のタイムアウト（ms）を `--timeout-ms` で上書きできます。省略時はリモート DB のサイズから適応的に算出（HDD 50MB/s 想定・最低 60s・`restore` は現在DB退避+復元で 2 倍・TS parity）。ローカル DB では無視されます。
+
+> **リモート CLI の自動デプロイ（リモートDBのみ・TASK-69）:** リモート DB（`--db <host>:<path>`）接続時、全 RPC の先頭でリモートの `kijuku-cli` バージョンを比較しローカルより古い場合に自動デプロイします（実体 `~/.local/kijuku-db/bin/kijuku-cli` + symlink `~/.local/bin/kijuku-cli`・ダウングレード保護付き）。手動配置は `mise run deploy`（`REMOTE_SSH_HOST` 設定時）も引き続き利用可能です。
 
 ### list-backups
 

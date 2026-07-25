@@ -33,6 +33,7 @@ import { defaultFileOpOptions } from './file_ops.js';
 import type { TrashEntry, TrashOperation } from './trash.js';
 import { resolveWithinRoot, isProtected, trashDir } from './media_path.js';
 import type { Target } from './config.js';
+import { SDK_VERSION } from './version.js';
 
 /**
  * バックアップセレクター
@@ -103,6 +104,33 @@ export function resolveRemoteDbPath(config: RemoteConfig): string {
     (config.dbPath !== undefined ? deriveStgDbPath(config.dbPath) : undefined) ??
     DEFAULT_REMOTE_STG_DB
   );
+}
+
+/**
+ * `MAJOR.MINOR.PATCH` を `[major, minor, patch]` にパース（TASK-69・Rust `parse_semver` parity）。
+ * 3要素未満は 0 補間。4要素以上・非整数・負数は `null`。
+ * kijuku-cli のバージョンは厳密 `MAJOR.MINOR.PATCH` 形式前提（pre-release 非対応・パース失敗は呼び元でデプロイ扱い）。
+ */
+export function parseSemver(s: string): [number, number, number] | null {
+  const parts = s.split('.');
+  if (parts.length > 3) return null;
+  const nums = parts.map((p) => Number(p));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0)) return null;
+  return [nums[0] ?? 0, nums[1] ?? 0, nums[2] ?? 0];
+}
+
+/**
+ * ローカルよりリモートが古い場合にデプロイが必要か（TASK-69・Rust `needs_deploy` parity）。
+ * - `local > remote`（厳密大なり）→ `true`（アップデート）
+ * - equal / ローカルが古い（ダウングレード保護）→ `false`
+ * - リモート未取得（`null`）またはパース失敗 → `true`（フェイルセーフ・自動回復）
+ */
+export function needsDeploy(local: string, remote: string | null): boolean {
+  const l = parseSemver(local);
+  if (!l) return true;
+  const r = remote !== null ? parseSemver(remote) : null;
+  if (!r) return true;
+  return l[0] !== r[0] ? l[0] > r[0] : l[1] !== r[1] ? l[1] > r[1] : l[2] > r[2];
 }
 
 /**
@@ -319,21 +347,38 @@ export class RemoteKijukuDB {
   }
 
   /**
-   * リモートファイルの存在確認
+   * リモート CLI バイナリのバージョンを取得（TASK-69・`getServerVersion` operation）。
+   * バイナリ未存在/起動失敗/operation 未対応（古いバイナリ）は `null`（呼び元でデプロイ→自動回復）。
    */
-  private async checkFileExists(filePath: string): Promise<boolean> {
+  private async getServerVersion(): Promise<string | null> {
+    const remoteBinaryPath = this.getRemoteBinaryPath();
+    const remoteDbPath = this.getRemoteDbPath();
+    const target = this.getTarget();
+    const jsonInput = JSON.stringify({ operation: 'getServerVersion', params: {} });
+    const escapedJson = jsonInput.replace(/'/g, "'\\''");
+    const mediaRootFlag = this.config.mediaRoot
+      ? ` --media-root ${this.escapeShellPath(this.config.mediaRoot)}`
+      : '';
+    const command = `echo '${escapedJson}' | ${this.escapeShellPath(remoteBinaryPath)} --db ${this.escapeShellPath(remoteDbPath)} --target ${target}${mediaRootFlag}`;
     try {
-      await this.execCommand(`test -f ${this.escapeShellPath(filePath)} && echo "exists"`);
-      return true;
+      const output = await this.execCommand(command);
+      const response: CommandResponse = JSON.parse(output.trim());
+      if (!response.success) return null;
+      const data: unknown = response.data;
+      if (typeof data === 'object' && data !== null && 'version' in data) {
+        const version = data.version;
+        if (typeof version === 'string') return version;
+      }
+      return null;
     } catch {
-      return false;
+      return null;
     }
   }
 
   /**
    * ローカルからリモートにファイルを転送
    */
-  private async uploadFile(localPath: string, remotePath: string, timeoutMs = 60_000): Promise<void> {
+  private async uploadFile(localPath: string, remotePath: string, timeoutMs = 120_000): Promise<void> {
     if (!this.sshClient) {
       throw new Error('SSH接続が確立されていません');
     }
@@ -368,17 +413,22 @@ export class RemoteKijukuDB {
    */
   private async deployBinaryToRemote(): Promise<void> {
     const localBinaryPath = resolve(homedir(), '.local', 'bin', 'kijuku-cli');
-    const remoteBinaryPath = this.getRemoteBinaryPath();
-    const remoteDir = remoteBinaryPath.substring(0, remoteBinaryPath.lastIndexOf('/'));
+    // deploy-local.sh parity: 実体 + symlink 構成（TASK-69・Rust parity）。ssh2 SFTP は ~ を展開する。
+    const remoteReal = '~/.local/kijuku-db/bin/kijuku-cli';
+    const remoteLink = '~/.local/bin/kijuku-cli';
 
-    // リモートにディレクトリ作成
-    await this.execCommand(`mkdir -p ${this.escapeShellPath(remoteDir)}`);
-
-    // バイナリを転送
-    await this.uploadFile(localBinaryPath, remoteBinaryPath);
-
-    // 実行権限を付与
-    await this.execCommand(`chmod +x ${this.escapeShellPath(remoteBinaryPath)}`);
+    // (1) 実体Dir + symlinkDir を作成
+    await this.execCommand(
+      `mkdir -p ${this.escapeShellPath('~/.local/kijuku-db/bin')} ${this.escapeShellPath('~/.local/bin')}`,
+    );
+    // (2) バイナリを転送（uploadFile は media_root 制約なしの SFTP 直接書き込み）
+    await this.uploadFile(localBinaryPath, remoteReal);
+    // (3) 実行権限を付与
+    await this.execCommand(`chmod +x ${this.escapeShellPath(remoteReal)}`);
+    // (4) symlink 作成（冪等・上書き）
+    await this.execCommand(
+      `ln -sf ${this.escapeShellPath(remoteReal)} ${this.escapeShellPath(remoteLink)}`,
+    );
   }
 
   /**
@@ -388,16 +438,14 @@ export class RemoteKijukuDB {
     await this.connect();
 
     try {
-      // バイナリの存在確認
-      const remoteBinaryPath = this.getRemoteBinaryPath();
-      const exists = await this.checkFileExists(remoteBinaryPath);
-
-      if (!exists) {
-        // バイナリが存在しない場合は自動デプロイ
+      // バージョンベース自動デプロイ（TASK-69）。リモート CLI が古い/未存在なら最新へ更新。
+      const remoteVersion = await this.getServerVersion();
+      if (needsDeploy(SDK_VERSION, remoteVersion)) {
         await this.deployBinaryToRemote();
       }
 
       // コマンドを実行
+      const remoteBinaryPath = this.getRemoteBinaryPath();
       const remoteDbPath = this.getRemoteDbPath();
       const target = this.getTarget();
       const jsonInput = JSON.stringify(request);

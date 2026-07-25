@@ -769,6 +769,9 @@ enum Commands {
         /// バックアップのラベル（省略可）
         #[arg(long)]
         label: Option<String>,
+        /// SSH RPC のタイムアウト（ms）。省略時は DB サイズから適応的に算出（TS parity）。ローカル DB では無視される。
+        #[arg(long, value_name = "MS")]
+        timeout_ms: Option<u32>,
     },
     /// バックアップ一覧を表示
     ListBackups,
@@ -782,6 +785,9 @@ enum Commands {
         /// バックアップID（タイムスタンプ）を指定して復元（nth より優先）
         #[arg(long)]
         id: Option<String>,
+        /// SSH RPC のタイムアウト（ms）。省略時は DB サイズから適応的に算出（TS parity）。ローカル DB では無視される。
+        #[arg(long, value_name = "MS")]
+        timeout_ms: Option<u32>,
     },
     /// バックアップと現在DBの差分を表示（復元判断用）
     DiffBackup {
@@ -794,6 +800,9 @@ enum Commands {
         /// 詳細度: summary（件数のみ）/ limited=<N> / full
         #[arg(long, default_value = "summary")]
         detail: String,
+        /// SSH RPC のタイムアウト（ms）。省略時は DB サイズから適応的に算出（TS parity）。ローカル DB では無視される。
+        #[arg(long, value_name = "MS")]
+        timeout_ms: Option<u32>,
     },
     /// prod と stg（現在DB）の差分を表示（promote 判断用・設計 §4.4）
     DiffProdStg {
@@ -809,6 +818,9 @@ enum Commands {
         /// LLM explanation prompt を stdout に出力（他の出力を抑制）
         #[arg(long)]
         prompt: bool,
+        /// SSH RPC のタイムアウト（ms）。省略時は DB サイズから適応的に算出（TS parity）。ローカル DB では無視される。
+        #[arg(long, value_name = "MS")]
+        timeout_ms: Option<u32>,
     },
     /// stg と prod を比較し機械的 promote gate を評価（promote 可否・設計 §3.4/§4.4）
     ///
@@ -833,6 +845,9 @@ enum Commands {
         /// 機械可読 JSON で出力（他の出力を抑制）
         #[arg(long)]
         json: bool,
+        /// SSH RPC のタイムアウト（ms）。省略時は DB サイズから適応的に算出（TS parity）。ローカル DB では無視される。
+        #[arg(long, value_name = "MS")]
+        timeout_ms: Option<u32>,
     },
     /// バックアップにラベルを付与（事後）
     SetBackupLabel {
@@ -860,6 +875,9 @@ enum Commands {
         /// stg パス（省略時は KIJUKU_STG_DB_PATH / デフォルト）
         #[arg(long)]
         to: Option<String>,
+        /// SSH RPC のタイムアウト（ms）。省略時は DB サイズから適応的に算出（TS parity）。ローカル DB では無視される。
+        #[arg(long, value_name = "MS")]
+        timeout_ms: Option<u32>,
     },
     /// stg を破棄して prod から再 sync（discard・設計 §4.6）。
     ///
@@ -874,6 +892,9 @@ enum Commands {
         /// stg パス（省略時は KIJUKU_STG_DB_PATH / デフォルト）
         #[arg(long)]
         to: Option<String>,
+        /// SSH RPC のタイムアウト（ms）。省略時は DB サイズから適応的に算出（TS parity）。ローカル DB では無視される。
+        #[arg(long, value_name = "MS")]
+        timeout_ms: Option<u32>,
     },
     /// コンテンツハッシュ操作
     Hash {
@@ -1060,7 +1081,7 @@ async fn handle_server(ctx: &CliContext, port: u16, password: Option<String>) {
     }
 }
 
-fn handle_backup_subcommand(ctx: &CliContext, label: Option<String>) {
+fn handle_backup_subcommand(ctx: &CliContext, label: Option<String>, timeout_ms: Option<u32>) {
     let client = match open_db_client(ctx) {
         Ok(c) => c,
         Err(e) => {
@@ -1068,7 +1089,7 @@ fn handle_backup_subcommand(ctx: &CliContext, label: Option<String>) {
             return;
         }
     };
-    match client.backup(label.as_deref()) {
+    match client.backup(label.as_deref(), timeout_ms) {
         Ok(Some(path)) => println!("{}", path),
         Ok(None) => eprintln!("バックアップマネージャーが設定されていません"),
         Err(e) => eprintln!("バックアップに失敗: {}", e),
@@ -1367,7 +1388,7 @@ fn handle_list_pre_stashes_subcommand(ctx: &CliContext) {
     }
 }
 
-fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>, id: Option<String>) {
+fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>, id: Option<String>, timeout_ms: Option<u32>) {
     let mut client = match open_db_client(ctx) {
         Ok(c) => c,
         Err(e) => {
@@ -1383,7 +1404,7 @@ fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>, id: Option<St
             None => BackupSelector::latest(),
         }
     };
-    match client.restore(&selector) {
+    match client.restore(&selector, timeout_ms) {
         Ok(path) => println!("{}", path),
         Err(e) => eprintln!("復元に失敗: {}", e),
     }
@@ -1408,7 +1429,7 @@ fn resolve_sync_paths(from: Option<String>, to: Option<String>) -> (String, Stri
 /// ローカル: stg 接続を開かず `KijukuDB::replicate_db` でファイルコピー（`--from`/`--to` または
 /// 環境変数で両パス解決）。リモート（`--db host:path`）: `RemoteKijukuDB::sync` でリモート側の
 /// prod/stg パス設定によりサーバ側コピー（`--from`/`--to` は無視・警告）。
-fn handle_sync_subcommand(ctx: &CliContext, from: Option<String>, to: Option<String>) {
+fn handle_sync_subcommand(ctx: &CliContext, from: Option<String>, to: Option<String>, timeout_ms: Option<u32>) {
     let parsed = parse_db_path(&ctx.db_path);
     if parsed.is_remote {
         if from.is_some() || to.is_some() {
@@ -1418,7 +1439,7 @@ fn handle_sync_subcommand(ctx: &CliContext, from: Option<String>, to: Option<Str
         }
         let config = remote_config_from_ctx(ctx, &parsed);
         let remote = RemoteKijukuDB::new(config);
-        match remote.sync() {
+        match remote.sync(timeout_ms) {
             Ok(r) => println!("sync 完了: {} -> {}", r.prod_path, r.stg_path),
             Err(e) => eprintln!("sync に失敗: {}", e),
         }
@@ -1434,7 +1455,7 @@ fn handle_sync_subcommand(ctx: &CliContext, from: Option<String>, to: Option<Str
 /// discard（stg 破棄・再 sync・設計 §4.6）。処理は `sync-db` と同一（prod→stg の `replicate_db`・
 /// 既存 stg は上書き破棄）。リモートは `RemoteKijukuDB::discard`（operation:"discard"）を呼ぶ。
 /// ローカル: stg 接続を開かず `KijukuDB::replicate_db` でファイルコピー。リモート: サーバ側コピー。
-fn handle_discard_subcommand(ctx: &CliContext, from: Option<String>, to: Option<String>) {
+fn handle_discard_subcommand(ctx: &CliContext, from: Option<String>, to: Option<String>, timeout_ms: Option<u32>) {
     let parsed = parse_db_path(&ctx.db_path);
     if parsed.is_remote {
         if from.is_some() || to.is_some() {
@@ -1444,7 +1465,7 @@ fn handle_discard_subcommand(ctx: &CliContext, from: Option<String>, to: Option<
         }
         let config = remote_config_from_ctx(ctx, &parsed);
         let remote = RemoteKijukuDB::new(config);
-        match remote.discard() {
+        match remote.discard(timeout_ms) {
             Ok(r) => println!("discard 完了: {} -> {}", r.prod_path, r.stg_path),
             Err(e) => eprintln!("discard に失敗: {}", e),
         }
@@ -1462,6 +1483,7 @@ fn handle_diff_backup_subcommand(
     nth: Option<usize>,
     id: Option<String>,
     detail: String,
+    timeout_ms: Option<u32>,
 ) {
     let client = match open_db_client(ctx) {
         Ok(c) => c,
@@ -1488,7 +1510,7 @@ fn handle_diff_backup_subcommand(
     let options = kijuku_db::diff::DiffOptions {
         detail: Some(detail),
     };
-    match client.diff_with_backup(&selector, &options) {
+    match client.diff_with_backup(&selector, &options, timeout_ms) {
         Ok(diff) => print_backup_diff_summary(&diff),
         Err(e) => eprintln!("差分の取得に失敗: {}", e),
     }
@@ -1504,6 +1526,7 @@ fn handle_diff_prod_stg_subcommand(
     detail: String,
     summarize: bool,
     prompt: bool,
+    timeout_ms: Option<u32>,
 ) {
     let client = match open_db_client(ctx) {
         Ok(c) => c,
@@ -1523,7 +1546,7 @@ fn handle_diff_prod_stg_subcommand(
         detail: Some(detail_enum),
     };
     let (prod_path, _stg) = resolve_sync_paths(prod, None);
-    match client.diff_with_prod(Some(&prod_path), &options) {
+    match client.diff_with_prod(Some(&prod_path), &options, timeout_ms) {
         Ok(diff) => {
             let summary = kijuku_db::diff::summarize_diff(&diff);
             if prompt {
@@ -1550,6 +1573,7 @@ fn handle_observe_subcommand(
     max_removed: Option<usize>,
     max_changed: Option<usize>,
     json: bool,
+    timeout_ms: Option<u32>,
 ) {
     let client = match open_db_client(ctx) {
         Ok(c) => c,
@@ -1581,7 +1605,7 @@ fn handle_observe_subcommand(
         options.gate_config.max_changed = m;
     }
     let (prod_path, _stg) = resolve_sync_paths(prod, None);
-    match client.observe(Some(&prod_path), &options) {
+    match client.observe(Some(&prod_path), &options, timeout_ms) {
         Ok(result) => {
             if json {
                 match serde_json::to_string_pretty(&result) {
@@ -2081,8 +2105,8 @@ async fn main() {
         Some(Commands::UpdateThumbnail { dry_run, force, filter }) => {
             handle_update_thumbnail_subcommand(&ctx, *dry_run, *force, filter);
         }
-        Some(Commands::Backup { label }) => {
-            handle_backup_subcommand(&ctx, label.clone());
+        Some(Commands::Backup { label, timeout_ms }) => {
+            handle_backup_subcommand(&ctx, label.clone(), *timeout_ms);
         }
         Some(Commands::ListBackups) => {
             handle_list_backups_subcommand(&ctx);
@@ -2090,19 +2114,20 @@ async fn main() {
         Some(Commands::ListPreStashes) => {
             handle_list_pre_stashes_subcommand(&ctx);
         }
-        Some(Commands::Restore { nth, id }) => {
-            handle_restore_subcommand(&ctx, *nth, id.clone());
+        Some(Commands::Restore { nth, id, timeout_ms }) => {
+            handle_restore_subcommand(&ctx, *nth, id.clone(), *timeout_ms);
         }
-        Some(Commands::DiffBackup { nth, id, detail }) => {
-            handle_diff_backup_subcommand(&ctx, *nth, id.clone(), detail.clone());
+        Some(Commands::DiffBackup { nth, id, detail, timeout_ms }) => {
+            handle_diff_backup_subcommand(&ctx, *nth, id.clone(), detail.clone(), *timeout_ms);
         }
-        Some(Commands::DiffProdStg { prod, detail, summarize, prompt }) => {
+        Some(Commands::DiffProdStg { prod, detail, summarize, prompt, timeout_ms }) => {
             handle_diff_prod_stg_subcommand(
                 &ctx,
                 prod.clone(),
                 detail.clone(),
                 *summarize,
                 *prompt,
+                *timeout_ms,
             );
         }
         Some(Commands::Observe {
@@ -2112,6 +2137,7 @@ async fn main() {
             max_removed,
             max_changed,
             json,
+            timeout_ms,
         }) => {
             handle_observe_subcommand(
                 &ctx,
@@ -2121,6 +2147,7 @@ async fn main() {
                 *max_removed,
                 *max_changed,
                 *json,
+                *timeout_ms,
             );
         }
         Some(Commands::SetBackupLabel { id, label }) => {
@@ -2129,11 +2156,11 @@ async fn main() {
         Some(Commands::SetBackupNote { id, note }) => {
             handle_set_backup_note_subcommand(&ctx, id.clone(), note.clone());
         }
-        Some(Commands::SyncDb { from, to }) => {
-            handle_sync_subcommand(&ctx, from.clone(), to.clone());
+        Some(Commands::SyncDb { from, to, timeout_ms }) => {
+            handle_sync_subcommand(&ctx, from.clone(), to.clone(), *timeout_ms);
         }
-        Some(Commands::DiscardDb { from, to }) => {
-            handle_discard_subcommand(&ctx, from.clone(), to.clone());
+        Some(Commands::DiscardDb { from, to, timeout_ms }) => {
+            handle_discard_subcommand(&ctx, from.clone(), to.clone(), *timeout_ms);
         }
         Some(Commands::Hash { hash_command }) => {
             handle_hash_subcommand(&ctx, hash_command);
@@ -2434,6 +2461,7 @@ async fn execute_command(backend: &mut Backend, request: &CommandRequest) -> Com
     match request.operation.as_str() {
         "migrate" => handle_migrate(backend.as_backend()).await,
         "getSchemaVersion" => handle_get_schema_version(backend.as_backend()).await,
+        "getServerVersion" => handle_get_server_version().await,
         "getTables" => handle_get_tables(backend.as_backend()).await,
         "getTableInfo" => handle_get_table_info(backend.as_backend(), &request.params).await,
         "createMedia" => handle_create_media(backend.as_backend(), &request.params).await,
@@ -2639,6 +2667,12 @@ async fn handle_get_schema_version(db: &dyn KijukuBackend) -> CommandResponse {
         Ok(version) => CommandResponse::success(serde_json::json!({"version": version})),
         Err(e) => CommandResponse::error(format!("スキーマバージョン取得エラー: {}", e)),
     }
+}
+
+/// リモート CLI バイナリ自身のバージョンを返す（TASK-69・自動デプロイのバージョン比較用）。
+/// DB アクセス不要・prod/stg 両バックエンドで共通。`env!("CARGO_PKG_VERSION")` はビルド時定数埋め込み。
+async fn handle_get_server_version() -> CommandResponse {
+    CommandResponse::success(serde_json::json!({"version": env!("CARGO_PKG_VERSION")}))
 }
 
 async fn handle_get_tables(db: &dyn KijukuBackend) -> CommandResponse {

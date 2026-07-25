@@ -112,6 +112,31 @@
 
 **ファイル:** `rust-sdk/src/{stg_session,error,lib,bin/cli}.rs`, `ts-sdk/src/{stg-session,index}.ts`, `rust-sdk/Cargo.toml`, `rust-sdk/tests/stg_session_test.rs`, `ts-sdk/test/integration/stg-lock.test.ts`
 
+### リモート SSH RPC に適応的タイムアウトを導入（TS parity）(TASK-67)
+
+長時間操作（backup/sync 等）で固定タイムアウトが切れてハング・誤爆していた問題を、DB サイズからタイムアウトを適応的に算出する方式（TS `calcBackupTimeoutMs` の Rust parity 移植）で解消。
+
+- **適応的タイムアウト**（`calc_backup_timeout_ms`）: rusqlite バックアップ設定（750,000ページ/バッチ・10sスリープ）と HDD 50MB/s 想定から算出。`copyTime + sleepTime` に MARGIN=2、最低 60s。`u32::MAX` で飽和（オーバーフローなし）。TS `calcBackupTimeoutMs` と定数・計算とも厳密一致
+- **適用対象**（長操作8種）: `backup`/`restore`/`sync`/`discard`/`diffBackup`/`diffProdStg`/`observe`/`promote`。`restore` は現在DB退避+復元の2段階で ×2（TS remote.ts L1162 parity）。`sync`/`discard` は prod パス基準
+- **タイムアウト解決優先順位**: 呼び出し元の明示（`--timeout-ms`） > 適応的算出（長操作） > デフォルト 30s（短操作・TS parity）。upload/download は固定 120s
+- **DB サイズ取得**（`remote_db_size`）: `stat -c %s` で取得（失敗時 0 → 60s）。stat 自体のハング対策にセッションタイムアウトを事前設定
+- CLI: 長操作8種に `--timeout-ms <MS>` フラグを追加（ローカル DB では無視・リモート DB でのみ有意）
+
+**ファイル:** `rust-sdk/src/remote.rs`, `rust-sdk/src/bin/cli/{main,db_client}.rs`, `docs/usage/cli/README.md`
+
+### リモート CLI バイナリの自動デプロイをバージョン比較ベース化（TS parity）(TASK-69)
+
+リモート DB 運用（`--db host:path`）で、クライアント接続時にリモートの `kijuku-cli` を常に最新へ自動更新。手動 scp / `mise run deploy` のリモート配置運用を廃止。
+
+- **サーバ側**: `getServerVersion` operation 追加（`env!("CARGO_PKG_VERSION")` を返す・DB アクセス不要・prod/stg 両バックエンドで応答）
+- **バージョン比較**: `MAJOR.MINOR.PATCH` を自前パーサ（`parse_semver`/`needs_deploy`・クレート依存追加なし）で比較。`local > remote`（厳密大なり）の時のみデプロイ（ダウングレード保護・equal skip）。リモート未取得/古いバイナリ（operation 未対応）はデプロイで自動回復（フェイルセーフ）
+- **毎RPC自動**: `execute_remote_command_timed`（Rust）/ `executeRemoteCommand`（TS）の先頭で getServerVersion→比較→（古ければ）デプロイ。TS 現行の「無条件（存在チェックのみ）」からバージョン比較へ移行
+- **デプロイ手順**: `deploy-local.sh` 移植（mkdir + SFTP 転送 + chmod + symlink）。実体 `~/.local/kijuku-db/bin/kijuku-cli` + symlink `~/.local/bin/kijuku-cli`（**破壊的**: TS 現行の symlink なし構成から変更）
+- **media_root 外配置**: `upload_to_absolute_path`（Rust）/ `uploadFile`（TS）で media_root サンドボックスを回避する SFTP 直接書き込み
+- **TS**: 新設 `version.ts`（`SDK_VERSION` 定数・手動 bump 対象に追加）・`uploadFile` タイムアウト 60s→120s（Rust `FILE_TRANSFER_TIMEOUT_MS` parity）
+
+**ファイル:** `rust-sdk/src/{remote.rs,bin/cli/main.rs}`, `rust-sdk/tests/cli_integration_test.rs`, `ts-sdk/src/{version.ts,remote.ts}`, `ts-sdk/test/unit/remote-version.test.ts`, `docs/api.md`, `docs/usage/{cli/README.md,sdk/{rust,ts}/README.md}`, `docs/manual-testing-remote.md`
+
 ## Fixed
 
 ### `find_backup_by_id_in_scope` がスコープ引数を無視して Auto 固定を返すバグを修正(TASK-25)

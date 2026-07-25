@@ -115,36 +115,65 @@ console.log('メディアのタグ:', tags);
 - タグが正常に作成され、メディアに関連付けられる
 - `getMediaTags`で追加したタグが取得できる
 
-### テスト4: 自動バイナリデプロイ
+### テスト4: 自動バイナリデプロイ（バージョン比較ベース・TASK-69）
 
-**準備:**
-1. リモートサーバーの`~/.local/bin/kijuku-cli`を削除（または別の場所に移動）
+クライアント接続時にリモート CLI が常に最新へ自動更新される。実体 `~/.local/kijuku-db/bin/kijuku-cli` + symlink `~/.local/bin/kijuku-cli` 構成。毎 RPC の先頭で `getServerVersion` → `local > remote` 比較 →（古ければ）デプロイ。
 
-**テスト:**
+共通セットアップ:
 ```typescript
 const db = new RemoteKijukuDB({
   sshHost: 'testserver',
   dbPath: '~/.local/share/kijuku/test.db',
 });
-
-// 初回実行（自動デプロイが行われる）
-const media = await db.createMedia({
-  title: '自動デプロイテスト',
-  media_type: 'comic',
-});
-console.log('作成成功:', media);
 ```
 
+#### シナリオ1: 初回デプロイ
+
+**準備:** リモートの `~/.local/bin/kijuku-cli` と `~/.local/kijuku-db/bin/` を削除。
+
+**テスト:** 任意の remote RPC（例: `createMedia`）を実行。
+
 **期待される結果:**
-- 初回実行時に自動的にバイナリがリモートに転送される
+- 初回実行時に `~/.local/kijuku-db/bin/kijuku-cli`（実体）と `~/.local/bin/kijuku-cli`（symlink）が作成される
 - メディア作成が正常に完了する
 
 **確認:**
 ```bash
-ssh testserver 'ls -lh ~/.local/bin/kijuku-cli'
+ssh testserver 'ls -lh ~/.local/kijuku-db/bin/kijuku-cli ~/.local/bin/kijuku-cli'
+ssh testserver 'kijuku-cli --version'
 ```
 
-バイナリが存在し、実行権限があることを確認
+#### シナリオ2: バージョンアップ
+
+**準備:** ローカルのバージョンを進めて `mise run deploy`（ビルド＋配置）→ リモートは旧バージョンのまま。
+
+**テスト:** 任意の remote RPC を実行。
+
+**期待される結果:** リモート CLI が新バージョンへ更新され、`ssh testserver 'kijuku-cli --version'` がローカルと一致する。
+
+#### シナリオ3: バージョン同等（skip）
+
+**準備:** リモートがローカルと同バージョン（シナリオ2 実行後の状態）。
+
+**テスト:** 任意の remote RPC を実行。
+
+**期待される結果:** デプロイは走らず RPC が高速に完了する。バイナリ mtime が変化しない（`ssh testserver 'stat -c %Y ~/.local/kijuku-db/bin/kijuku-cli'` で前後比較）。
+
+#### シナリオ4: ダウングレード保護
+
+**準備:** リモートの方が新しい（ローカルを旧バージョンでビルド・リモートは新バージョン）。
+
+**テスト:** 任意の remote RPC を実行。
+
+**期待される結果:** デプロイは走らず（`local > remote` でない）、リモートの新しいバイナリが維持され RPC が成功する。
+
+#### シナリオ5: 古いバイナリからの後方互換（自動回復）
+
+**準備:** リモートに TASK-69 前のバイナリ（`getServerVersion` 未対応）を配置。
+
+**テスト:** 任意の remote RPC を実行。
+
+**期待される結果:** `getServerVersion` が失敗（null）→ デプロイ実行 → 次回 RPC は新バイナリで成功（自動回復）。初回だけ二重 RPC（デプロイ + 本_rpc）が走る。
 
 ### テスト5: エラーハンドリング
 

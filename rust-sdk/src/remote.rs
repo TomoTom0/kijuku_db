@@ -109,24 +109,27 @@ fn derive_stg_db_path(prod_path: &str) -> String {
     }
 }
 
+/// リモート prod DB のデフォルトパス（`resolve_remote_db_path`・`long_op_target` で使用）。
+const DEFAULT_REMOTE_PROD_DB: &str = "~/.local/share/kijuku/kijuku.db";
+/// リモート stg DB のデフォルトパス。
+const DEFAULT_REMOTE_STG_DB: &str = "~/.local/share/kijuku/kijuku.stg.db";
+
 /// `RemoteConfig` から target に応じたリモート DB パスを解決する（設計 §4.1・§13）。
 ///
 /// - prod: `db_path`（未設定時は prod デフォルト）
 /// - stg: `stg_db_path`、未設定なら `db_path` から導出、それも無ければ stg デフォルト
 fn resolve_remote_db_path(config: &RemoteConfig) -> String {
-    const DEFAULT_PROD: &str = "~/.local/share/kijuku/kijuku.db";
-    const DEFAULT_STG: &str = "~/.local/share/kijuku/kijuku.stg.db";
     // read-source を target に折り畳む（方式A・設計 §3.5/§13）。
     match config.effective_target() {
         Target::Prod => config
             .db_path
             .clone()
-            .unwrap_or_else(|| DEFAULT_PROD.to_string()),
+            .unwrap_or_else(|| DEFAULT_REMOTE_PROD_DB.to_string()),
         Target::Stg => config
             .stg_db_path
             .clone()
             .or_else(|| config.db_path.as_deref().map(derive_stg_db_path))
-            .unwrap_or_else(|| DEFAULT_STG.to_string()),
+            .unwrap_or_else(|| DEFAULT_REMOTE_STG_DB.to_string()),
     }
 }
 
@@ -149,6 +152,111 @@ fn build_remote_command(
     match media_root {
         Some(root) => format!("{} --media-root {}", base, escape_for_remote_shell(root)),
         None => base,
+    }
+}
+
+/// デフォルト RPC タイムアウト（短操作・TS `executeRemoteCommand` デフォルトと同一）。
+const DEFAULT_RPC_TIMEOUT_MS: u32 = 30_000;
+/// ファイル転送（upload/download）のタイムアウト（TS parity・固定 120s）。
+const FILE_TRANSFER_TIMEOUT_MS: u32 = 120_000;
+
+/// 適応的タイムアウトを適用する長時間操作の operation 名（TS parity・calcBackupTimeoutMs 適用対象）。
+const LONG_RUNNING_OPS: &[&str] = &[
+    "backup",
+    "restore",
+    "sync",
+    "discard",
+    "diffBackup",
+    "diffProdStg",
+    "observe",
+    "promote",
+];
+
+/// `operation` が長時間操作（適応的タイムアウト適用対象）か。
+fn is_long_running_op(op: &str) -> bool {
+    LONG_RUNNING_OPS.contains(&op)
+}
+
+/// 長操作の適応的タイムアウト算出に用いる DB パスと `calc_backup_timeout_ms` 結果への乗数（TS parity）。
+///
+/// 戻り値: `(db_path, multiplier)`。長操作でない場合は `None`。
+/// - restore: 現在 DB の退避 + 復元の 2 段階で **2 倍**（TS `calcBackupTimeoutMs(dbSize) * 2`・remote.ts L1162）
+/// - sync/discard: prod パス（`config.db_path ?? DEFAULT_REMOTE_PROD_DB`・remote.ts L1188）。target に依存しない
+/// - 上記以外（backup/diffBackup/diffProdStg/observe/promote）: `resolve_remote_db_path` と同一・乗数 1
+fn long_op_target(op: &str, config: &RemoteConfig) -> Option<(String, u32)> {
+    match op {
+        "restore" => Some((resolve_remote_db_path(config), 2)),
+        "sync" | "discard" => Some((
+            config
+                .db_path
+                .clone()
+                .unwrap_or_else(|| DEFAULT_REMOTE_PROD_DB.to_string()),
+            1,
+        )),
+        _ if is_long_running_op(op) => Some((resolve_remote_db_path(config), 1)),
+        _ => None,
+    }
+}
+
+/// DB サイズに基づいてバックアップ系長操作のタイムアウトを計算（ms・TS parity）。
+///
+/// TS `calcBackupTimeoutMs`（ts-sdk/src/remote.ts）と同一ロジック・定数。
+/// rusqlite バックアップ: 750,000 ページ/バッチ・10s スリープ、HDD 想定 50MB/s、MARGIN=2、最低 60s。
+/// 計算は f64 で行い（TS と厳密一致）、最後に u32 へ変換（u32::MAX で飽和）。
+fn calc_backup_timeout_ms(db_size_bytes: u64) -> u32 {
+    const PAGE_SIZE: f64 = 4096.0;
+    const HDD_BYTES_PER_MS: f64 = (50.0 * 1024.0 * 1024.0) / 1000.0;
+    const BATCH_PAGES: f64 = 750_000.0;
+    const SLEEP_PER_BATCH_MS: f64 = 10_000.0;
+    const MARGIN: f64 = 2.0;
+    const MIN_TIMEOUT_MS: f64 = 60_000.0;
+
+    let size = db_size_bytes as f64;
+    let copy_time_ms = size / HDD_BYTES_PER_MS;
+    let num_batches = (size / (BATCH_PAGES * PAGE_SIZE)).ceil();
+    let sleep_time_ms = num_batches * SLEEP_PER_BATCH_MS;
+    let total = (copy_time_ms + sleep_time_ms) * MARGIN;
+    let result = total.max(MIN_TIMEOUT_MS);
+    if result.is_finite() && result < u32::MAX as f64 {
+        result as u32
+    } else {
+        u32::MAX
+    }
+}
+
+/// `MAJOR.MINOR.PATCH` 形式のセマンティックバージョンを `[u64; 3]` にパース（TASK-69・TS parity）。
+/// 3要素未満（例: `"0.2"`）は末尾を 0 補間（`[0, 2, 0]`）。4要素以上・非数値は `Err`。
+/// kijuku-cli の `CARGO_PKG_VERSION` は厳密 `MAJOR.MINOR.PATCH` 形式を前提（pre-release 非対応・
+/// パース失敗時は呼び出し元でフェイルセーフとして「デプロイ必要」扱い）。
+fn parse_semver(s: &str) -> Result<[u64; 3]> {
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() > 3 {
+        return Err(KijukuError::Other(format!(
+            "invalid semver (too many parts): {}",
+            s
+        )));
+    }
+    let mut nums = [0u64; 3];
+    for (i, part) in parts.iter().enumerate() {
+        nums[i] = part.parse::<u64>().map_err(|_| {
+            KijukuError::Other(format!("invalid semver (non-numeric part): {}", s))
+        })?;
+    }
+    Ok(nums)
+}
+
+/// ローカル（クライアント）CLI バイナリよりリモート CLI バイナリが古い場合にデプロイが必要か
+/// （TASK-69・TS `needsDeploy` parity）。`local > remote`（厳密大なり・`[u64;3]` 辞書式比較）のみ `true`。
+/// - `local == remote` → skip / `local < remote` → ダウングレード保護で skip
+/// - `remote` が `None`（取得失敗/バイナリ未存在）またはパース失敗 → `true`（フェイルセーフ・自動回復）
+fn needs_deploy(local: &str, remote: Option<&str>) -> bool {
+    let local = match parse_semver(local) {
+        Ok(v) => v,
+        Err(_) => return true,
+    };
+    match remote.and_then(|r| parse_semver(r).ok()) {
+        Some(r) => local > r,
+        None => true,
     }
 }
 
@@ -262,8 +370,37 @@ impl RemoteKijukuDB {
         Ok(sess)
     }
 
-    /// リモートでJSONコマンドを実行
+    /// リモート DB ファイルのサイズを取得（適応的タイムアウト算出用・TS `getRemoteFileSize` parity）。
+    /// `stat -c %s <db> 2>/dev/null || echo 0`。失敗時は None（呼び出し元で 0 扱い→デフォルト 60s）。
+    fn remote_db_size(&self, sess: &Session, db_path: &str) -> Option<u64> {
+        let cmd = format!(
+            "stat -c %s {} 2>/dev/null || echo 0",
+            escape_for_remote_shell(db_path)
+        );
+        let mut channel = sess.channel_session().ok()?;
+        channel.exec(&cmd).ok()?;
+        channel.send_eof().ok()?;
+        let mut output = String::new();
+        channel.read_to_string(&mut output).ok()?;
+        channel.wait_close().ok();
+        output.trim().parse::<u64>().ok()
+    }
+
+    /// リモートでJSONコマンドを実行（短操作用・タイムアウトは DEFAULT_RPC_TIMEOUT_MS 固定）。
+    /// 長操作（backup/restore/sync 等）は `execute_remote_command_timed` で `timeout_ms` を明示する。
     fn execute_remote_command(&self, request: CommandRequest) -> Result<CommandResponse> {
+        self.execute_remote_command_timed(request, None)
+    }
+
+    /// `execute_remote_command` のタイムアウト指定版（TS parity）。
+    /// - `Some(ms)` → 呼び出し元が上書き
+    /// - `None` かつ長操作 → DB サイズから適応的に算出（restore は退避+復元で ×2）
+    /// - `None` かつ短操作 → DEFAULT_RPC_TIMEOUT_MS (30s)
+    fn execute_remote_command_timed(
+        &self,
+        request: CommandRequest,
+        timeout_ms: Option<u32>,
+    ) -> Result<CommandResponse> {
         let remote_db_path = resolve_remote_db_path(&self.config);
         let remote_binary_path = self
             .config
@@ -275,6 +412,31 @@ impl RemoteKijukuDB {
             .map_err(|e| KijukuError::Other(format!("Failed to serialize request: {}", e)))?;
 
         let sess = self.connect()?;
+
+        // stat コマンド自体のハング対策（TS `getRemoteFileSize` が execCommand 30s デフォルトであることと parity）。
+        // 設定しないと remote_db_size 内の channel_read が無限待ちになる。
+        sess.set_timeout(DEFAULT_RPC_TIMEOUT_MS);
+
+        // バージョンベース自動デプロイ（TASK-69）。リモート CLI が古い/未存在なら最新へ更新。
+        // ensure 内の getServerVersion は sess を使い回し execute_remote_command_timed を経由しないため再帰しない。
+        self.ensure_remote_binary(&sess)?;
+
+        // 適応的タイムアウト解決（TS parity）。
+        //   Some(ms) → 呼び出し元が上書き
+        //   None かつ長操作 → DB サイズから算出（restore は退避+復元で ×2）
+        //   None かつ短操作 → デフォルト 30s
+        let effective_timeout = match timeout_ms {
+            Some(ms) => ms,
+            None => match long_op_target(&request.operation, &self.config) {
+                Some((db_path, multiplier)) => {
+                    let size = self.remote_db_size(&sess, &db_path).unwrap_or(0);
+                    calc_backup_timeout_ms(size).saturating_mul(multiplier)
+                }
+                None => DEFAULT_RPC_TIMEOUT_MS,
+            },
+        };
+        sess.set_timeout(effective_timeout);
+
         let mut channel = sess
             .channel_session()
             .map_err(|e| KijukuError::Other(format!("Failed to open channel: {}", e)))?;
@@ -298,7 +460,7 @@ impl RemoteKijukuDB {
         let mut output = String::new();
         channel
             .read_to_string(&mut output)
-            .map_err(|e| KijukuError::Other(format!("Failed to read command stdout: {}", e)))?;
+            .map_err(|e| KijukuError::Other(format!("Failed to read command stdout (timeout={}ms): {}", effective_timeout, e)))?;
 
         let mut stderr = String::new();
         channel.stderr().read_to_string(&mut stderr).map_err(|e| KijukuError::Other(format!("Failed to read command stderr: {}", e)))?;
@@ -317,6 +479,192 @@ impl RemoteKijukuDB {
 
         serde_json::from_str(&output)
             .map_err(|e| KijukuError::Other(format!("Failed to parse response from stdout: {}. Raw output: {}", e, output)))
+    }
+
+    // --- リモートバイナリ自動デプロイ（TASK-69・バージョン比較ベース） ---
+
+    /// sess 上で単純なシェルコマンドを実行（exit 0 必須・mkdir/chmod/ln 等・TASK-69）。
+    /// `escape_for_remote_shell` で `~` → `$HOME` 展開済みのコマンド文字列を渡すこと。
+    fn run_remote(sess: &Session, cmd: &str) -> Result<()> {
+        let mut channel = sess
+            .channel_session()
+            .map_err(|e| KijukuError::Other(format!("Failed to open channel: {}", e)))?;
+        channel
+            .exec(cmd)
+            .map_err(|e| KijukuError::Other(format!("Failed to exec command: {}", e)))?;
+        channel.send_eof().ok();
+        let mut output = String::new();
+        channel.read_to_string(&mut output).ok();
+        channel.wait_close().ok();
+        let exit_status = channel
+            .exit_status()
+            .map_err(|e| KijukuError::Other(format!("Failed to get exit status: {}", e)))?;
+        if exit_status != 0 {
+            let mut stderr = String::new();
+            channel.stderr().read_to_string(&mut stderr).ok();
+            return Err(KijukuError::Other(format!(
+                "Command failed with exit code {}. cmd: {}, stdout: {}, stderr: {}",
+                exit_status, cmd, output, stderr
+            )));
+        }
+        Ok(())
+    }
+
+    /// リモートの `$HOME` 絶対パスを取得（TASK-69・SFTP 転送先解決用）。
+    /// libssh2 の SFTP は `~` を展開しないため転送先は絶対パスが必要（TS ssh2 の `~` 展開とは異なる）。
+    fn remote_home(sess: &Session) -> Result<String> {
+        let mut channel = sess
+            .channel_session()
+            .map_err(|e| KijukuError::Other(format!("Failed to open channel: {}", e)))?;
+        channel
+            .exec("echo $HOME")
+            .map_err(|e| KijukuError::Other(format!("Failed to exec echo $HOME: {}", e)))?;
+        channel.send_eof().ok();
+        let mut output = String::new();
+        channel
+            .read_to_string(&mut output)
+            .map_err(|e| KijukuError::Other(format!("Failed to read $HOME: {}", e)))?;
+        channel.wait_close().ok();
+        let home = output.trim().to_string();
+        if home.is_empty() || !home.starts_with('/') {
+            return Err(KijukuError::Other(format!("invalid remote $HOME: {:?}", home)));
+        }
+        Ok(home)
+    }
+
+    /// デプロイ元のローカル CLI バイナリパス（TS `resolve(homedir(), '.local', 'bin', 'kijuku-cli')` parity）。
+    fn local_binary_path() -> Result<PathBuf> {
+        let home = std::env::var("HOME")
+            .map_err(|_| KijukuError::Other("HOME env not set".to_string()))?;
+        Ok(PathBuf::from(home).join(".local").join("bin").join("kijuku-cli"))
+    }
+
+    /// リモート CLI バイナリのバージョンを取得（TASK-69・`getServerVersion` operation）。
+    /// `execute_remote_command_timed` と同じ channel パターンだが sess を使い回し（ensure を bypass・
+    /// 無限再帰回避）。失敗時は `Ok(None)`（呼び出し元 `ensure_remote_binary` が None を「デプロイ必要」
+    /// と解釈・古いバイナリからの自動回復）。
+    fn get_server_version(&self, sess: &Session) -> Result<Option<String>> {
+        let remote_db_path = resolve_remote_db_path(&self.config);
+        let remote_binary_path = self
+            .config
+            .binary_path
+            .as_deref()
+            .unwrap_or("~/.local/bin/kijuku-cli");
+        let command = build_remote_command(
+            remote_binary_path,
+            &remote_db_path,
+            self.config.effective_target(),
+            self.config.media_root.as_deref(),
+        );
+        let json_input = r#"{"operation":"getServerVersion","params":{}}"#;
+
+        let mut channel = match sess.channel_session() {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+        if channel.exec(&command).is_err() {
+            return Ok(None);
+        }
+        use std::io::Write;
+        if channel.write_all(json_input.as_bytes()).is_err() {
+            return Ok(None);
+        }
+        if channel.send_eof().is_err() {
+            return Ok(None);
+        }
+        let mut output = String::new();
+        if channel.read_to_string(&mut output).is_err() {
+            return Ok(None);
+        }
+        channel.wait_close().ok();
+
+        let response: CommandResponse = match serde_json::from_str(output.trim()) {
+            Ok(r) => r,
+            Err(_) => return Ok(None),
+        };
+        if !response.success {
+            return Ok(None);
+        }
+        Ok(response
+            .data
+            .as_ref()
+            .and_then(|v| v.get("version"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()))
+    }
+
+    /// media_root サンドボックスを回避し絶対パスへ SFTP 書き込み（TASK-69・バイナリデプロイ用）。
+    /// `upload` は `resolve_remote_within_root` で media_root 配下に強制するためバイナリ配置には使えない。
+    /// `remote_abs` は絶対パス（`~` 未展開・`remote_home` で解決済み）。
+    fn upload_to_absolute_path(
+        &self,
+        sess: &Session,
+        local_path: &std::path::Path,
+        remote_abs: &str,
+    ) -> Result<()> {
+        let sftp = sess
+            .sftp()
+            .map_err(|e| KijukuError::Other(format!("SFTP セッション確立失敗: {}", e)))?;
+        let mut local = std::fs::File::open(local_path)
+            .map_err(|e| KijukuError::Other(format!("ローカルバイナリのオープン失敗: {}", e)))?;
+        let mut remote = sftp
+            .create(std::path::Path::new(remote_abs))
+            .map_err(|e| KijukuError::Other(format!("リモートバイナリの作成失敗: {}", e)))?;
+        std::io::copy(&mut local, &mut remote)
+            .map_err(|e| KijukuError::Other(format!("バイナリ転送失敗: {}", e)))?;
+        Ok(())
+    }
+
+    /// ローカル CLI バイナリをリモートへデプロイ（TASK-69・`scripts/dev/deploy-local.sh` L53-67 移植）。
+    /// 実体 `~/.local/kijuku-db/bin/kijuku-cli` + symlink `~/.local/bin/kijuku-cli` 構成。
+    /// 1 セッション内で完結（TASK-70 接続プール化を見据え sess 受け取り）。
+    fn deploy_binary_to_remote(&self, sess: &Session) -> Result<()> {
+        let home = Self::remote_home(sess)?;
+        let remote_real_abs = format!("{}/.local/kijuku-db/bin/kijuku-cli", home);
+        let local = Self::local_binary_path()?;
+
+        // (1) mkdir -p 実体Dir + symlinkDir（シェル経由で ~ → $HOME 展開）
+        Self::run_remote(
+            sess,
+            &format!(
+                "mkdir -p {} {}",
+                escape_for_remote_shell("~/.local/kijuku-db/bin"),
+                escape_for_remote_shell("~/.local/bin")
+            ),
+        )?;
+        // (2) SFTP 転送（絶対パス・ファイル転送タイムアウト 120s）
+        sess.set_timeout(FILE_TRANSFER_TIMEOUT_MS);
+        self.upload_to_absolute_path(sess, &local, &remote_real_abs)?;
+        sess.set_timeout(DEFAULT_RPC_TIMEOUT_MS);
+        // (3) chmod +x 実体
+        Self::run_remote(
+            sess,
+            &format!(
+                "chmod +x {}",
+                escape_for_remote_shell("~/.local/kijuku-db/bin/kijuku-cli")
+            ),
+        )?;
+        // (4) ln -sf 実体 → symlink（冪等・上書き）
+        Self::run_remote(
+            sess,
+            &format!(
+                "ln -sf {} {}",
+                escape_for_remote_shell("~/.local/kijuku-db/bin/kijuku-cli"),
+                escape_for_remote_shell("~/.local/bin/kijuku-cli")
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// リモート CLI バイナリが古い場合に自動デプロイ（TASK-69・`execute_remote_command_timed` 先頭で毎 RPC 呼ばれる）。
+    /// getServerVersion → `needs_deploy`（ローカル > リモート判定）→ 必要ならデプロイ。
+    /// リモートバージョン取得失敗（古いバイナリ・未存在）はデプロイで自動回復。
+    fn ensure_remote_binary(&self, sess: &Session) -> Result<()> {
+        let remote_version = self.get_server_version(sess)?;
+        if needs_deploy(env!("CARGO_PKG_VERSION"), remote_version.as_deref()) {
+            self.deploy_binary_to_remote(sess)?;
+        }
+        Ok(())
     }
 
     /// レスポンスのエラーチェック（データあり）
@@ -431,6 +779,8 @@ impl RemoteKijukuDB {
     pub fn upload(&self, local_path: &std::path::Path, remote_rel: &str) -> Result<()> {
         let remote_abs = self.resolve_remote_within_root(remote_rel)?;
         let sess = self.connect()?;
+        // ファイル転送のタイムアウト（TS parity・固定 120s）。
+        sess.set_timeout(FILE_TRANSFER_TIMEOUT_MS);
         let sftp = sess
             .sftp()
             .map_err(|e| KijukuError::Other(format!("SFTP セッション確立失敗: {}", e)))?;
@@ -449,6 +799,8 @@ impl RemoteKijukuDB {
     pub fn download(&self, remote_rel: &str, local_path: &std::path::Path) -> Result<()> {
         let remote_abs = self.resolve_remote_within_root(remote_rel)?;
         let sess = self.connect()?;
+        // ファイル転送のタイムアウト（TS parity・固定 120s）。
+        sess.set_timeout(FILE_TRANSFER_TIMEOUT_MS);
         let sftp = sess
             .sftp()
             .map_err(|e| KijukuError::Other(format!("SFTP セッション確立失敗: {}", e)))?;
@@ -795,11 +1147,11 @@ impl RemoteKijukuDB {
     }
 
     /// 手動バックアップを実行
-    pub fn backup(&self, label: Option<&str>) -> Result<Option<String>> {
-        let response = self.execute_remote_command(CommandRequest {
+    pub fn backup(&self, label: Option<&str>, timeout_ms: Option<u32>) -> Result<Option<String>> {
+        let response = self.execute_remote_command_timed(CommandRequest {
             operation: "backup".to_string(),
             params: serde_json::json!({ "label": label }),
-        })?;
+        }, timeout_ms)?;
 
         #[derive(Deserialize)]
         struct PathResponse {
@@ -917,11 +1269,11 @@ impl RemoteKijukuDB {
     }
 
     /// バックアップを復元
-    pub fn restore(&self, selector: &serde_json::Value) -> Result<String> {
-        let response = self.execute_remote_command(CommandRequest {
+    pub fn restore(&self, selector: &serde_json::Value, timeout_ms: Option<u32>) -> Result<String> {
+        let response = self.execute_remote_command_timed(CommandRequest {
             operation: "restore".to_string(),
             params: serde_json::json!({ "selector": selector }),
-        })?;
+        }, timeout_ms)?;
 
         #[derive(Deserialize)]
         struct PathResponse {
@@ -937,15 +1289,16 @@ impl RemoteKijukuDB {
         &self,
         selector: &serde_json::Value,
         options: &crate::diff::DiffOptions,
+        timeout_ms: Option<u32>,
     ) -> Result<crate::diff::BackupDiff> {
-        let response = self.execute_remote_command(CommandRequest {
+        let response = self.execute_remote_command_timed(CommandRequest {
             operation: "diffBackup".to_string(),
             params: serde_json::json!({
                 "selector": selector,
                 "options": serde_json::to_value(options)
                     .map_err(|e| KijukuError::Other(e.to_string()))?,
             }),
-        })?;
+        }, timeout_ms)?;
         self.check_response(response)
     }
 
@@ -957,15 +1310,16 @@ impl RemoteKijukuDB {
         &self,
         prod_db_path: Option<&std::path::Path>,
         options: &crate::diff::DiffOptions,
+        timeout_ms: Option<u32>,
     ) -> Result<crate::diff::BackupDiff> {
-        let response = self.execute_remote_command(CommandRequest {
+        let response = self.execute_remote_command_timed(CommandRequest {
             operation: "diffProdStg".to_string(),
             params: serde_json::json!({
                 "prodDbPath": prod_db_path,
                 "options": serde_json::to_value(options)
                     .map_err(|e| KijukuError::Other(e.to_string()))?,
             }),
-        })?;
+        }, timeout_ms)?;
         self.check_response(response)
     }
 
@@ -976,15 +1330,16 @@ impl RemoteKijukuDB {
         &self,
         prod_db_path: Option<&std::path::Path>,
         options: &crate::diff::ObserveOptions,
+        timeout_ms: Option<u32>,
     ) -> Result<crate::diff::ObserveResult> {
-        let response = self.execute_remote_command(CommandRequest {
+        let response = self.execute_remote_command_timed(CommandRequest {
             operation: "observe".to_string(),
             params: serde_json::json!({
                 "prodDbPath": prod_db_path,
                 "options": serde_json::to_value(options)
                     .map_err(|e| KijukuError::Other(e.to_string()))?,
             }),
-        })?;
+        }, timeout_ms)?;
         self.check_response(response)
     }
 
@@ -996,8 +1351,9 @@ impl RemoteKijukuDB {
         prod_db_path: Option<&std::path::Path>,
         options: &crate::diff::ObserveOptions,
         backup_opts: Option<&crate::BackupOptions>,
+        timeout_ms: Option<u32>,
     ) -> Result<crate::PromoteOutcome> {
-        let response = self.execute_remote_command(CommandRequest {
+        let response = self.execute_remote_command_timed(CommandRequest {
             operation: "promote".to_string(),
             params: serde_json::json!({
                 "prodDbPath": prod_db_path,
@@ -1005,36 +1361,36 @@ impl RemoteKijukuDB {
                     .map_err(|e| KijukuError::Other(e.to_string()))?,
                 "backupOpts": backup_opts,
             }),
-        })?;
+        }, timeout_ms)?;
         self.check_response(response)
     }
 
     /// prod→stg コピー操作の共通基盤（sync/discard・設計 §4.2/§4.6）。`operation` に "sync" または
     /// "discard" を渡す。`from`/`to` は config（prod `db_path` と導出 stg）から解決し明示渡す（TS parity）。
     /// いずれか未設定時はサーバ側 `resolve_sync_paths` がデフォルト補完する。
-    fn run_prod_to_stg(&self, operation: &str) -> Result<SyncResult> {
+    fn run_prod_to_stg(&self, operation: &str, timeout_ms: Option<u32>) -> Result<SyncResult> {
         let from = self.config.db_path.clone();
         let to = match &self.config.stg_db_path {
             Some(s) => Some(s.clone()),
             None => self.config.db_path.as_ref().map(|p| derive_stg_db_path(p)),
         };
-        let response = self.execute_remote_command(CommandRequest {
+        let response = self.execute_remote_command_timed(CommandRequest {
             operation: operation.to_string(),
             params: serde_json::json!({ "from": from, "to": to }),
-        })?;
+        }, timeout_ms)?;
         self.check_response(response)
     }
 
     /// prod→stg の初期同期（設計 §4.2/§5.3・書込セッション開始時）。Online Backup 1 パスのコピー。
-    pub fn sync(&self) -> Result<SyncResult> {
-        self.run_prod_to_stg("sync")
+    pub fn sync(&self, timeout_ms: Option<u32>) -> Result<SyncResult> {
+        self.run_prod_to_stg("sync", timeout_ms)
     }
 
     /// stg 破棄・再 sync（設計 §4.6・書込セッション中断/gate 不合格時）。処理は `sync` と同一
     /// （prod→stg の Online Backup コピー・既存 stg は上書き破棄・prod は一切触らない）。
     /// 操作名のみ監査ログ（§10）で区別するため独立メソッド。
-    pub fn discard(&self) -> Result<SyncResult> {
-        self.run_prod_to_stg("discard")
+    pub fn discard(&self, timeout_ms: Option<u32>) -> Result<SyncResult> {
+        self.run_prod_to_stg("discard", timeout_ms)
     }
 
     // --- update_exist ---
@@ -1717,5 +2073,163 @@ mod tests {
         assert!(remote.resolve_remote_within_root(".trash/xxx").is_err());
         // 正常な相対パスは許可
         assert!(remote.resolve_remote_within_root("a/b.jpg").is_ok());
+    }
+
+    // --- 適応的タイムアウト（TASK-67・TS parity） ---
+
+    #[test]
+    fn calc_backup_timeout_ms_enforces_60s_minimum() {
+        // size=0・極小サイズは最低 60s（TS parity: Math.max(..., 60_000)）
+        assert_eq!(calc_backup_timeout_ms(0), 60_000);
+        assert_eq!(calc_backup_timeout_ms(1), 60_000);
+    }
+
+    #[test]
+    fn calc_backup_timeout_ms_matches_ts_formula() {
+        // TS calcBackupTimeoutMs（ts-sdk/src/remote.ts）と厳密一致を既知値で検証。
+        // 1 GiB: copyTime=20480, numBatches=ceil(1)=1, sleep=10000, total=(20480+10000)*2=60960
+        assert_eq!(calc_backup_timeout_ms(1024 * 1024 * 1024), 60_960);
+    }
+
+    #[test]
+    fn calc_backup_timeout_ms_saturates_at_u32_max() {
+        // f64 で計算後 u32::MAX を超える場合は飽和（オーバーフローしない）
+        assert_eq!(calc_backup_timeout_ms(u64::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn is_long_running_op_covers_eight_ops() {
+        // 長操作8種（TS parity・calcBackupTimeoutMs 適用対象）
+        for op in &[
+            "backup",
+            "restore",
+            "sync",
+            "discard",
+            "diffBackup",
+            "diffProdStg",
+            "observe",
+            "promote",
+        ] {
+            assert!(is_long_running_op(op), "{} should be long-running", op);
+        }
+        // 短操作・ファイル転送・未定義は対象外
+        assert!(!is_long_running_op("upload"));
+        assert!(!is_long_running_op("download"));
+        assert!(!is_long_running_op("listBackups"));
+        assert!(!is_long_running_op(""));
+    }
+
+    #[test]
+    fn long_op_target_restore_doubles_timeout() {
+        // restore は現在DB退避 + 復元の2段階 → multiplier=2（TS remote.ts L1162）
+        let config = RemoteConfig {
+            target: Target::Prod,
+            db_path: Some("/db/prod.db".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            long_op_target("restore", &config),
+            Some(("/db/prod.db".to_string(), 2))
+        );
+    }
+
+    #[test]
+    fn long_op_target_sync_discard_uses_prod_path() {
+        // sync/discard は prod パス（target に依存しない）・乗数1（TS remote.ts L1188/L1195）
+        let stg_config = RemoteConfig {
+            target: Target::Stg,
+            db_path: Some("/db/prod.db".to_string()),
+            stg_db_path: Some("/db/stg.db".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            long_op_target("sync", &stg_config),
+            Some(("/db/prod.db".to_string(), 1))
+        );
+        assert_eq!(
+            long_op_target("discard", &stg_config),
+            Some(("/db/prod.db".to_string(), 1))
+        );
+        // db_path 未設定時はデフォルト prod パス
+        let no_db = RemoteConfig {
+            target: Target::Prod,
+            db_path: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            long_op_target("sync", &no_db),
+            Some((DEFAULT_REMOTE_PROD_DB.to_string(), 1))
+        );
+    }
+
+    #[test]
+    fn long_op_target_default_uses_resolved_path() {
+        // backup/diffBackup/diffProdStg/observe/promote は resolve_remote_db_path と同一・乗数1
+        let prod_config = RemoteConfig {
+            target: Target::Prod,
+            db_path: Some("/db/prod.db".to_string()),
+            ..Default::default()
+        };
+        for op in &["backup", "diffBackup", "diffProdStg", "observe", "promote"] {
+            assert_eq!(
+                long_op_target(op, &prod_config),
+                Some((resolve_remote_db_path(&prod_config), 1)),
+                "{}",
+                op
+            );
+        }
+        // stg ターゲットなら stg パスに解決される（derive_stg_db_path）
+        let stg_config = RemoteConfig {
+            target: Target::Stg,
+            db_path: Some("/db/prod.db".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            long_op_target("backup", &stg_config),
+            Some((resolve_remote_db_path(&stg_config), 1))
+        );
+    }
+
+    #[test]
+    fn long_op_target_short_ops_return_none() {
+        // 短操作・未定義は適応的タイムアウト対象外（DEFAULT_RPC_TIMEOUT_MS 固定）
+        let config = RemoteConfig::default();
+        assert_eq!(long_op_target("upload", &config), None);
+        assert_eq!(long_op_target("listBackups", &config), None);
+        assert_eq!(long_op_target("", &config), None);
+    }
+
+    // --- バージョン比較（TASK-69・TS parity） ---
+
+    #[test]
+    fn parse_semver_basic() {
+        assert_eq!(parse_semver("0.2.2").unwrap(), [0, 2, 2]);
+        // 短縮形は 0 補間
+        assert_eq!(parse_semver("0.2").unwrap(), [0, 2, 0]);
+        assert_eq!(parse_semver("1").unwrap(), [1, 0, 0]);
+        // 4要素以上は Err
+        assert!(parse_semver("0.2.2.1").is_err());
+        // 非数値は Err
+        assert!(parse_semver("0.x.2").is_err());
+        assert!(parse_semver("0.2.-1").is_err());
+    }
+
+    #[test]
+    fn needs_deploy_logic() {
+        // リモート未取得 → デプロイ（自動回復）
+        assert!(needs_deploy("0.2.2", None));
+        // upgrade → デプロイ
+        assert!(needs_deploy("0.2.2", Some("0.2.1")));
+        assert!(needs_deploy("1.0.0", Some("0.2.2")));
+        // equal → skip
+        assert!(!needs_deploy("0.2.2", Some("0.2.2")));
+        // downgrade 保護（ローカルが古い → skip）
+        assert!(!needs_deploy("0.2.1", Some("0.2.2")));
+        assert!(!needs_deploy("0.2.2", Some("1.0.0")));
+        // リモートパース失敗 → フェイルセーフでデプロイ
+        assert!(needs_deploy("0.2.2", Some("garbage")));
+        assert!(needs_deploy("0.2.2", Some("0.2.2.1")));
+        // リモート短縮形 → 0 補間で比較（0.2.0 < 0.2.2 → デプロイ）
+        assert!(needs_deploy("0.2.2", Some("0.2")));
     }
 }

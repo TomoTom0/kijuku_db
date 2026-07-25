@@ -135,6 +135,31 @@ fn test_cli_get_schema_version() {
 }
 
 #[test]
+fn test_cli_get_server_version() {
+    // getServerVersion はリモート自動デプロイのバージョン比較用（TASK-69）。DB アクセス不要だが
+    // build_backend が DB を開くため migrate 後に呼ぶ。
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+
+    execute_cli_command(db_path, json!({
+        "operation": "migrate",
+        "params": {}
+    }));
+
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getServerVersion",
+            "params": {}
+        }),
+    );
+
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["version"], env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
 fn test_cli_create_media() {
     // db_path を TempDir 内に置くことで backup_dir（db_path の親/backup）も各テスト独立となり、
     // 並列実行時の /tmp/backup 共有競合を防ぐ（NamedTempFile は /tmp 直下になるため共有される）。
