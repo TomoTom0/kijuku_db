@@ -275,6 +275,33 @@ impl BackupSelector {
         self.scope_filter = Some(scope);
         self
     }
+
+    /// stdin プロトコル wire 形式（`{"type":...}`・サーバ側 `BackupSelectorJson` と対称）へ直列化。
+    ///
+    /// `RemoteKijukuDB` の restore / diff_with_backup が selector を JSON として送るために使用。
+    /// TS `RemoteBackupSelector`（`{type:"latest"|"nth"|"byId"|"byPath"}`）と同形式。
+    /// - `scope_filter` は wire に載せない（サーバ側 stdin プロトコルが scope 非対応）。
+    /// - `Before` / `After` / `ClosestTo` は非対応（サーバ側 `BackupSelectorJson` にバリアントがない）。
+    pub fn to_wire_value(&self) -> Result<serde_json::Value> {
+        use serde_json::json;
+        let value = match &self.kind {
+            BackupSelectorKind::Latest => json!({ "type": "latest" }),
+            BackupSelectorKind::Nth(n) => json!({ "type": "nth", "n": n }),
+            BackupSelectorKind::ById(id) => json!({ "type": "byId", "id": id }),
+            BackupSelectorKind::ByPath(p) => {
+                json!({ "type": "byPath", "path": p.to_string_lossy() })
+            }
+            BackupSelectorKind::Before(_)
+            | BackupSelectorKind::After(_)
+            | BackupSelectorKind::ClosestTo(_) => {
+                return Err(KijukuError::Other(
+                    "このセレクタ種別（Before/After/ClosestTo）は stdin プロトコルでサポートされていません"
+                        .to_string(),
+                ));
+            }
+        };
+        Ok(value)
+    }
 }
 
 impl Default for BackupSelector {
@@ -2481,5 +2508,56 @@ mod tests {
         let result = manager.select_backup(&selector).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().scope, BackupScope::Manual);
+    }
+
+    #[test]
+    fn test_backup_selector_to_wire_value_latest() {
+        let v = BackupSelector::latest().to_wire_value().unwrap();
+        assert_eq!(v, serde_json::json!({ "type": "latest" }));
+    }
+
+    #[test]
+    fn test_backup_selector_to_wire_value_nth() {
+        let v = BackupSelector::nth(3).to_wire_value().unwrap();
+        assert_eq!(v, serde_json::json!({ "type": "nth", "n": 3 }));
+    }
+
+    #[test]
+    fn test_backup_selector_to_wire_value_by_id() {
+        let v = BackupSelector::by_id("20260724160000-000")
+            .to_wire_value()
+            .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "type": "byId", "id": "20260724160000-000" })
+        );
+    }
+
+    #[test]
+    fn test_backup_selector_to_wire_value_by_path() {
+        let v = BackupSelector::by_path("/tmp/x.db").to_wire_value().unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "type": "byPath", "path": "/tmp/x.db" })
+        );
+    }
+
+    #[test]
+    fn test_backup_selector_to_wire_value_time_based_unsupported() {
+        // Before/After/ClosestTo は stdin プロトコル非対応（サーバ側 BackupSelectorJson にバリアントがない）。
+        let now = std::time::SystemTime::now();
+        assert!(BackupSelector::before(now).to_wire_value().is_err());
+        assert!(BackupSelector::after(now).to_wire_value().is_err());
+        assert!(BackupSelector::closest_to(now).to_wire_value().is_err());
+    }
+
+    #[test]
+    fn test_backup_selector_to_wire_value_scope_not_serialized() {
+        // scope_filter を付けても wire には載らない（サーバ側プロトコルが scope 非対応）。
+        let v = BackupSelector::latest()
+            .scope(BackupScope::Auto)
+            .to_wire_value()
+            .unwrap();
+        assert_eq!(v, serde_json::json!({ "type": "latest" }));
     }
 }

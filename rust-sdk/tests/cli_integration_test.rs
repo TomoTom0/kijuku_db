@@ -1421,3 +1421,246 @@ fn test_cli_read_source_prod_readonly_session() {
     assert_eq!(write_resp["success"], false);
     assert!(write_resp["error"].as_str().unwrap().contains("読込専用"));
 }
+
+// ==== import サブコマンド（TASK-68・TS cli.ts runImport パリティ） ====
+
+/// import の基本（TSV）。title/media_type 必須。imported 件数と findMedia で登録を検証。
+#[test]
+fn test_cli_import_tsv_basic() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+    let media_dir = TempDir::new().unwrap();
+    let media_root = media_dir.path().to_str().unwrap();
+
+    let tsv_path = dir.path().join("data.tsv");
+    fs::write(
+        &tsv_path,
+        "title\tmedia_type\tartist\tlanguage\n\
+         コミック1\tcomic\t作者A\tja\n\
+         ビデオ1\tvideo\t作者B\ten\n",
+    )
+    .unwrap();
+
+    let resp = execute_cli_subcommand(
+        db_path,
+        media_root,
+        &["import", tsv_path.to_str().unwrap()],
+    );
+    assert_eq!(resp["success"], true, "import 成功のべき: {:?}", resp);
+    assert_eq!(resp["data"]["imported"], 2);
+    assert_eq!(resp["data"]["tags"], 0);
+    assert_eq!(resp["data"]["attributes"], 0);
+
+    // findMedia で comic 1件ヒット
+    let find = execute_cli_command(
+        db_path,
+        json!({"operation":"findMedia","params":{"filter":{"media_type":"comic"},"options":null}}),
+    );
+    assert_eq!(find["success"], true);
+    assert_eq!(find["data"].as_array().unwrap().len(), 1);
+    assert_eq!(find["data"][0]["title"], "コミック1");
+    assert_eq!(find["data"][0]["artist"], "作者A");
+}
+
+/// import（JSON 配列）。
+#[test]
+fn test_cli_import_json() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+    let media_dir = TempDir::new().unwrap();
+    let media_root = media_dir.path().to_str().unwrap();
+
+    let json_path = dir.path().join("data.json");
+    fs::write(
+        &json_path,
+        r#"[
+          {"title":"タイトル1","media_type":"music","duration_sec":120},
+          {"title":"タイトル2","media_type":"comic","flag_exist":true}
+        ]"#,
+    )
+    .unwrap();
+
+    let resp = execute_cli_subcommand(
+        db_path,
+        media_root,
+        &["import", json_path.to_str().unwrap()],
+    );
+    assert_eq!(resp["success"], true, "{:?}", resp);
+    assert_eq!(resp["data"]["imported"], 2);
+
+    // JSON の数値・bool が正しく解釈されるか検証
+    let find = execute_cli_command(
+        db_path,
+        json!({"operation":"findMedia","params":{"filter":{"media_type":"music"},"options":null}}),
+    );
+    assert_eq!(find["data"][0]["duration_sec"], 120);
+
+    let find2 = execute_cli_command(
+        db_path,
+        json!({"operation":"findMedia","params":{"filter":{"media_type":"comic"},"options":null}}),
+    );
+    assert_eq!(find2["data"][0]["flag_exist"], true);
+}
+
+/// tags 列（カンマ区切り）→ タグ関連付け。件数と getMediaTags で検証。
+#[test]
+fn test_cli_import_with_tags() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+    let media_dir = TempDir::new().unwrap();
+    let media_root = media_dir.path().to_str().unwrap();
+
+    let tsv_path = dir.path().join("tags.tsv");
+    fs::write(
+        &tsv_path,
+        "title\tmedia_type\ttags\nコミック1\tcomic\taction, 冒険\n",
+    )
+    .unwrap();
+
+    let resp = execute_cli_subcommand(
+        db_path,
+        media_root,
+        &["import", tsv_path.to_str().unwrap()],
+    );
+    assert_eq!(resp["success"], true, "{:?}", resp);
+    assert_eq!(resp["data"]["tags"], 2);
+
+    let find = execute_cli_command(
+        db_path,
+        json!({"operation":"findMedia","params":{"filter":{"title":"コミック1"},"options":null}}),
+    );
+    let id = find["data"][0]["id"].as_i64().unwrap();
+
+    let tags = execute_cli_command(
+        db_path,
+        json!({"operation":"getMediaTags","params":{"media_id":id}}),
+    );
+    assert_eq!(tags["success"], true);
+    let names: Vec<&str> = tags["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"action"));
+    assert!(names.contains(&"冒険"));
+}
+
+/// --additional-columns → media_attributes へ格納。
+#[test]
+fn test_cli_import_with_additional_columns() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+    let media_dir = TempDir::new().unwrap();
+    let media_root = media_dir.path().to_str().unwrap();
+
+    let tsv_path = dir.path().join("attr.tsv");
+    fs::write(
+        &tsv_path,
+        "title\tmedia_type\tid_old\tcustom\nコミック1\tcomic\tA001\tfoo\n",
+    )
+    .unwrap();
+
+    let resp = execute_cli_subcommand(
+        db_path,
+        media_root,
+        &[
+            "import",
+            tsv_path.to_str().unwrap(),
+            "--additional-columns",
+            "id_old,custom",
+        ],
+    );
+    assert_eq!(resp["success"], true, "{:?}", resp);
+    assert_eq!(resp["data"]["attributes"], 2);
+
+    let find = execute_cli_command(
+        db_path,
+        json!({"operation":"findMedia","params":{"filter":{"title":"コミック1"},"options":null}}),
+    );
+    let id = find["data"][0]["id"].as_i64().unwrap();
+
+    let attrs = execute_cli_command(
+        db_path,
+        json!({"operation":"getMediaAttributes","params":{"media_id":id}}),
+    );
+    assert_eq!(attrs["success"], true);
+    let map: std::collections::HashMap<&str, &str> = attrs["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| (a["key"].as_str().unwrap(), a["value"].as_str().unwrap()))
+        .collect();
+    assert_eq!(map.get("id_old"), Some(&"A001"));
+    assert_eq!(map.get("custom"), Some(&"foo"));
+}
+
+/// 不正な media_type はバッチ全体を失敗させる。
+#[test]
+fn test_cli_import_invalid_media_type() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+    let media_dir = TempDir::new().unwrap();
+    let media_root = media_dir.path().to_str().unwrap();
+
+    let tsv_path = dir.path().join("bad.tsv");
+    fs::write(&tsv_path, "title\tmedia_type\nX\tunknown\n").unwrap();
+
+    let resp = execute_cli_subcommand(
+        db_path,
+        media_root,
+        &["import", tsv_path.to_str().unwrap()],
+    );
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"].as_str().unwrap().contains("media_type"));
+}
+
+/// 存在しないファイル。
+#[test]
+fn test_cli_import_missing_file() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+    let media_dir = TempDir::new().unwrap();
+    let media_root = media_dir.path().to_str().unwrap();
+
+    let missing = dir.path().join("no_such_file.tsv");
+    let resp = execute_cli_subcommand(
+        db_path,
+        media_root,
+        &["import", missing.to_str().unwrap()],
+    );
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"].as_str().unwrap().contains("ファイルが見つかりません"));
+}
+
+/// prod（readonly）では import 拒否。
+#[test]
+fn test_cli_import_prod_readonly_rejected() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+    let media_dir = TempDir::new().unwrap();
+    let media_root = media_dir.path().to_str().unwrap();
+
+    let tsv_path = dir.path().join("data.tsv");
+    fs::write(&tsv_path, "title\tmedia_type\nX\tcomic\n").unwrap();
+
+    let resp = execute_cli_subcommand(
+        db_path,
+        media_root,
+        &[
+            "--target",
+            "prod",
+            "import",
+            tsv_path.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(resp["success"], false);
+    assert!(resp["error"].as_str().unwrap().contains("readonly"));
+}

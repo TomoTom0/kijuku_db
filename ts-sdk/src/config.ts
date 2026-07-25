@@ -243,3 +243,36 @@ export function resolveTarget(
   const readonly = target === 'prod';
   return { target, dbPath, readonly, shouldMigrate: !readonly };
 }
+
+/**
+ * `--db` 文字列を解析しローカル/リモートを判別する（設計 §13・Rust `config.rs::parse_db_path` と同等）。
+ *
+ * `host:path` 形式（ホスト部2文字以上・パス部非空）をリモート SSH 接続、それ以外をローカルパスとみなす。
+ * Windows ドライブレター（`C:` 等・ホスト部1文字）はローカル扱い。
+ *
+ * @param dbPath - データベースパス（host:path または ローカルパス）
+ * @returns { isRemote, sshHost?, remotePath?, localPath? }
+ */
+export function parseDbPath(dbPath: string): {
+  isRemote: boolean;
+  sshHost?: string;
+  remotePath?: string;
+  localPath?: string;
+} {
+  // host:path 形式をチェック（Windowsドライブレター C: を除外）
+  const remoteMatch = dbPath.match(/^([^:]+):(.+)$/);
+  if (remoteMatch && remoteMatch[1].length > 1) {
+    // リモートパス
+    return {
+      isRemote: true,
+      sshHost: remoteMatch[1],
+      remotePath: remoteMatch[2],
+    };
+  }
+
+  // ローカルパス
+  return {
+    isRemote: false,
+    localPath: dbPath,
+  };
+}

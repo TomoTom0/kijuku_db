@@ -17,6 +17,7 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1.0"
 toml = "0.8"
 clap = { version = "4.5", features = ["derive"] }
+csv = "1"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
@@ -47,4 +48,4 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "kijuku-cli"
-path = "src/bin/cli.rs"
+path = "src/bin/cli/main.rs"

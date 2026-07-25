@@ -319,6 +319,42 @@ pub fn resolve_prod_and_stg_paths(env: &dyn EnvProvider) -> (String, String) {
     (prod, stg)
 }
 
+/// `--db` 文字列の解析結果（設計 §13・TS `cli.ts:parseDbPath` と同等）。
+/// `host:path` 形式をリモート SSH 接続、それ以外をローカルパスとみなす。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedDbPath {
+    /// リモート（`host:path`）なら true。
+    pub is_remote: bool,
+    /// リモート時の SSH ホスト（~/.ssh/config のエイリアス可）。ローカル時は None。
+    pub ssh_host: Option<String>,
+    /// DB パス。リモート時はホスト上のパス、ローカル時はローカルパス。
+    pub path: String,
+}
+
+/// `--db` 文字列を解析しローカル/リモートを判別する（設計 §13）。
+///
+/// 最初のコロンで `host` 部と `path` 部に分割し、ホスト部が2文字以上かつパス部が
+/// 空でなければリモート扱い。ホスト部1文字（Windows ドライブレター `C:` 等）はローカル。
+/// TS `cli.ts:parseDbPath` の正規表現 `^([^:]+):(.+)$` + `length > 1` と同等。
+pub fn parse_db_path(db_path: &str) -> ParsedDbPath {
+    if let Some(idx) = db_path.find(':') {
+        let host = &db_path[..idx];
+        let path = &db_path[idx + 1..];
+        if host.len() > 1 && !path.is_empty() {
+            return ParsedDbPath {
+                is_remote: true,
+                ssh_host: Some(host.to_string()),
+                path: path.to_string(),
+            };
+        }
+    }
+    ParsedDbPath {
+        is_remote: false,
+        ssh_host: None,
+        path: db_path.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +377,64 @@ mod tests {
         assert_eq!(config.backup.tmp_retention_secs, 604_800);
         assert!(config.backup.backup_dir.is_none());
         assert!(config.backup.retention_tiers.is_none());
+    }
+
+    #[test]
+    fn test_parse_db_path_remote_host_path() {
+        let p = parse_db_path("nas:/data/kijuku.db");
+        assert!(p.is_remote);
+        assert_eq!(p.ssh_host.as_deref(), Some("nas"));
+        assert_eq!(p.path, "/data/kijuku.db");
+    }
+
+    #[test]
+    fn test_parse_db_path_remote_user_at_host() {
+        let p = parse_db_path("tomo@nas:/data/kijuku.db");
+        assert!(p.is_remote);
+        assert_eq!(p.ssh_host.as_deref(), Some("tomo@nas"));
+        assert_eq!(p.path, "/data/kijuku.db");
+    }
+
+    #[test]
+    fn test_parse_db_path_remote_relative_path() {
+        // ホスト部2文字以上・パス部非空ならリモート（TS と同じ挙動）。
+        let p = parse_db_path("nas:data/kijuku.db");
+        assert!(p.is_remote);
+        assert_eq!(p.ssh_host.as_deref(), Some("nas"));
+        assert_eq!(p.path, "data/kijuku.db");
+    }
+
+    #[test]
+    fn test_parse_db_path_local_windows_drive_letter() {
+        // ホスト部1文字（Windows ドライブレター）はローカル扱い。
+        let p = parse_db_path("C:\\Users\\tomo\\kijuku.db");
+        assert!(!p.is_remote);
+        assert!(p.ssh_host.is_none());
+        assert_eq!(p.path, "C:\\Users\\tomo\\kijuku.db");
+    }
+
+    #[test]
+    fn test_parse_db_path_local_absolute() {
+        let p = parse_db_path("/home/tomo/kijuku.db");
+        assert!(!p.is_remote);
+        assert!(p.ssh_host.is_none());
+        assert_eq!(p.path, "/home/tomo/kijuku.db");
+    }
+
+    #[test]
+    fn test_parse_db_path_local_relative_no_colon() {
+        let p = parse_db_path("kijuku.db");
+        assert!(!p.is_remote);
+        assert!(p.ssh_host.is_none());
+        assert_eq!(p.path, "kijuku.db");
+    }
+
+    #[test]
+    fn test_parse_db_path_empty_path_after_colon_is_local() {
+        // `host:` のようにパス部が空ならローカル扱い（TS `.+` と同等）。
+        let p = parse_db_path("nas:");
+        assert!(!p.is_remote);
+        assert_eq!(p.path, "nas:");
     }
 
     #[test]

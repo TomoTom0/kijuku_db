@@ -1175,14 +1175,16 @@ export class RemoteKijukuDB {
   }
 
   /**
-   * prod(RO) → stg(RW) のフル複製（sync・設計 §4.2）。
-   *
-   * リモートホスト上で CLI の `sync` 操作を起動し、NAS 上で prod→stg コピーを完結させる
+   * prod→stg コピー操作の共通基盤（sync/discard・設計 §4.2/§4.6）。`operation` に 'sync'/'discard'
+   * を渡す。リモートホスト上で CLI の当該操作を起動し、NAS 上で prod→stg コピーを完結させる
    * （リモート↔ローカル間のファイル転送は発生しない）。stg 排他（接続中プロセスがないこと）は
    * 呼出側の責任（設計 §15-11 P1）。prod/stg パスは config から解決して `from`/`to` で明示渡し、
    * リモート側の環境変数に依存しない。
    */
-  async sync(timeoutMs?: number): Promise<{ prodPath: string; stgPath: string }> {
+  private async runProdToStg(
+    operation: 'sync' | 'discard',
+    timeoutMs?: number,
+  ): Promise<{ prodPath: string; stgPath: string }> {
     const prodPath = this.config.dbPath ?? DEFAULT_REMOTE_PROD_DB;
     const stgPath =
       this.config.stgDbPath ??
@@ -1191,10 +1193,10 @@ export class RemoteKijukuDB {
     await this.connect();
     try {
       const dbSizeBytes = await this.getRemoteFileSize(prodPath);
-      // sync は prod→stg の単一コピー（ Online Backup 1パス）。calcBackupTimeoutMs は MARGIN=2 含む。
+      // prod→stg の単一コピー（ Online Backup 1パス）。calcBackupTimeoutMs は MARGIN=2 含む。
       const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
       const response = await this.executeRemoteCommand(
-        { operation: 'sync', params: { from: prodPath, to: stgPath } },
+        { operation, params: { from: prodPath, to: stgPath } },
         resolvedTimeoutMs,
       );
       const data = this.checkResponse(response);
@@ -1202,6 +1204,22 @@ export class RemoteKijukuDB {
     } finally {
       await this.disconnect();
     }
+  }
+
+  /**
+   * prod(RO) → stg(RW) のフル複製（sync・設計 §4.2）。書込セッション開始時の初期同期。
+   */
+  async sync(timeoutMs?: number): Promise<{ prodPath: string; stgPath: string }> {
+    return this.runProdToStg('sync', timeoutMs);
+  }
+
+  /**
+   * stg 破棄・再 sync（discard・設計 §4.6）。書込セッション中断・observe gate 不合格時に stg を
+   * 捨てて prod から再構築する。処理は `sync` と同一（prod→stg の Online Backup コピー・既存 stg は
+   * 上書き破棄・prod は一切触らない）。操作名のみ監査ログ（§10）で区別するため独立メソッド。
+   */
+  async discard(timeoutMs?: number): Promise<{ prodPath: string; stgPath: string }> {
+    return this.runProdToStg('discard', timeoutMs);
   }
   async diffWithBackup(
     params: { selector?: RemoteBackupSelector; options?: { detail?: DiffDetail } } = {},

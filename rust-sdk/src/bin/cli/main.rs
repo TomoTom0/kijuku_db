@@ -13,16 +13,22 @@ use clap::Parser;
 use include_dir::{include_dir, Dir};
 use kijuku_db::{
     AttributeValueType, BackupInfo, BackupKind, BackupOptions, BackupScope, BackupSelector,
-    BulkUpdateItem, D1Config, D1KijukuDB, DBOptions, KijukuBackend, KijukuDB, MediaFilter,
-    MediaInput, MediaHashInput, MediaUpdateInput, QueryOptions, SystemEnv, Target,
-    ThumbnailOptions, TransferOptions, UpdateExistOptions, resolve_prod_and_stg_paths,
-    resolve_target, transfer, verify,
+    BulkUpdateItem, D1Config, D1KijukuDB, DBOptions, KijukuBackend, KijukuDB,
+    MediaFilter, MediaInput, MediaHashInput, MediaType, MediaUpdateInput, QueryOptions,
+    RemoteKijukuDB, SystemEnv, Target, ThumbnailOptions, TransferOptions,
+    UpdateExistOptions, parse_db_path, resolve_prod_and_stg_paths, resolve_target, transfer,
+    verify,
     file_ops::FileOpOptions,
     trash::TrashOperation,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
+
+mod db_client;
+use db_client::{ImportRecord, open_db_client, remote_config_from_ctx};
 
 static DOCS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../docs");
 
@@ -595,6 +601,8 @@ struct CliContext {
     verbose: bool,
     backend: BackendKind,
     media_root: Option<String>,
+    /// 操作対象（prod/stg・read-source 折り畳み済み・設計 §13）。remote 接続時にリモート CLI へ伝達。
+    target: Target,
     /// prod 読込経路なら true（readonly open・設計 §5.1）
     readonly: bool,
     /// prod 読込経路（readonly）なら false（migrate skip・設計 §5.1）
@@ -853,6 +861,20 @@ enum Commands {
         #[arg(long)]
         to: Option<String>,
     },
+    /// stg を破棄して prod から再 sync（discard・設計 §4.6）。
+    ///
+    /// 処理は `sync-db` と同一（prod→stg の Online Backup フル複製・既存 stg は上書き破棄）。
+    /// 操作名のみ監査ログ（§10）で区別するため独立サブコマンド。書込セッション中断・
+    /// observe gate 不合格時に stg を捨てて再構築する経路（prod は一切触らない）。
+    /// 引数の意味・解決方法は `sync-db` に準ずる。
+    DiscardDb {
+        /// prod パス（省略時は KIJUKU_DB_PATH / デフォルト）
+        #[arg(long)]
+        from: Option<String>,
+        /// stg パス（省略時は KIJUKU_STG_DB_PATH / デフォルト）
+        #[arg(long)]
+        to: Option<String>,
+    },
     /// コンテンツハッシュ操作
     Hash {
         #[command(subcommand)]
@@ -878,6 +900,19 @@ enum Commands {
         /// 転送せず、既存の dest に対する検証のみ行う
         #[arg(long)]
         verify_only: bool,
+    },
+    /// JSON/CSV/TSV ファイルからメディアを一括インポート（タグ・追加属性も処理）
+    ///
+    /// 拡張子で形式を自動判定（`.json` / `.csv` / `.tsv`）。各レコードの `media_type`・`title` は
+    /// 必須。`tags` 列（カンマ区切り）はタグ関連付け、`--additional-columns` で指定した列は
+    /// `media_attributes` へ string 型で格納される（TS `cli.ts:runImport` 相当）。
+    Import {
+        /// 入力ファイルパス（.json / .csv / .tsv）
+        #[arg(value_name = "FILE")]
+        file: String,
+        /// media_attributes に保存する追加カラム（カンマ区切り）
+        #[arg(long)]
+        additional_columns: Option<String>,
     },
 }
 
@@ -1025,59 +1060,269 @@ async fn handle_server(ctx: &CliContext, port: u16, password: Option<String>) {
     }
 }
 
-fn open_db_with_backup(ctx: &CliContext) -> Option<KijukuDB> {
-    match KijukuDB::open_with_options(
-        &ctx.db_path,
-        DBOptions {
-            backup: Some(BackupOptions::default()),
-            verbose: ctx.verbose,
-            readonly: ctx.readonly,
-            ..Default::default()
-        },
-    ) {
-        Ok(db) => Some(db),
-        Err(e) => {
-            eprintln!("データベースのオープンに失敗: {}", e);
-            None
-        }
-    }
-}
-
-fn open_and_migrate_db(ctx: &CliContext) -> Option<KijukuDB> {
-    let db = open_db_with_backup(ctx)?;
-    // prod 読込経路（readonly）では migrate を skip（設計 §5.1）
-    if ctx.should_migrate {
-        if let Err(e) = db.migrate() {
-            eprintln!("マイグレーションに失敗: {}", e);
-            return None;
-        }
-    }
-    Some(db)
-}
-
 fn handle_backup_subcommand(ctx: &CliContext, label: Option<String>) {
-    let db = match open_and_migrate_db(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
     };
-    let result = if let Some(ref l) = label {
-        db.backup_with_label(l)
-    } else {
-        db.backup()
-    };
-    match result {
+    match client.backup(label.as_deref()) {
         Ok(Some(path)) => println!("{}", path),
         Ok(None) => eprintln!("バックアップマネージャーが設定されていません"),
         Err(e) => eprintln!("バックアップに失敗: {}", e),
     }
 }
 
-fn handle_list_backups_subcommand(ctx: &CliContext) {
-    let db = match open_and_migrate_db(ctx) {
-        Some(db) => db,
-        None => return,
+/// `import` サブコマンドハンドラ（TS `cli.ts:runImport` 相当）。
+///
+/// JSON/CSV/TSV ファイルを読み込み `ImportRecord` 群へ変換し、`DbClient::import_media` で
+/// 一括登録（media + タグ関連付け + 追加属性）。結果は `CommandResponse` の1行JSONで出力する。
+/// prod 読込経路（readonly）では書込不可のため事前に拒否する（設計 §5.1）。
+fn handle_import_subcommand(
+    ctx: &CliContext,
+    file: String,
+    additional_columns: Option<String>,
+) {
+    if ctx.readonly {
+        output_response(&CommandResponse::error(
+            "prod (readonly) では import できません。stg（既定）へ import してください".to_string(),
+        ));
+        return;
+    }
+
+    // additional_columns をカンマ区切りで分解（前後空白削除・空要素除外）
+    let additional_cols: Vec<String> = additional_columns
+        .map(|s| {
+            s.split(',')
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let records = match parse_records(&file, &additional_cols) {
+        Ok(r) => r,
+        Err(e) => {
+            output_response(&CommandResponse::error(e));
+            return;
+        }
     };
-    match db.list_backups() {
+
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            output_response(&CommandResponse::error(e));
+            return;
+        }
+    };
+    let result = client.import_media(&records);
+    output_response(&CommandResponse::from_result(result, "importエラー: "));
+}
+
+/// 入力ファイルを解析し `ImportRecord` 群を構築する。拡張子で .json/.csv/.tsv を自動判定し、
+/// いずれも `Vec<HashMap<String,String>>` に正規化してから `build_import_record` へ渡す。
+/// UTF-8 BOM が先頭にあれば除去する。
+fn parse_records(file: &str, additional_cols: &[String]) -> Result<Vec<ImportRecord>, String> {
+    let path = Path::new(file);
+    if !path.exists() {
+        return Err(format!("ファイルが見つかりません: {}", file));
+    }
+    let raw = fs::read_to_string(file).map_err(|e| format!("ファイルの読み込みに失敗: {}", e))?;
+    let content = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+    let rows: Vec<HashMap<String, String>> = match ext.as_deref() {
+        Some("json") => parse_json_records(content)?,
+        Some("csv") => parse_delimited_records(content, b',')?,
+        Some("tsv") => parse_delimited_records(content, b'\t')?,
+        _ => {
+            return Err(
+                "サポートされていないファイル形式です（.json/.csv/.tsvのみ）".to_string(),
+            )
+        }
+    };
+
+    rows.into_iter()
+        .map(|row| build_import_record(row, additional_cols))
+        .collect()
+}
+
+/// JSON 配列を `Vec<HashMap<String,String>>` へ正規化。
+/// `Null` は除外（TS `!== void 0` に合わせる）。`Bool` は "true"/"false"、数値は `to_string`、
+/// 文字列はそのまま。配列/オブジェクト値は `to_string` される（追加カラムでのみ影響・通常スカラー）。
+fn parse_json_records(content: &str) -> Result<Vec<HashMap<String, String>>, String> {
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(content).map_err(|e| format!("JSONのパースに失敗: {}", e))?;
+    arr.into_iter()
+        .map(|v| {
+            v.as_object()
+                .ok_or_else(|| "JSONレコードがオブジェクトではありません".to_string())
+                .map(json_value_to_map)
+        })
+        .collect()
+}
+
+/// JSON オブジェクト1件を文字列マップへ変換（Null はスキップ）。
+fn json_value_to_map(obj: &serde_json::Map<String, serde_json::Value>) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for (k, val) in obj {
+        if val.is_null() {
+            continue;
+        }
+        let s = match val {
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        map.insert(k.clone(), s);
+    }
+    map
+}
+
+/// CSV/TSV（区切り文字指定）を `Vec<HashMap<String,String>>` へ正規化。
+/// 先頭行をヘッダとし、各フィールドの前後空白を除去（`csv::Trim::All`）。
+fn parse_delimited_records(
+    content: &str,
+    delimiter: u8,
+) -> Result<Vec<HashMap<String, String>>, String> {
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(delimiter)
+        .has_headers(true)
+        .trim(csv::Trim::All)
+        .from_reader(content.as_bytes());
+    let headers = reader
+        .headers()
+        .map_err(|e| format!("ヘッダの読み込みに失敗: {}", e))?
+        .iter()
+        .map(|h| h.to_string())
+        .collect::<Vec<_>>();
+
+    let mut rows = Vec::new();
+    for result in reader.records() {
+        let record = result.map_err(|e| format!("レコードの読み込みに失敗: {}", e))?;
+        let mut map = HashMap::new();
+        for (i, field) in record.iter().enumerate() {
+            if let Some(key) = headers.get(i) {
+                map.insert(key.clone(), field.to_string());
+            }
+        }
+        rows.push(map);
+    }
+    Ok(rows)
+}
+
+/// 1レコード（文字列マップ）から `ImportRecord` を構築。
+/// `title`/`media_type` は必須。`flag_exist` は "true"/"false"（大文字小文字無視）を bool へ。
+/// 数値フィールドは空文字・省略を None 扱い。`tags` はカンマ区切りで分割、
+/// `additional_cols` に列挙した列は `(key, value)` で属性として取り出す。
+fn build_import_record(
+    row: HashMap<String, String>,
+    additional_cols: &[String],
+) -> Result<ImportRecord, String> {
+    let title = row
+        .get("title")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .ok_or("title は必須です")?;
+    let media_type_str = row
+        .get("media_type")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .ok_or("media_type は必須です")?;
+    let media_type = MediaType::from_str(&media_type_str).ok_or_else(|| {
+        format!(
+            "不正な media_type です: {}（comic/video/music のいずれか）",
+            media_type_str
+        )
+    })?;
+
+    let flag_exist = row.get("flag_exist").map(|s| s.to_uppercase() == "TRUE");
+
+    let media = MediaInput {
+        title,
+        media_type,
+        uuid: row.get("uuid").cloned(),
+        title_id: row.get("title_id").cloned(),
+        path: row.get("path").cloned(),
+        thumbnail_path: row.get("thumbnail_path").cloned(),
+        artist: row.get("artist").cloned(),
+        artist_id: row.get("artist_id").cloned(),
+        description: row.get("description").cloned(),
+        file_size: parse_opt_int(row.get("file_size"), "file_size")?,
+        duration_sec: parse_opt_int(row.get("duration_sec"), "duration_sec")?,
+        page_count: parse_opt_int(row.get("page_count"), "page_count")?,
+        series: row.get("series").cloned(),
+        volume_number: None, // 手動設定は無視（volume_text から自動計算）
+        volume_text: row.get("volume_text").cloned(),
+        volume_title: row.get("volume_title").cloned(),
+        magazine: row.get("magazine").cloned(),
+        magazine_id: row.get("magazine_id").cloned(),
+        language: row.get("language").cloned(),
+        source: row.get("source").cloned(),
+        external_id: row.get("external_id").cloned(),
+        artist_en: row.get("artist_en").cloned(),
+        title_en: row.get("title_en").cloned(),
+        chapters: row.get("chapters").cloned(),
+        extension: row.get("extension").cloned(),
+        flag_exist,
+        title_pron: row.get("title_pron").cloned(),
+        artist_pron: row.get("artist_pron").cloned(),
+        series_pron: row.get("series_pron").cloned(),
+    };
+
+    let tags = row
+        .get("tags")
+        .map(|s| {
+            s.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let attributes = additional_cols
+        .iter()
+        .filter_map(|c| row.get(c).map(|v| (c.clone(), v.clone())))
+        .collect();
+
+    Ok(ImportRecord {
+        media,
+        tags,
+        attributes,
+    })
+}
+
+/// 文字列の Option を整数へパース（空文字・省略は None）。パース失敗はエラー。
+fn parse_opt_int<T: std::str::FromStr>(
+    v: Option<&String>,
+    field: &str,
+) -> Result<Option<T>, String>
+where
+    T::Err: std::fmt::Display,
+{
+    match v {
+        Some(s) if !s.is_empty() => s
+            .parse::<T>()
+            .map(Some)
+            .map_err(|e| format!("{} のパースに失敗 ({}): {}", field, s, e)),
+        _ => Ok(None),
+    }
+}
+
+fn handle_list_backups_subcommand(ctx: &CliContext) {
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
+    };
+    match client.list_backups() {
         Ok(backups) => {
             if backups.is_empty() {
                 println!("バックアップはありません");
@@ -1100,11 +1345,14 @@ fn handle_list_backups_subcommand(ctx: &CliContext) {
 /// pre-stash（即時復旧用ロールバックファイル）一覧を表示（設計 §8）。
 /// promote/(b)操作が返す pre_stash_path を失った場合の発見経路。path は byPath restore に直接渡せる。
 fn handle_list_pre_stashes_subcommand(ctx: &CliContext) {
-    let db = match open_and_migrate_db(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
     };
-    match db.list_pre_stashes() {
+    match client.list_pre_stashes() {
         Ok(stashes) => {
             if stashes.is_empty() {
                 println!("pre-stash（即時復旧用ロールバックファイル）はありません");
@@ -1120,9 +1368,12 @@ fn handle_list_pre_stashes_subcommand(ctx: &CliContext) {
 }
 
 fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>, id: Option<String>) {
-    let mut db = match open_and_migrate_db(ctx) {
-        Some(db) => db,
-        None => return,
+    let mut client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
     };
     let selector = if let Some(id) = id {
         BackupSelector::by_id(id)
@@ -1132,8 +1383,8 @@ fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>, id: Option<St
             None => BackupSelector::latest(),
         }
     };
-    match db.restore(&selector) {
-        Ok(path) => println!("{}", path.to_string_lossy()),
+    match client.restore(&selector) {
+        Ok(path) => println!("{}", path),
         Err(e) => eprintln!("復元に失敗: {}", e),
     }
 }
@@ -1152,12 +1403,57 @@ fn resolve_sync_paths(from: Option<String>, to: Option<String>) -> (String, Stri
     }
 }
 
-/// `sync-db` サブコマンド: prod(RO)→stg(RW) のフル複製（stg 接続を開かない・設計 §4.2）。
-fn handle_sync_subcommand(_ctx: &CliContext, from: Option<String>, to: Option<String>) {
-    let (prod, stg) = resolve_sync_paths(from, to);
-    match KijukuDB::replicate_db(Path::new(&prod), Path::new(&stg)) {
-        Ok(()) => println!("sync 完了: {} -> {}", prod, stg),
-        Err(e) => eprintln!("sync に失敗: {}", e),
+/// `sync-db` サブコマンド: prod(RO)→stg(RW) のフル複製（設計 §4.2）。
+///
+/// ローカル: stg 接続を開かず `KijukuDB::replicate_db` でファイルコピー（`--from`/`--to` または
+/// 環境変数で両パス解決）。リモート（`--db host:path`）: `RemoteKijukuDB::sync` でリモート側の
+/// prod/stg パス設定によりサーバ側コピー（`--from`/`--to` は無視・警告）。
+fn handle_sync_subcommand(ctx: &CliContext, from: Option<String>, to: Option<String>) {
+    let parsed = parse_db_path(&ctx.db_path);
+    if parsed.is_remote {
+        if from.is_some() || to.is_some() {
+            eprintln!(
+                "警告: リモート sync では --from/--to は無視されます（リモート側 prod/stg パス設定を使用）"
+            );
+        }
+        let config = remote_config_from_ctx(ctx, &parsed);
+        let remote = RemoteKijukuDB::new(config);
+        match remote.sync() {
+            Ok(r) => println!("sync 完了: {} -> {}", r.prod_path, r.stg_path),
+            Err(e) => eprintln!("sync に失敗: {}", e),
+        }
+    } else {
+        let (prod, stg) = resolve_sync_paths(from, to);
+        match KijukuDB::replicate_db(Path::new(&prod), Path::new(&stg)) {
+            Ok(()) => println!("sync 完了: {} -> {}", prod, stg),
+            Err(e) => eprintln!("sync に失敗: {}", e),
+        }
+    }
+}
+
+/// discard（stg 破棄・再 sync・設計 §4.6）。処理は `sync-db` と同一（prod→stg の `replicate_db`・
+/// 既存 stg は上書き破棄）。リモートは `RemoteKijukuDB::discard`（operation:"discard"）を呼ぶ。
+/// ローカル: stg 接続を開かず `KijukuDB::replicate_db` でファイルコピー。リモート: サーバ側コピー。
+fn handle_discard_subcommand(ctx: &CliContext, from: Option<String>, to: Option<String>) {
+    let parsed = parse_db_path(&ctx.db_path);
+    if parsed.is_remote {
+        if from.is_some() || to.is_some() {
+            eprintln!(
+                "警告: リモート discard では --from/--to は無視されます（リモート側 prod/stg パス設定を使用）"
+            );
+        }
+        let config = remote_config_from_ctx(ctx, &parsed);
+        let remote = RemoteKijukuDB::new(config);
+        match remote.discard() {
+            Ok(r) => println!("discard 完了: {} -> {}", r.prod_path, r.stg_path),
+            Err(e) => eprintln!("discard に失敗: {}", e),
+        }
+    } else {
+        let (prod, stg) = resolve_sync_paths(from, to);
+        match KijukuDB::replicate_db(Path::new(&prod), Path::new(&stg)) {
+            Ok(()) => println!("discard 完了: {} -> {}", prod, stg),
+            Err(e) => eprintln!("discard に失敗: {}", e),
+        }
     }
 }
 
@@ -1167,9 +1463,12 @@ fn handle_diff_backup_subcommand(
     id: Option<String>,
     detail: String,
 ) {
-    let db = match open_and_migrate_db(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
     };
     let selector = if let Some(id) = id {
         BackupSelector::by_id(id)
@@ -1189,7 +1488,7 @@ fn handle_diff_backup_subcommand(
     let options = kijuku_db::diff::DiffOptions {
         detail: Some(detail),
     };
-    match db.diff_with_backup(&selector, &options) {
+    match client.diff_with_backup(&selector, &options) {
         Ok(diff) => print_backup_diff_summary(&diff),
         Err(e) => eprintln!("差分の取得に失敗: {}", e),
     }
@@ -1206,9 +1505,12 @@ fn handle_diff_prod_stg_subcommand(
     summarize: bool,
     prompt: bool,
 ) {
-    let db = match open_and_migrate_db(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
     };
     let detail_enum = match parse_diff_detail(&detail) {
         Ok(d) => d,
@@ -1221,7 +1523,7 @@ fn handle_diff_prod_stg_subcommand(
         detail: Some(detail_enum),
     };
     let (prod_path, _stg) = resolve_sync_paths(prod, None);
-    match db.diff_with_prod(Path::new(&prod_path), &options) {
+    match client.diff_with_prod(Some(&prod_path), &options) {
         Ok(diff) => {
             let summary = kijuku_db::diff::summarize_diff(&diff);
             if prompt {
@@ -1249,9 +1551,12 @@ fn handle_observe_subcommand(
     max_changed: Option<usize>,
     json: bool,
 ) {
-    let db = match open_and_migrate_db(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
     };
     let detail_enum = match parse_diff_detail(&detail) {
         Ok(d) => d,
@@ -1276,7 +1581,7 @@ fn handle_observe_subcommand(
         options.gate_config.max_changed = m;
     }
     let (prod_path, _stg) = resolve_sync_paths(prod, None);
-    match db.observe(Path::new(&prod_path), &options) {
+    match client.observe(Some(&prod_path), &options) {
         Ok(result) => {
             if json {
                 match serde_json::to_string_pretty(&result) {
@@ -1635,9 +1940,10 @@ async fn handle_stdin(ctx: &CliContext) {
         }
     };
 
-    // sync は prod→stg ファイルコピーで stg を未接続前提とするため、backend（stg 接続）を
+    // sync/discard は prod→stg ファイルコピーで stg を未接続前提とするため、backend（stg 接続）を
     // 開かずに処理する（接続中の stg 上書きによる WAL 破損を回避・設計 §4.2/§5.3）。
-    if request.operation == "sync" {
+    // discard は stg 破棄・再 sync（§4.6）で処理は sync と同一。操作名のみ監査（§10）で区別。
+    if request.operation == "sync" || request.operation == "discard" {
         let response = handle_sync(&request.params).await;
         output_response(&response);
         return;
@@ -1715,9 +2021,27 @@ async fn main() {
         verbose: cli.verbose,
         backend: cli.backend.clone(),
         media_root: cli.media_root.clone(),
+        target: resolution.target,
         readonly: resolution.readonly,
         should_migrate: resolution.should_migrate,
     };
+
+    // remote（--db host:path）は local DB を直接開くモードでは利用不可（TASK-64 Gap e）。
+    // stdin プロトコル(サブコマンド無し)/server はローカル DB を開く RPC サーバモード、
+    // bulk-load はローカル SQLite を source として開くため、いずれも host:path は無意味。
+    // docs は DB を触らないため対象外。リモート RPC のサーバ側は常にローカル --db で起動する。
+    let is_remote_db = parse_db_path(&ctx.db_path).is_remote;
+    if is_remote_db
+        && matches!(
+            &cli.command,
+            None | Some(Commands::Server { .. }) | Some(Commands::BulkLoad { .. })
+        )
+    {
+        eprintln!(
+            "エラー: --db host:path（リモート）では stdin プロトコル/server/bulk-load は利用できません（これらはローカルDBを直接開くモードです）"
+        );
+        std::process::exit(1);
+    }
 
     // バックエンド種別とサブコマンドの整合性チェック
     match (&ctx.backend, &cli.command) {
@@ -1808,6 +2132,9 @@ async fn main() {
         Some(Commands::SyncDb { from, to }) => {
             handle_sync_subcommand(&ctx, from.clone(), to.clone());
         }
+        Some(Commands::DiscardDb { from, to }) => {
+            handle_discard_subcommand(&ctx, from.clone(), to.clone());
+        }
         Some(Commands::Hash { hash_command }) => {
             handle_hash_subcommand(&ctx, hash_command);
         }
@@ -1819,6 +2146,12 @@ async fn main() {
         }
         Some(Commands::Trash { trash_command }) => {
             handle_trash_subcommand(&ctx, trash_command);
+        }
+        Some(Commands::Import {
+            file,
+            additional_columns,
+        }) => {
+            handle_import_subcommand(&ctx, file.clone(), additional_columns.clone());
         }
         None => {
             handle_stdin(&ctx).await;
@@ -2033,11 +2366,14 @@ fn handle_set_backup_label_subcommand(
     id: String,
     label: Option<String>,
 ) {
-    let db = match open_and_migrate_db(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
     };
-    match db.set_backup_label(&id, label.as_deref()) {
+    match client.set_backup_label(&id, label.as_deref()) {
         Ok(_) => println!("ラベルを設定しました（id={}）", id),
         Err(e) => eprintln!("ラベル設定に失敗: {}", e),
     }
@@ -2048,11 +2384,14 @@ fn handle_set_backup_note_subcommand(
     id: String,
     note: Option<String>,
 ) {
-    let db = match open_and_migrate_db(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
     };
-    match db.set_backup_note(&id, note.as_deref()) {
+    match client.set_backup_note(&id, note.as_deref()) {
         Ok(_) => println!("メモを設定しました（id={}）", id),
         Err(e) => eprintln!("メモ設定に失敗: {}", e),
     }
@@ -2639,26 +2978,16 @@ fn handle_update_exist_subcommand(ctx: &CliContext, dry_run: bool, filter_json: 
         }
     };
 
-    let db = match KijukuDB::open_with_options(&ctx.db_path, DBOptions { verbose: ctx.verbose, readonly: ctx.readonly, ..Default::default() }) {
-        Ok(db) => db,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
         Err(e) => {
-            let response = CommandResponse::error(format!("データベースのオープンに失敗: {}", e));
-            output_response(&response);
+            output_response(&CommandResponse::error(e));
             return;
         }
     };
 
-    // prod 読込経路（readonly）では migrate を skip（設計 §5.1）
-    if ctx.should_migrate {
-        if let Err(e) = db.migrate() {
-            let response = CommandResponse::error(format!("マイグレーションに失敗: {}", e));
-            output_response(&response);
-            return;
-        }
-    }
-
     let update_options = UpdateExistOptions { dry_run };
-    match db.update_exist(&filter, None, &update_options) {
+    match client.update_exist(&filter, None, &update_options) {
         Ok(result) => match serde_json::to_value(result) {
             Ok(data) => output_response(&CommandResponse::success(data)),
             Err(e) => output_response(&CommandResponse::error(format!(
@@ -2698,24 +3027,6 @@ async fn handle_update_thumbnail(db: &KijukuDB, params: &serde_json::Value) -> C
     }
 }
 
-fn open_and_migrate_db_for_json_output(ctx: &CliContext) -> Option<KijukuDB> {
-    let db = match KijukuDB::open_with_options(&ctx.db_path, DBOptions { verbose: ctx.verbose, readonly: ctx.readonly, media_root: ctx.media_root.clone(), ..Default::default() }) {
-        Ok(db) => db,
-        Err(e) => {
-            output_response(&CommandResponse::error(format!("データベースのオープンに失敗: {}", e)));
-            return None;
-        }
-    };
-    // prod 読込経路（readonly）では migrate を skip（設計 §5.1）
-    if ctx.should_migrate {
-        if let Err(e) = db.migrate() {
-            output_response(&CommandResponse::error(format!("マイグレーションに失敗: {}", e)));
-            return None;
-        }
-    }
-    Some(db)
-}
-
 fn handle_check_thumbnail_subcommand(ctx: &CliContext, filter_json: &str) {
     let filter: MediaFilter = match serde_json::from_str(filter_json) {
         Ok(f) => f,
@@ -2725,11 +3036,14 @@ fn handle_check_thumbnail_subcommand(ctx: &CliContext, filter_json: &str) {
             return;
         }
     };
-    let db = match open_and_migrate_db_for_json_output(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            output_response(&CommandResponse::error(e));
+            return;
+        }
     };
-    match db.check_thumbnail(&filter, None) {
+    match client.check_thumbnail(&filter, None) {
         Ok(result) => match serde_json::to_value(result) {
             Ok(data) => output_response(&CommandResponse::success(data)),
             Err(e) => output_response(&CommandResponse::error(format!(
@@ -2750,12 +3064,15 @@ fn handle_update_thumbnail_subcommand(ctx: &CliContext, dry_run: bool, force: bo
             return;
         }
     };
-    let db = match open_and_migrate_db_for_json_output(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            output_response(&CommandResponse::error(e));
+            return;
+        }
     };
     let thumbnail_options = ThumbnailOptions { dry_run, force };
-    match db.update_thumbnail(&filter, None, &thumbnail_options) {
+    match client.update_thumbnail(&filter, None, &thumbnail_options) {
         Ok(result) => match serde_json::to_value(result) {
             Ok(data) => output_response(&CommandResponse::success(data)),
             Err(e) => output_response(&CommandResponse::error(format!(
@@ -2932,9 +3249,12 @@ async fn handle_compute_media_hashes(db: &KijukuDB, params: &serde_json::Value) 
 }
 
 fn handle_hash_subcommand(ctx: &CliContext, cmd: &HashCommands) {
-    let db = match open_and_migrate_db_for_json_output(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            output_response(&CommandResponse::error(e));
+            return;
+        }
     };
     match cmd {
         HashCommands::Compute { uuid, all, force, filter } => {
@@ -2947,7 +3267,7 @@ fn handle_hash_subcommand(ctx: &CliContext, cmd: &HashCommands) {
             };
             if let Some(u) = uuid {
                 // 特定UUIDのcompute: メディアを検索してcompute
-                match db.find_media(&MediaFilter { id_in: None, ..Default::default() }, None) {
+                match client.find_media(&MediaFilter { id_in: None, ..Default::default() }, None) {
                     Ok(_) => {}
                     Err(e) => {
                         output_response(&CommandResponse::error(format!("メディア検索エラー: {}", e)));
@@ -2955,14 +3275,14 @@ fn handle_hash_subcommand(ctx: &CliContext, cmd: &HashCommands) {
                     }
                 }
                 // UUIDからメディアを取得
-                let media_list = db.find_media(&MediaFilter { ..Default::default() }, None).unwrap_or_default();
+                let media_list = client.find_media(&MediaFilter { ..Default::default() }, None).unwrap_or_default();
                 let media = media_list.iter().find(|m| m.uuid == *u);
                 if let Some(m) = media {
                     if !m.flag_exist || m.path.is_none() {
                         output_response(&CommandResponse::error("対象メディアはpathがないかflag_existがfalseです".to_string()));
                         return;
                     }
-                    match db.compute_media_hash(&m.uuid, m.path.as_ref().unwrap(), m.media_type.as_str(), m.duration_sec) {
+                    match client.compute_media_hash(&m.uuid, m.path.as_ref().unwrap(), m.media_type.as_str(), m.duration_sec) {
                         Ok(result) => {
                             let hashes: Vec<_> = result.hashes.iter().map(media_hash_to_json).collect();
                             output_response(&CommandResponse::success(serde_json::json!({
@@ -2978,7 +3298,7 @@ fn handle_hash_subcommand(ctx: &CliContext, cmd: &HashCommands) {
                     output_response(&CommandResponse::error(format!("メディアが見つかりません (uuid: {})", u)));
                 }
             } else if *all {
-                match db.compute_media_hashes(&media_filter, None, *force) {
+                match client.compute_media_hashes(&media_filter, None, *force) {
                     Ok(results) => {
                         let json: Vec<_> = results.iter().map(|r| {
                             let hashes: Vec<_> = r.hashes.iter().map(media_hash_to_json).collect();
@@ -2998,7 +3318,7 @@ fn handle_hash_subcommand(ctx: &CliContext, cmd: &HashCommands) {
             }
         }
         HashCommands::List { uuid } => {
-            match db.get_media_hashes(uuid) {
+            match client.get_media_hashes(uuid) {
                 Ok(hashes) => {
                     let json: Vec<_> = hashes.iter().map(media_hash_to_json).collect();
                     output_response(&CommandResponse::success(serde_json::Value::Array(json)));
@@ -3014,7 +3334,7 @@ fn handle_hash_subcommand(ctx: &CliContext, cmd: &HashCommands) {
                     return;
                 }
             };
-            match db.find_by_content_hash(&hash_bytes) {
+            match client.find_by_content_hash(&hash_bytes) {
                 Ok(hashes) => {
                     let json: Vec<_> = hashes.iter().map(media_hash_to_json).collect();
                     output_response(&CommandResponse::success(serde_json::Value::Array(json)));
@@ -3023,7 +3343,7 @@ fn handle_hash_subcommand(ctx: &CliContext, cmd: &HashCommands) {
             }
         }
         HashCommands::Duplicates => {
-            match db.find_duplicate_hashes() {
+            match client.find_duplicate_hashes() {
                 Ok(dupes) => {
                     use kijuku_db::hash::bytes_to_hex;
                     let json: Vec<_> = dupes.iter().map(|(hash, count)| {
@@ -3042,29 +3362,32 @@ fn handle_hash_subcommand(ctx: &CliContext, cmd: &HashCommands) {
 
 /// file サブコマンド: cp/mv/sync。SDK の media_cp/media_mv/media_sync の薄いラッパ。
 fn handle_file_subcommand(ctx: &CliContext, cmd: &FileCommands) {
-    let db = match open_and_migrate_db_for_json_output(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            output_response(&CommandResponse::error(e));
+            return;
+        }
     };
     match cmd {
         FileCommands::Cp { src, dst, apply, update_db } => {
             let opts = FileOpOptions { apply: *apply, update_db: *update_db };
             output_response(&CommandResponse::from_result(
-                db.media_cp(src, dst, &opts),
+                client.media_cp(src, dst, &opts),
                 "media_cpエラー: ",
             ));
         }
         FileCommands::Mv { src, dst, apply, update_db } => {
             let opts = FileOpOptions { apply: *apply, update_db: *update_db };
             output_response(&CommandResponse::from_result(
-                db.media_mv(src, dst, &opts),
+                client.media_mv(src, dst, &opts),
                 "media_mvエラー: ",
             ));
         }
         FileCommands::Sync { src, dst, apply, update_db } => {
             let opts = FileOpOptions { apply: *apply, update_db: *update_db };
             output_response(&CommandResponse::from_result(
-                db.media_sync(src, dst, &opts),
+                client.media_sync(src, dst, &opts),
                 "media_syncエラー: ",
             ));
         }
@@ -3073,34 +3396,38 @@ fn handle_file_subcommand(ctx: &CliContext, cmd: &FileCommands) {
 
 /// trash サブコマンド: move/list/restore/purge。SDK の trash 系メソッドの薄いラッパ。
 fn handle_trash_subcommand(ctx: &CliContext, cmd: &TrashCommands) {
-    let db = match open_and_migrate_db_for_json_output(ctx) {
-        Some(db) => db,
-        None => return,
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            output_response(&CommandResponse::error(e));
+            return;
+        }
     };
     match cmd {
         TrashCommands::Move { target_rel, operation, reason } => {
             output_response(&CommandResponse::from_result(
-                db.move_to_trash(target_rel, operation.clone().into(), reason.as_deref()),
+                client.move_to_trash(target_rel, operation.clone().into(), reason.as_deref()),
                 "move_to_trashエラー: ",
             ));
         }
         TrashCommands::List => {
             output_response(&CommandResponse::from_result(
-                db.list_trash(),
+                client.list_trash(),
                 "list_trashエラー: ",
             ));
         }
         TrashCommands::Restore { id } => {
-            // PathBuf → 文字列化（stdin の handle_restore_from_trash と同一方針）
+            // PathBuf → 文字列化（stdin の handle_restore_from_trash と同一方針）。
+            // DbClient.restore_from_trash が既に String を返すため文字列化不要。
             output_response(&CommandResponse::from_result(
-                db.restore_from_trash(id).map(|p| p.to_string_lossy().to_string()),
+                client.restore_from_trash(id),
                 "restore_from_trashエラー: ",
             ));
         }
         TrashCommands::Purge { ids, dry_run } => {
             let ids_opt: Option<&[String]> = if ids.is_empty() { None } else { Some(ids) };
             output_response(&CommandResponse::from_result(
-                db.purge_trash(ids_opt, *dry_run),
+                client.purge_trash(ids_opt, *dry_run),
                 "purge_trashエラー: ",
             ));
         }

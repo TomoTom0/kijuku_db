@@ -103,3 +103,63 @@ fn test_replicate_db_rejects_same_path() {
         err
     );
 }
+
+/// discard（stg 破棄・再 sync・設計 §4.6・TASK-45）: gate 不合格等で stg を捨てて prod から
+/// 再構築する経路。処理は sync と同一（`replicate_db(prod, stg)`）のため、ここでは discard の
+/// 意味論（stg の編集破棄 + prod 無傷）を検証する。CLI/remote の `discard` operation も同一処理。
+#[test]
+fn test_discard_restores_stg_from_prod_and_leaves_prod_intact() {
+    let dir = TempDir::new().unwrap();
+    let (prod, stg) = setup_prod(&dir);
+
+    // 1. sync（書込セッション開始・設計 §6.1）
+    KijukuDB::replicate_db(&prod, &stg).unwrap();
+
+    // 2. stg に LLM 編集（promote せず破棄するシナリオのシミュレート）
+    {
+        let stg_db = KijukuDB::open(&stg).unwrap();
+        stg_db
+            .create_media(&MediaInput {
+                title: "stg 側の破棄される編集".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            })
+            .expect("stg edit");
+    }
+
+    // prod の状態をキャプチャ（discard 前後で「prod は一切触られない」§4.6 を検証するため）
+    let prod_titles_before: Vec<String> = {
+        let prod_db = KijukuDB::open(&prod).unwrap();
+        (1..=3)
+            .filter_map(|i| prod_db.get_media(i).map(|m| m.title))
+            .collect()
+    };
+
+    // 3. discard（stg を破棄して prod から再 sync・§4.6）。処理は `replicate_db(prod, stg)` と同一。
+    KijukuDB::replicate_db(&prod, &stg).unwrap();
+
+    // 4. stg は prod で上書き復元（stg 固有の編集は破棄され prod データのみ残る）
+    let stg_db = KijukuDB::open(&stg).unwrap();
+    assert_eq!(stg_db.get_media(1).unwrap().title, "prod メディア1");
+    assert_eq!(stg_db.get_media(2).unwrap().title, "prod メディア2");
+    assert!(
+        stg_db.get_media(3).is_none(),
+        "discard で stg の編集は破棄される"
+    );
+
+    // 5. prod は discard 前後で無傷（§4.6・prod は一切触られない）
+    let prod_titles_after: Vec<String> = {
+        let prod_db = KijukuDB::open(&prod).unwrap();
+        (1..=3)
+            .filter_map(|i| prod_db.get_media(i).map(|m| m.title))
+            .collect()
+    };
+    assert_eq!(
+        prod_titles_before, prod_titles_after,
+        "discard で prod は無傷"
+    );
+    assert_eq!(
+        prod_titles_after,
+        vec!["prod メディア1".to_string(), "prod メディア2".to_string()]
+    );
+}

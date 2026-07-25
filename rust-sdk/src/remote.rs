@@ -152,6 +152,16 @@ fn build_remote_command(
     }
 }
 
+/// prod→stg 同期（sync）の結果。prod/stg の実効パス（設計 §4.2/§5.3）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncResult {
+    /// prod DB パス（コピー元）。
+    pub prod_path: String,
+    /// stg DB パス（コピー先）。
+    pub stg_path: String,
+}
+
 impl RemoteKijukuDB {
     /// 新しいRemoteKijukuDBインスタンスを作成
     pub fn new(config: RemoteConfig) -> Self {
@@ -690,6 +700,19 @@ impl RemoteKijukuDB {
         self.check_response(response)
     }
 
+    /// 複数メディアのタグを一括取得（N+1 回避・単発 RPC）。タグなしメディアは結果に含まれない。
+    pub fn get_media_tags_bulk(
+        &self,
+        media_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, Vec<Tag>>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getMediaTagsBulk".to_string(),
+            params: serde_json::json!({ "media_ids": media_ids }),
+        })?;
+
+        self.check_response(response)
+    }
+
     /// タグの使用数統計を取得
     pub fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {
         let response = self.execute_remote_command(CommandRequest {
@@ -793,7 +816,24 @@ impl RemoteKijukuDB {
             operation: "listBackups".to_string(),
             params: serde_json::json!({}),
         })?;
+        self.backup_info_list_from_response(response)
+    }
 
+    /// pre-stash（promote/(b)操作直前の prod snapshot）一覧を取得（設計 §8・prod 復旧経路）。
+    /// wire 形状は listBackups と同一（共に `backup_info_to_json` で直列化）。
+    pub fn list_pre_stashes(&self) -> Result<Vec<BackupInfo>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "listPreStashes".to_string(),
+            params: serde_json::json!({}),
+        })?;
+        self.backup_info_list_from_response(response)
+    }
+
+    /// listBackups / listPreStashes 共通: BackupInfo 配列レスポンスを `BackupInfo` へ変換。
+    fn backup_info_list_from_response(
+        &self,
+        response: CommandResponse,
+    ) -> Result<Vec<BackupInfo>> {
         #[derive(Deserialize)]
         struct BackupInfoRaw {
             id: String,
@@ -849,6 +889,33 @@ impl RemoteKijukuDB {
             .collect::<Result<Vec<_>>>()
     }
 
+    /// バックアップのラベルを設定/解除（設計 §7.5・事後メモ）。
+    pub fn set_backup_label(&self, id: &str, label: Option<&str>) -> Result<()> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "setBackupLabel".to_string(),
+            params: serde_json::json!({ "id": id, "label": label }),
+        })?;
+        self.check_unit_response(response)
+    }
+
+    /// バックアップのノート（メモ）を設定/解除（設計 §7.5）。
+    pub fn set_backup_note(&self, id: &str, note: Option<&str>) -> Result<()> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "setBackupNote".to_string(),
+            params: serde_json::json!({ "id": id, "note": note }),
+        })?;
+        self.check_unit_response(response)
+    }
+
+    /// バックアップのメタ情報（ラベル/ノート等）を取得。未設定時は None。
+    pub fn get_backup_meta(&self, id: &str) -> Result<Option<crate::backup::BackupMetaEntry>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getBackupMeta".to_string(),
+            params: serde_json::json!({ "id": id }),
+        })?;
+        self.check_response(response)
+    }
+
     /// バックアップを復元
     pub fn restore(&self, selector: &serde_json::Value) -> Result<String> {
         let response = self.execute_remote_command(CommandRequest {
@@ -900,6 +967,74 @@ impl RemoteKijukuDB {
             }),
         })?;
         self.check_response(response)
+    }
+
+    /// prod(RO) と stg の整合性を観測し gate を評価（設計 §3.4・promote 判断の客観根拠）。
+    /// `diff_with_prod` と同様、リモート CLI は self=stg 起動を想定し `prod_db_path` で prod を指定。
+    /// `prod_db_path` が None の場合は CLI 側で prod target のデフォルトパスを解決する。
+    pub fn observe(
+        &self,
+        prod_db_path: Option<&std::path::Path>,
+        options: &crate::diff::ObserveOptions,
+    ) -> Result<crate::diff::ObserveResult> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "observe".to_string(),
+            params: serde_json::json!({
+                "prodDbPath": prod_db_path,
+                "options": serde_json::to_value(options)
+                    .map_err(|e| KijukuError::Other(e.to_string()))?,
+            }),
+        })?;
+        self.check_response(response)
+    }
+
+    /// stg→prod への反映（promote・設計 §4.5）。observe gate 合格が前提。
+    /// 成功時 `PromoteOutcome`（gate 結果 + pre-stash パス）。gate 不合格は prod 未更新で
+    /// `KijukuError::Other`（サーバ側 `PromoteGateFailed` が文字列化される・TS と同じ制約）。
+    pub fn promote(
+        &self,
+        prod_db_path: Option<&std::path::Path>,
+        options: &crate::diff::ObserveOptions,
+        backup_opts: Option<&crate::BackupOptions>,
+    ) -> Result<crate::PromoteOutcome> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "promote".to_string(),
+            params: serde_json::json!({
+                "prodDbPath": prod_db_path,
+                "options": serde_json::to_value(options)
+                    .map_err(|e| KijukuError::Other(e.to_string()))?,
+                "backupOpts": backup_opts,
+            }),
+        })?;
+        self.check_response(response)
+    }
+
+    /// prod→stg コピー操作の共通基盤（sync/discard・設計 §4.2/§4.6）。`operation` に "sync" または
+    /// "discard" を渡す。`from`/`to` は config（prod `db_path` と導出 stg）から解決し明示渡す（TS parity）。
+    /// いずれか未設定時はサーバ側 `resolve_sync_paths` がデフォルト補完する。
+    fn run_prod_to_stg(&self, operation: &str) -> Result<SyncResult> {
+        let from = self.config.db_path.clone();
+        let to = match &self.config.stg_db_path {
+            Some(s) => Some(s.clone()),
+            None => self.config.db_path.as_ref().map(|p| derive_stg_db_path(p)),
+        };
+        let response = self.execute_remote_command(CommandRequest {
+            operation: operation.to_string(),
+            params: serde_json::json!({ "from": from, "to": to }),
+        })?;
+        self.check_response(response)
+    }
+
+    /// prod→stg の初期同期（設計 §4.2/§5.3・書込セッション開始時）。Online Backup 1 パスのコピー。
+    pub fn sync(&self) -> Result<SyncResult> {
+        self.run_prod_to_stg("sync")
+    }
+
+    /// stg 破棄・再 sync（設計 §4.6・書込セッション中断/gate 不合格時）。処理は `sync` と同一
+    /// （prod→stg の Online Backup コピー・既存 stg は上書き破棄・prod は一切触らない）。
+    /// 操作名のみ監査ログ（§10）で区別するため独立メソッド。
+    pub fn discard(&self) -> Result<SyncResult> {
+        self.run_prod_to_stg("discard")
     }
 
     // --- update_exist ---
@@ -1197,6 +1332,14 @@ impl KijukuBackend for RemoteKijukuDB {
 
     async fn get_media_tags(&self, media_id: i64) -> Result<Vec<Tag>> {
         spawn_remote(self.clone(), move |this| this.get_media_tags(media_id)).await
+    }
+
+    async fn get_media_tags_bulk(
+        &self,
+        media_ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, Vec<Tag>>> {
+        let media_ids = media_ids.to_vec();
+        spawn_remote(self.clone(), move |this| this.get_media_tags_bulk(&media_ids)).await
     }
 
     async fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {

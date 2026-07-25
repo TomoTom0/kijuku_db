@@ -72,8 +72,8 @@ pub use bulk_load::{transfer, verify, TransferOptions, TransferReport};
 pub use d1_backend::D1KijukuDB;
 pub use d1_client::D1Config;
 pub use config::{
-    load_config, BackupConfig, EnvProvider, KijukuConfig, SystemEnv, Target, TargetResolution,
-    resolve_prod_and_stg_paths, resolve_target,
+    load_config, BackupConfig, EnvProvider, KijukuConfig, ParsedDbPath, SystemEnv, Target,
+    TargetResolution, parse_db_path, resolve_prod_and_stg_paths, resolve_target,
 };
 pub use db_value::{SqlParam, SqlRow};
 pub use error::{KijukuError, Result};
@@ -106,7 +106,7 @@ use std::sync::Arc;
 /// promote（stg→prod 反映）の結果（設計 §4.5・TASK-57）。
 ///
 /// 成功時のみ返る。gate 不合格時は `KijukuError::PromoteGateFailed`（prod は未更新）。
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromoteOutcome {
     /// gate 評価結果（promote 判断の客観根拠・設計 §3.4）。全 gate 合格を表す。

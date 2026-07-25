@@ -68,6 +68,8 @@ import type {
   CheckThumbnailResult,
   UpdateThumbnailResult,
 } from './types.js';
+import { RemoteKijukuDB } from './remote.js';
+import { parseDbPath, type Target } from './config.js';
 
 export * from './types.js';
 export type { UpdateExistOptions, UpdateExistItemResult, UpdateExistResult } from './update_exist.js';
@@ -86,7 +88,7 @@ export type {
   RetentionTier,
   BackupOptions,
 } from './backup.js';
-export { loadConfig, globalConfigPath, defaultKijukuConfig, defaultBackupConfig, parseTarget, resolveTarget, systemEnv } from './config.js';
+export { loadConfig, globalConfigPath, defaultKijukuConfig, defaultBackupConfig, parseTarget, resolveTarget, parseDbPath, systemEnv } from './config.js';
 export type { KijukuConfig, BackupConfig, RetentionTierConfig, Target, TargetResolution, EnvGetter } from './config.js';
 export { ALLOWED_DISTINCT_FIELDS } from './search.js';
 export { hexToBytes, bytesToHex } from './hash.js';
@@ -1085,5 +1087,39 @@ export class KijukuDB {
   /** バックアップの事後メタを取得 */
   getBackupMeta(id: string): BackupMetaEntry | null {
     return this.backupManager?.getBackupMeta(id) ?? null;
+  }
+}
+
+/**
+ * DBインスタンスを作成（ローカルまたはリモート）。dbPath が `host:path` 形式なら
+ * RemoteKijukuDB、それ以外は KijukuDB（SDK ファクトリ・dbPath 解析に parseDbPath を使用）。
+ *
+ * @param dbPath - データベースパス（host:path または ローカルパス）
+ * @param verbose - SQL ログ出力
+ * @param readonly - prod 読込経路なら true（readonly open・設計 §5.1）
+ * @param target - リモート CLI へ伝達する操作対象（remote.ts が --target を付与）
+ * @returns KijukuDB または RemoteKijukuDB
+ */
+export function createDatabase(
+  dbPath: string,
+  verbose = false,
+  readonly = false,
+  target?: Target,
+): KijukuDB | RemoteKijukuDB {
+  const parsed = parseDbPath(dbPath);
+
+  if (parsed.isRemote) {
+    // リモートDB
+    const cfg: { sshHost: string; dbPath?: string; target?: Target } = {
+      sshHost: parsed.sshHost!,
+      dbPath: parsed.remotePath,
+    };
+    if (target !== undefined) cfg.target = target;
+    return new RemoteKijukuDB(cfg);
+  } else {
+    // ローカルDB
+    const opts: { verbose: boolean; readonly?: boolean } = { verbose };
+    if (readonly) opts.readonly = true;
+    return new KijukuDB(parsed.localPath!, opts);
   }
 }
