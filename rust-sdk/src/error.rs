@@ -39,6 +39,11 @@ pub enum KijukuError {
     #[error("Not supported: {0}")]
     NotSupported(String),
 
+    /// SSH セッションエラー（TCP/handshake/認証/channel/exec/read 等のセッション健全性に関わる失敗・TASK-70）。
+    /// `RemoteKijukuDB` の接続プールはこのエラーで Session slot を無効化し、次回 RPC で再接続する。
+    #[error("SSH session error: {0}")]
+    Ssh(String),
+
     /// stg が別セッションで使用中（排他ロック取得失敗・設計 §15-11）
     #[error("Stg is busy (locked by another session): {stg_path}")]
     StgBusy {

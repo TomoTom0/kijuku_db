@@ -791,6 +791,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 **リモート CLI の自動デプロイ（TASK-69）:** 全ての RPC の先頭でリモート `kijuku-cli` のバージョン（`getServerVersion`）を取得し、ローカル（クライアント）より古い場合に自動デプロイします（`local > remote` の厳密大なり・ダウングレード保護・同等なら skip）。デプロイ先は `deploy-local.sh` と同じ実体 `~/.local/kijuku-db/bin/kijuku-cli` + symlink `~/.local/bin/kijuku-cli` 構成（`binary_path` は symlink 側）。リモートが未存在・または TASK-69 前の古いバイナリ（`getServerVersion` 未対応）でも自動デプロイで回復します。
 
+**SSH Session の接続プール（TASK-70）:** RPC ごとに新規 SSH 接続を張るのではなく、初回 RPC で確立した Session をキャッシュして再利用します（連続 RPC のレイテンシ改善・再 handshake 省略）。セッション系エラー（`KijukuError::Ssh`）時は自動的に slot を無効化して次回 RPC で再接続します。明示的に切断する場合は `remote_db.disconnect()?` を呼びます（未呼び出しでもプロセス終了でソケットは閉じます）。`remote_db.connect_count()` で新規接続回数を確認できます（診断用・連続 RPC で 1 のままなら再利用を示す）。
+
 ---
 
 ### Web GUIサーバー（CLIのみ）

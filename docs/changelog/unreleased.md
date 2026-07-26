@@ -137,6 +137,19 @@
 
 **ファイル:** `rust-sdk/src/{remote.rs,bin/cli/main.rs}`, `rust-sdk/tests/cli_integration_test.rs`, `ts-sdk/src/{version.ts,remote.ts}`, `ts-sdk/test/unit/remote-version.test.ts`, `docs/api.md`, `docs/usage/{cli/README.md,sdk/{rust,ts}/README.md}`, `docs/manual-testing-remote.md`
 
+### リモート SSH Session を接続プールで再利用（TASK-70）
+
+`RemoteKijukuDB` が RPC ごとに新規 SSH 接続（TCP+handshake+認証）を張っていたのを、`Arc<Mutex<Option<PooledSession>>>` で単一 Session をキャッシュ・再利用する方式に変更。連続 RPC（`import_media` のレコードごとの tag/attribute 操作等・stdin プロトコルは remote で禁止のため実質これが唯一の多段 RPC 経路）のレイテンシを改善。TS parity は別タスク。
+
+- **Session キャッシュ**: `with_session` が初回 RPC で接続を確立してプールし、以降の RPC は再利用（再 handshake 省略）。clone 間で `Arc` 共有。ssh2 は同一 Session 上の channel を内部 Mutex で直列化するため、単一 Session の再利用で直列 RPC は安全（真の並行には複数 Session が必要・範囲外）
+- **binary_ensured キャッシュ**: `ensure_remote_binary`（毎 RPC 先頭の `getServerVersion` ラウンドトリップ）を初回のみにガードし、連続 RPC の余分な RPC を削減
+- **セッション系エラーで slot 無効化**: `KijukuError::Ssh` バリアントを新設し、TCP/channel/exec/read 等のセッション破壊エラーをアプリケーションエラー（exit code/JSON parse）と型で区別。`Ssh` のみ slot を無効化し次回再接続（フェイルセーフ）。アプリケーションエラーでは Session を保持
+- **keepalive**: `set_keepalive(true, 30)` を設定（ssh2 0.9.6 では定期送信に別途 `keepalive_send` ポーリングが必要・本タスクではサーバ ClientAliveInterval + slot 無効化でフェイルセーフを担保）
+- **診断 API**: `disconnect()`（明示的に SSH BYE 送信・slot 無効化）と `connect_count()`（接続回数・再利用検証用）を公開。`Drop` は実装しない（`Arc<Mutex>` と相性悪く・プロセス終了でソケットは閉じる）
+- **`parking_lot::Mutex`**: poisoning なし（panic で全 clone が永久死ぬのを回避）
+
+**ファイル:** `rust-sdk/src/{error.rs,remote.rs}`, `rust-sdk/tests/remote_test.rs`, `docs/usage/sdk/rust/README.md`
+
 ## Fixed
 
 ### `find_backup_by_id_in_scope` がスコープ引数を無視して Auto 固定を返すバグを修正(TASK-25)

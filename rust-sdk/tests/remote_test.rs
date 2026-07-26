@@ -249,3 +249,85 @@ fn test_remote_media_file_operations() {
         let _ = remote.download("e2e/uploaded.txt", Path::new("/tmp/kijuku_e2e_downloaded.txt"));
     }
 }
+
+// --- SSH Session 接続プール（TASK-70） ---
+
+#[test]
+#[ignore] // 実 SSH 環境（KIJUKU_TEST_SSH_*）が必要
+fn test_remote_session_reuse_across_rpcs() {
+    // TASK-70: 連続 RPC で SSH Session が再利用されること（connect_count が増えない）を検証
+    let ssh_host = std::env::var("KIJUKU_TEST_SSH_HOST").ok();
+    let ssh_user = std::env::var("KIJUKU_TEST_SSH_USER").ok();
+    let ssh_key = std::env::var("KIJUKU_TEST_SSH_KEY").ok();
+
+    if ssh_host.is_none() || ssh_user.is_none() || ssh_key.is_none() {
+        return;
+    }
+
+    let config = RemoteConfig {
+        ssh_host: ssh_host.unwrap(),
+        port: Some(22),
+        username: Some(ssh_user.unwrap()),
+        private_key_path: Some(PathBuf::from(ssh_key.unwrap())),
+        db_path: Some("/tmp/test_remote.db".to_string()),
+        binary_path: None,
+        media_root: None,
+        ..Default::default()
+    };
+    let remote = RemoteKijukuDB::new(config);
+
+    // 初回 RPC で接続確立（結果の Err は問わない・connect_count 検証が主目的）
+    let _ = remote.get_schema_version();
+    let count_after_first = remote.connect_count();
+    assert!(
+        count_after_first >= 1,
+        "初回 RPC で SSH 接続が確立されるべき"
+    );
+
+    // 2回目の RPC は Session を再利用し接続回数は増えない
+    let _ = remote.get_schema_version();
+    assert_eq!(
+        remote.connect_count(),
+        count_after_first,
+        "2回目の RPC は Session を再利用し接続回数は増えないべき"
+    );
+}
+
+#[test]
+#[ignore] // 実 SSH 環境（KIJUKU_TEST_SSH_*）が必要
+fn test_remote_disconnect_then_reconnect() {
+    // TASK-70: disconnect() 後に slot が無効化され、次 RPC で再接続することを検証
+    let ssh_host = std::env::var("KIJUKU_TEST_SSH_HOST").ok();
+    let ssh_user = std::env::var("KIJUKU_TEST_SSH_USER").ok();
+    let ssh_key = std::env::var("KIJUKU_TEST_SSH_KEY").ok();
+
+    if ssh_host.is_none() || ssh_user.is_none() || ssh_key.is_none() {
+        return;
+    }
+
+    let config = RemoteConfig {
+        ssh_host: ssh_host.unwrap(),
+        port: Some(22),
+        username: Some(ssh_user.unwrap()),
+        private_key_path: Some(PathBuf::from(ssh_key.unwrap())),
+        db_path: Some("/tmp/test_remote.db".to_string()),
+        binary_path: None,
+        media_root: None,
+        ..Default::default()
+    };
+    let remote = RemoteKijukuDB::new(config);
+
+    let _ = remote.get_schema_version();
+    let count_before = remote.connect_count();
+
+    // disconnect で slot 無効化
+    let _ = remote.disconnect();
+
+    // 次 RPC で再接続（connect_count 増加）
+    let _ = remote.get_schema_version();
+    assert_eq!(
+        remote.connect_count(),
+        count_before + 1,
+        "disconnect 後の RPC は再接続されるべき"
+    );
+}

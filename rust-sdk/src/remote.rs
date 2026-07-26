@@ -7,6 +7,9 @@ use std::io::Read;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::env;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use parking_lot::Mutex;
 
 use crate::config::Target;
 
@@ -77,10 +80,29 @@ struct CommandResponse {
     error: Option<String>,
 }
 
+/// プールされた SSH セッション（TASK-70・Session 再利用）。
+/// `binary_ensured` は `ensure_remote_binary`（毎 RPC 先頭の `getServerVersion` ラウンドトリップ）が
+/// 完了したことを示し、以降の RPC ではスキップしてレイテンシを削減する。
+struct PooledSession {
+    sess: Session,
+    binary_ensured: bool,
+}
+
 /// リモートKijuku DB操作クラス
+///
+/// SSH `Session` は `Arc<Mutex<Option<PooledSession>>>` でキャッシュ・再利用される（TASK-70）。
+/// 初回 RPC で TCP+handshake+認証を済ませた Session を確立し、以降の連続 RPC はそれを使い回す。
+/// セッション系エラー（`KijukuError::Ssh`）時は slot を無効化し、次回 RPC で再接続する。
+///
+/// **直列化のトレードオフ**: `with_session` は RPC 全期間ロックを保持する。同一インスタンスの
+/// clone 間で RPC を並行発行しても直列化される（ssh2 は同一 Session 上の channel を内部 Mutex で
+/// 直列化する仕様上、そもそも直列化は必然）。真の並行には複数 Session が必要（本タスクの範囲外）。
 #[derive(Clone)]
 pub struct RemoteKijukuDB {
     config: RemoteConfig,
+    session: Arc<Mutex<Option<PooledSession>>>,
+    /// 新規 SSH 接続を確立した回数（診断用・テストで再利用を検証）。
+    connect_count: Arc<AtomicU64>,
 }
 
 /// リモートシェルコマンドに埋め込むパスを安全にクォートする。
@@ -273,7 +295,11 @@ pub struct SyncResult {
 impl RemoteKijukuDB {
     /// 新しいRemoteKijukuDBインスタンスを作成
     pub fn new(config: RemoteConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            session: Arc::new(Mutex::new(None)),
+            connect_count: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /// SSH設定を読み込む
@@ -337,37 +363,88 @@ impl RemoteKijukuDB {
         Ok((hostname, port, username, identity_file))
     }
 
-    /// SSH接続を確立
+    /// SSH接続を確立（キャッシュ済み Session の再構築用・都度 TCP+handshake+認証）。
+    /// 戻り値の `Session` は `with_session` 経由でプールにキャッシュされる。
     fn connect(&self) -> Result<Session> {
         let (hostname, port, username, identity_file) = self.load_ssh_config()?;
 
         let tcp = TcpStream::connect(format!("{}:{}", hostname, port))
-            .map_err(|e| KijukuError::Other(format!("TCP connection failed: {}", e)))?;
+            .map_err(|e| KijukuError::Ssh(format!("TCP connection failed: {}", e)))?;
 
         let mut sess = Session::new()
-            .map_err(|e| KijukuError::Other(format!("SSH session creation failed: {}", e)))?;
+            .map_err(|e| KijukuError::Ssh(format!("SSH session creation failed: {}", e)))?;
 
         sess.set_tcp_stream(tcp);
         sess.handshake()
-            .map_err(|e| KijukuError::Other(format!("SSH handshake failed: {}", e)))?;
+            .map_err(|e| KijukuError::Ssh(format!("SSH handshake failed: {}", e)))?;
 
         // 認証
         if let Some(key_path) = &identity_file {
             sess.userauth_pubkey_file(&username, None, key_path, None)
-                .map_err(|e| KijukuError::Other(format!("SSH authentication failed: {}", e)))?;
+                .map_err(|e| KijukuError::Ssh(format!("SSH authentication failed: {}", e)))?;
         } else {
-            return Err(KijukuError::Other(
+            return Err(KijukuError::Ssh(
                 "Private key path is required (set in RemoteConfig or SSH config)".to_string(),
             ));
         }
 
         if !sess.authenticated() {
-            return Err(KijukuError::Other(
-                "SSH authentication failed".to_string(),
-            ));
+            return Err(KijukuError::Ssh("SSH authentication failed".to_string()));
         }
 
+        // keepalive 設定（TASK-70）。
+        // 注意: ssh2 0.9.6 の set_keepalive は interval 設定のみで定期送信はドライブされない
+        // （別途 keepalive_send() のポーリング呼び出しが必要）。アイドル中の TCP drop 検知は
+        // サーバ側 ClientAliveInterval + set_timeout + セッション系エラー時の slot 無効化でフェイルセーフを担保。
+        sess.set_keepalive(true, 30);
+
         Ok(sess)
+    }
+
+    /// セッション健全性に関わるエラーか（slot 無効化の判定用・TASK-70）。
+    /// `Ssh` のみがセッション破壊を示し、アプリケーションエラー（`Other`/`Validation` 等）は Session を保持する。
+    fn is_session_error(e: &KijukuError) -> bool {
+        matches!(e, KijukuError::Ssh(_))
+    }
+
+    /// プールされた Session 上で `f` を実行（TASK-70）。
+    /// 初回は `connect()` で確立してキャッシュ、以降は再利用。`f` が `Ssh` エラーを返した場合は
+    /// slot を無効化し、次回 RPC で再接続する（フェイルセーフ）。
+    fn with_session<R>(&self, f: impl FnOnce(&mut PooledSession) -> Result<R>) -> Result<R> {
+        let mut guard = self.session.lock();
+        if guard.is_none() {
+            *guard = Some(PooledSession {
+                sess: self.connect()?,
+                binary_ensured: false,
+            });
+            self.connect_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let pooled = guard.as_mut().expect("session just established or cached");
+        let result = f(pooled);
+        if let Err(e) = &result {
+            if Self::is_session_error(e) {
+                *guard = None;
+            }
+        }
+        result
+    }
+
+    /// プールされた SSH Session を切断し、slot を無効化（TASK-70）。
+    /// SSH BYE パケットを送る（TCP ソケット自体は Session drop で閉じる）。SDK 長期利用者が明示的に呼ぶ用途で、
+    /// 以降の RPC は再接続される。`Drop` は実装しない（`Arc<Mutex>` と相性が悪く、プロセス終了でソケットは閉じる）。
+    pub fn disconnect(&self) -> Result<()> {
+        let mut guard = self.session.lock();
+        if let Some(pooled) = guard.take() {
+            let _ = pooled.sess.disconnect(None, "bye", None);
+        }
+        Ok(())
+    }
+
+    /// 新規 SSH 接続を確立した回数（診断用・TASK-70）。連続 RPC で 1 のままなら Session 再利用を示す。
+    pub fn connect_count(&self) -> u64 {
+        self.connect_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// リモート DB ファイルのサイズを取得（適応的タイムアウト算出用・TS `getRemoteFileSize` parity）。
@@ -396,8 +473,22 @@ impl RemoteKijukuDB {
     /// - `Some(ms)` → 呼び出し元が上書き
     /// - `None` かつ長操作 → DB サイズから適応的に算出（restore は退避+復元で ×2）
     /// - `None` かつ短操作 → DEFAULT_RPC_TIMEOUT_MS (30s)
+    ///
+    /// SSH `Session` はプールから取得（TASK-70・初回のみ接続・以降再利用・セッション系エラーで無効化）。
     fn execute_remote_command_timed(
         &self,
+        request: CommandRequest,
+        timeout_ms: Option<u32>,
+    ) -> Result<CommandResponse> {
+        self.with_session(|pooled| self.execute_on_session(pooled, request, timeout_ms))
+    }
+
+    /// `execute_remote_command_timed` の本体。プールされた Session 上で RPC を実行。
+    /// `ensure_remote_binary`（`getServerVersion` ラウンドトリップ）は `binary_ensured` で初回のみガードし、
+    /// 連続 RPC のオーバーヘッドを削減する。
+    fn execute_on_session(
+        &self,
+        pooled: &mut PooledSession,
         request: CommandRequest,
         timeout_ms: Option<u32>,
     ) -> Result<CommandResponse> {
@@ -411,15 +502,17 @@ impl RemoteKijukuDB {
         let json_input = serde_json::to_string(&request)
             .map_err(|e| KijukuError::Other(format!("Failed to serialize request: {}", e)))?;
 
-        let sess = self.connect()?;
-
         // stat コマンド自体のハング対策（TS `getRemoteFileSize` が execCommand 30s デフォルトであることと parity）。
         // 設定しないと remote_db_size 内の channel_read が無限待ちになる。
-        sess.set_timeout(DEFAULT_RPC_TIMEOUT_MS);
+        pooled.sess.set_timeout(DEFAULT_RPC_TIMEOUT_MS);
 
         // バージョンベース自動デプロイ（TASK-69）。リモート CLI が古い/未存在なら最新へ更新。
         // ensure 内の getServerVersion は sess を使い回し execute_remote_command_timed を経由しないため再帰しない。
-        self.ensure_remote_binary(&sess)?;
+        // 初回のみ実行し、以降は binary_ensured でスキップ（連続 RPC の getServerVersion オーバーヘッドを削減）。
+        if !pooled.binary_ensured {
+            self.ensure_remote_binary(&pooled.sess)?;
+            pooled.binary_ensured = true;
+        }
 
         // 適応的タイムアウト解決（TS parity）。
         //   Some(ms) → 呼び出し元が上書き
@@ -429,17 +522,19 @@ impl RemoteKijukuDB {
             Some(ms) => ms,
             None => match long_op_target(&request.operation, &self.config) {
                 Some((db_path, multiplier)) => {
-                    let size = self.remote_db_size(&sess, &db_path).unwrap_or(0);
+                    let size = self.remote_db_size(&pooled.sess, &db_path).unwrap_or(0);
                     calc_backup_timeout_ms(size).saturating_mul(multiplier)
                 }
                 None => DEFAULT_RPC_TIMEOUT_MS,
             },
         };
+
+        let sess = &pooled.sess;
         sess.set_timeout(effective_timeout);
 
         let mut channel = sess
             .channel_session()
-            .map_err(|e| KijukuError::Other(format!("Failed to open channel: {}", e)))?;
+            .map_err(|e| KijukuError::Ssh(format!("Failed to open channel: {}", e)))?;
 
         let command = build_remote_command(
             remote_binary_path,
@@ -449,26 +544,26 @@ impl RemoteKijukuDB {
         );
         channel
             .exec(&command)
-            .map_err(|e| KijukuError::Other(format!("Failed to execute command: {}", e)))?;
+            .map_err(|e| KijukuError::Ssh(format!("Failed to execute command: {}", e)))?;
 
         use std::io::Write;
         channel
             .write_all(json_input.as_bytes())
-            .map_err(|e| KijukuError::Other(format!("Failed to write to channel stdin: {}", e)))?;
-        channel.send_eof().map_err(|e| KijukuError::Other(format!("Failed to send EOF to channel: {}", e)))?;
+            .map_err(|e| KijukuError::Ssh(format!("Failed to write to channel stdin: {}", e)))?;
+        channel.send_eof().map_err(|e| KijukuError::Ssh(format!("Failed to send EOF to channel: {}", e)))?;
 
         let mut output = String::new();
         channel
             .read_to_string(&mut output)
-            .map_err(|e| KijukuError::Other(format!("Failed to read command stdout (timeout={}ms): {}", effective_timeout, e)))?;
+            .map_err(|e| KijukuError::Ssh(format!("Failed to read command stdout (timeout={}ms): {}", effective_timeout, e)))?;
 
         let mut stderr = String::new();
-        channel.stderr().read_to_string(&mut stderr).map_err(|e| KijukuError::Other(format!("Failed to read command stderr: {}", e)))?;
+        channel.stderr().read_to_string(&mut stderr).map_err(|e| KijukuError::Ssh(format!("Failed to read command stderr: {}", e)))?;
 
         channel.wait_close().ok();
 
         let exit_status = channel.exit_status()
-            .map_err(|e| KijukuError::Other(format!("Failed to get exit status: {}", e)))?;
+            .map_err(|e| KijukuError::Ssh(format!("Failed to get exit status: {}", e)))?;
 
         if exit_status != 0 {
             return Err(KijukuError::Other(format!(
@@ -778,41 +873,45 @@ impl RemoteKijukuDB {
     /// ローカルの `local_path` をリモートの `remote_rel`（media root 相対）へアップロード（SFTP・ストリーミング）。
     pub fn upload(&self, local_path: &std::path::Path, remote_rel: &str) -> Result<()> {
         let remote_abs = self.resolve_remote_within_root(remote_rel)?;
-        let sess = self.connect()?;
-        // ファイル転送のタイムアウト（TS parity・固定 120s）。
-        sess.set_timeout(FILE_TRANSFER_TIMEOUT_MS);
-        let sftp = sess
-            .sftp()
-            .map_err(|e| KijukuError::Other(format!("SFTP セッション確立失敗: {}", e)))?;
-        if let Some(parent) = remote_abs.parent() {
-            Self::ensure_remote_dir(&sftp, parent);
-        }
-        let mut local = std::fs::File::open(local_path)?;
-        let mut remote = sftp
-            .create(&remote_abs)
-            .map_err(|e| KijukuError::Other(format!("リモートファイル作成失敗: {}", e)))?;
-        std::io::copy(&mut local, &mut remote)?;
-        Ok(())
+        self.with_session(|pooled| {
+            // ファイル転送のタイムアウト（TS parity・固定 120s）。
+            pooled.sess.set_timeout(FILE_TRANSFER_TIMEOUT_MS);
+            let sftp = pooled
+                .sess
+                .sftp()
+                .map_err(|e| KijukuError::Ssh(format!("SFTP セッション確立失敗: {}", e)))?;
+            if let Some(parent) = remote_abs.parent() {
+                Self::ensure_remote_dir(&sftp, parent);
+            }
+            let mut local = std::fs::File::open(local_path)?;
+            let mut remote = sftp
+                .create(&remote_abs)
+                .map_err(|e| KijukuError::Other(format!("リモートファイル作成失敗: {}", e)))?;
+            std::io::copy(&mut local, &mut remote)?;
+            Ok(())
+        })
     }
 
     /// リモートの `remote_rel`（media root 相対）をローカルの `local_path` へダウンロード（SFTP・ストリーミング）。
     pub fn download(&self, remote_rel: &str, local_path: &std::path::Path) -> Result<()> {
         let remote_abs = self.resolve_remote_within_root(remote_rel)?;
-        let sess = self.connect()?;
-        // ファイル転送のタイムアウト（TS parity・固定 120s）。
-        sess.set_timeout(FILE_TRANSFER_TIMEOUT_MS);
-        let sftp = sess
-            .sftp()
-            .map_err(|e| KijukuError::Other(format!("SFTP セッション確立失敗: {}", e)))?;
-        let mut remote = sftp
-            .open(&remote_abs)
-            .map_err(|e| KijukuError::Other(format!("リモートファイルオープン失敗: {}", e)))?;
-        if let Some(parent) = local_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut local = std::fs::File::create(local_path)?;
-        std::io::copy(&mut remote, &mut local)?;
-        Ok(())
+        self.with_session(|pooled| {
+            // ファイル転送のタイムアウト（TS parity・固定 120s）。
+            pooled.sess.set_timeout(FILE_TRANSFER_TIMEOUT_MS);
+            let sftp = pooled
+                .sess
+                .sftp()
+                .map_err(|e| KijukuError::Ssh(format!("SFTP セッション確立失敗: {}", e)))?;
+            let mut remote = sftp
+                .open(&remote_abs)
+                .map_err(|e| KijukuError::Other(format!("リモートファイルオープン失敗: {}", e)))?;
+            if let Some(parent) = local_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut local = std::fs::File::create(local_path)?;
+            std::io::copy(&mut remote, &mut local)?;
+            Ok(())
+        })
     }
 
     /// リモートの `remote_rel` を media root 配下に解決し、保護パス（`.trash` 等）を拒否する。
@@ -1573,8 +1672,9 @@ impl RemoteKijukuDB {
 }
 
 /// SSH/ネットワーク I/O を伴う同期 RPC をブロッキングスレッドプールに逃すヘルパ。
-/// `RemoteKijukuDB` は `Clone` 可能（`RemoteConfig` のみ保持）で、各 RPC は毎回新規 SSH
-/// セッションを張るため、呼び出しごとに複製して `spawn_blocking` に渡す。
+/// `RemoteKijukuDB` は `Clone` 可能で、clone 間で `Arc<Mutex<Option<PooledSession>>>` を共有（TASK-70）。
+/// 初回 RPC で SSH Session を確立してキャッシュし、以降の連続 RPC は再利用（再 handshake 省略）。
+/// セッション系エラー（`KijukuError::Ssh`）時は slot 無効化で次回再接続する。
 async fn spawn_remote<F, T>(this: RemoteKijukuDB, f: F) -> Result<T>
 where
     F: FnOnce(RemoteKijukuDB) -> Result<T> + Send + 'static,
@@ -2231,5 +2331,25 @@ mod tests {
         assert!(needs_deploy("0.2.2", Some("0.2.2.1")));
         // リモート短縮形 → 0 補間で比較（0.2.0 < 0.2.2 → デプロイ）
         assert!(needs_deploy("0.2.2", Some("0.2")));
+    }
+
+    // --- 接続プール（TASK-70） ---
+
+    #[test]
+    fn is_session_error_classifies_correctly() {
+        // Ssh はセッション系（slot 無効化対象）
+        assert!(RemoteKijukuDB::is_session_error(&KijukuError::Ssh(
+            "channel failed".to_string()
+        )));
+        // アプリケーションエラーは Session を保持（slot 無効化しない）
+        assert!(!RemoteKijukuDB::is_session_error(&KijukuError::Other(
+            "exit code 1".to_string()
+        )));
+        assert!(!RemoteKijukuDB::is_session_error(&KijukuError::Validation(
+            "bad input".to_string()
+        )));
+        assert!(!RemoteKijukuDB::is_session_error(&KijukuError::NotFound(
+            "missing".to_string()
+        )));
     }
 }
