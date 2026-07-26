@@ -27,6 +27,7 @@ ts-sdk/test/
     media-path.test.ts       - media path 安全化・sandbox 境界
     parse-db-path.test.ts    - parseDbPath() のパース処理
     remote-target.test.ts    - RemoteKijukuDB の --target / stgDbPath 配線
+    remote-session-pool.test.ts - SSH Session 接続プール（再利用・無効化・disconnect/connectCount・ssh2 mock）
     target-resolution.test.ts - resolveTarget/parseTarget の target 解決
     trash.test.ts            - 論理削除（move/list/restore/purge）
   integration/               # 実SQLite・実ファイルシステムを使うテスト
@@ -94,6 +95,7 @@ cd rust-sdk && cargo test --test backup_test
 | エラーハンドリングの変更 | `ts-sdk/test/unit/error-handling.test.ts`, `ts-sdk/test/integration/errors.test.ts` |
 | CLIコマンドの変更 | `rust-sdk/tests/cli_integration_test.rs`, `ts-sdk/test/integration/workflow.test.ts` |
 | リモートDB接続の変更 | `rust-sdk/tests/remote_test.rs`, `ts-sdk/test/e2e/sdk-remote.test.ts` |
+| リモート SSH Session 接続プール（再利用・slot無効化・disconnect/connectCount）の変更 | `ts-sdk/test/unit/remote-session-pool.test.ts`, `ts-sdk/test/e2e/sdk-remote.test.ts`, `rust-sdk/tests/remote_test.rs` |
 | ファイル操作（media root内 cp/mv/sync）の変更 | `rust-sdk/src/file_ops.rs`（内蔵）, `ts-sdk/test/unit/file-ops.test.ts`, `rust-sdk/tests/cli_integration_test.rs` |
 | trash（論理削除）機能の変更 | `rust-sdk/src/trash.rs`（内蔵）, `ts-sdk/test/unit/trash.test.ts`, `rust-sdk/tests/cli_integration_test.rs` |
 | media path 安全化の変更 | `rust-sdk/src/media_path.rs`（内蔵）, `ts-sdk/test/unit/media-path.test.ts` |

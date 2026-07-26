@@ -76,6 +76,24 @@ export interface RemoteConfig {
 const DEFAULT_REMOTE_PROD_DB = '~/.local/share/kijuku/kijuku.db';
 const DEFAULT_REMOTE_STG_DB = '~/.local/share/kijuku/kijuku.stg.db';
 
+/** デフォルト RPC タイムアウト（短操作・Rust `DEFAULT_RPC_TIMEOUT_MS` parity）。 */
+const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+
+/**
+ * 適応的タイムアウトを適用する長時間操作の operation 名（Rust `LONG_RUNNING_OPS` parity）。
+ * これらは `executeRemoteCommand` が DB サイズから `calcBackupTimeoutMs` でタイムアウトを算出する。
+ */
+const LONG_RUNNING_OPS: ReadonlySet<string> = new Set([
+  'backup',
+  'restore',
+  'sync',
+  'discard',
+  'diffBackup',
+  'diffProdStg',
+  'observe',
+  'promote',
+]);
+
 /**
  * リモートの prod DB パスから stg DB パスを導出する（設計 §4.1）。
  * `<stem>.db` → `<stem>.stg.db`（拡張子の前に `.stg` を挿入）。`~` 含むパスもそのまま処理。
@@ -151,14 +169,59 @@ interface CommandResponse {
 }
 
 /**
+ * SSH セッション健全性に関わるエラー（TASK-71・Rust `KijukuError::Ssh` parity）。
+ * `withSession` はこのエラーを検出すると Session slot を無効化し、次回 RPC で再接続する。
+ * アプリケーションエラー（exit≠0・JSON パース失敗・ファイル作成失敗等）は素の `Error` のままで slot を保持する。
+ */
+class SshSessionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SshSessionError';
+    Object.setPrototypeOf(this, SshSessionError.prototype);
+  }
+}
+
+/**
+ * 適応的タイムアウト算出に用いる DB パスと `calcBackupTimeoutMs` 結果への乗数（Rust `long_op_target` parity）。
+ * 戻り値は長操作の場合のみ非 null。
+ * - restore: 現在 DB の退避 + 復元の 2 段階で 2 倍
+ * - sync/discard: prod パス（target に依存しない）
+ * - 上記以外の長操作: `getRemoteDbPath` と同一・乗数 1
+ */
+interface LongOpTarget {
+  dbPath: string;
+  multiplier: number;
+}
+
+/**
  * リモートKijuku DB操作クラス
+ *
+ * SSH `Client` は単一 slot でキャッシュ・再利用される（TASK-71・Rust parity）。
+ * 初回 RPC で TCP+handshake+認証を済ませた接続を確立し、以降の連続 RPC はそれを使い回す。
+ * セッション系エラー（`SshSessionError`）時は slot を無効化し、次回 RPC で再接続する。
+ *
+ * **直列化のトレードオフ**: `withSession` は RPC 全期間 Promise chain を占有する。
+ * 同一インスタンスで RPC を並行発行しても直列化される（真の並行には複数 Session が必要・本タスクの範囲外）。
  */
 export class RemoteKijukuDB {
   private sshClient: Client | null = null;
   private config: RemoteConfig;
+  /** `ensureRemoteBinary`（毎 RPC 先頭の getServerVersion ラウンドトリップ）完了フラグ。slot 生存中は true でスキップしレイテンシを削減。 */
+  private binaryEnsured = false;
+  /** 新規 SSH 接続を確立した回数（診断用・連続 RPC で 1 のままなら再利用を示す）。 */
+  private sessionConnectCount = 0;
+  /** RPC を直列化する Promise chain（同一インスタンスの並行 RPC を順次化・二重 connect を防ぐ）。 */
+  private sessionChain: Promise<unknown> = Promise.resolve();
 
   constructor(config: RemoteConfig) {
     this.config = config;
+  }
+
+  /**
+   * 新規 SSH 接続を確立した回数（診断用・TASK-71）。連続 RPC で 1 のままなら Session 再利用を示す。
+   */
+  get connectCount(): number {
+    return this.sessionConnectCount;
   }
 
   /**
@@ -239,11 +302,12 @@ export class RemoteKijukuDB {
   }
 
   /**
-   * SSH接続を確立
+   * SSH接続を確立（キャッシュ済み Client 再構築用・都度 TCP+handshake+認証）。
+   * 戻り値の `Client` は `withSession` 経由でプールにキャッシュされる（TASK-71）。
    */
-  private async connect(connectTimeoutMs = 30_000): Promise<void> {
+  private connect(connectTimeoutMs = 30_000): Promise<void> {
     if (this.sshClient) {
-      return; // 既に接続済み
+      return Promise.resolve(); // 既に接続済み
     }
 
     return new Promise((resolve, reject) => {
@@ -256,7 +320,7 @@ export class RemoteKijukuDB {
       });
 
       client.on('error', (err) => {
-        reject(new Error(`SSH接続エラー: ${err.message}`));
+        reject(new SshSessionError(`SSH接続エラー: ${err.message}`));
       });
 
       client.connect({ ...sshConfig, readyTimeout: connectTimeoutMs });
@@ -264,12 +328,83 @@ export class RemoteKijukuDB {
   }
 
   /**
-   * SSH接続を切断
+   * プールされた SSH Client 上で `fn` を実行（TASK-71・Rust `with_session` parity）。
+   * 初回は `connect()` で確立してキャッシュ、以降は再利用。`fn` が `SshSessionError` を投げた場合は
+   * slot を無効化し、次回 RPC で再接続する（フェイルセーフ）。Promise chain で RPC 全体を直列化する。
    */
-  private async disconnect(): Promise<void> {
-    if (this.sshClient) {
-      this.sshClient.end();
-      this.sshClient = null;
+  private withSession<R>(fn: (client: Client) => Promise<R>): Promise<R> {
+    const run = this.sessionChain.then(async (): Promise<R> => {
+      if (!this.sshClient) {
+        await this.connect(); // 失敗時は SshSessionError が伝播（slot は null のまま）
+        this.sessionConnectCount++;
+      }
+      const client = this.sshClient;
+      if (!client) {
+        // 接続直後であるため通常到達しない（型ナロウリング用の防御）
+        throw new SshSessionError('SSH session unavailable after connect');
+      }
+      try {
+        return await fn(client);
+      } catch (err) {
+        if (err instanceof SshSessionError) {
+          await this.invalidateSession();
+        }
+        throw err;
+      }
+    });
+    // this RPC の成否に関わらず chain を維持し、後続 RPC が滞らないようにする
+    this.sessionChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
+   * プールされた SSH Client を切断し、slot を無効化（TASK-71）。
+   * `binaryEnsured` もリセットし、次回接続時に `ensureRemoteBinary` を再実行させる。
+   */
+  private async invalidateSession(): Promise<void> {
+    const client = this.sshClient;
+    this.sshClient = null;
+    this.binaryEnsured = false;
+    if (client) {
+      try {
+        client.end();
+      } catch {
+        // 切断エラーは無視（slot は既に無効化済み）
+      }
+    }
+  }
+
+  /**
+   * プールされた SSH Client を切断し、slot を無効化（TASK-71・Rust `disconnect` parity）。
+   * SDK 長期利用者が明示的に呼ぶ用途で、以降の RPC は再接続される。実行中の RPC がある場合はその完了を待つ。
+   */
+  async disconnect(): Promise<void> {
+    const run = this.sessionChain.then(() => this.invalidateSession());
+    this.sessionChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    await run;
+  }
+
+  /**
+   * 長操作の適応的タイムアウト算出に用いる DB パスと乗数（Rust `long_op_target` parity）。
+   * 長操作でない場合は `null`（呼出元は `DEFAULT_RPC_TIMEOUT_MS` を使用）。
+   */
+  private longOpTarget(operation: string): LongOpTarget | null {
+    switch (operation) {
+      case 'restore':
+        return { dbPath: this.getRemoteDbPath(), multiplier: 2 };
+      case 'sync':
+      case 'discard':
+        return { dbPath: this.config.dbPath ?? DEFAULT_REMOTE_PROD_DB, multiplier: 1 };
+      default:
+        return LONG_RUNNING_OPS.has(operation)
+          ? { dbPath: this.getRemoteDbPath(), multiplier: 1 }
+          : null;
     }
   }
 
@@ -277,22 +412,25 @@ export class RemoteKijukuDB {
    * リモートでコマンドを実行
    */
   private async execCommand(command: string, timeoutMs = 30_000): Promise<string> {
-    if (!this.sshClient) {
+    const client = this.sshClient;
+    if (!client) {
       throw new Error('SSH接続が確立されていません');
     }
 
     return new Promise((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | null = null;
 
-      this.sshClient!.exec(command, (err, stream) => {
+      client.exec(command, (err, stream) => {
         if (err) {
-          reject(new Error(`コマンド実行エラー: ${err.message}`));
+          // channel/exec 確立失敗 = セッション健全性破綻 → slot 無効化（Rust `Ssh` parity）
+          reject(new SshSessionError(`コマンド実行エラー: ${err.message}`));
           return;
         }
 
         timer = setTimeout(() => {
           stream.destroy();
-          reject(new Error(`コマンドがタイムアウトしました (${timeoutMs}ms)`));
+          // 読み取りタイムアウト = デッド channel の可能性 → slot 無効化（Rust `Ssh` parity）
+          reject(new SshSessionError(`コマンドがタイムアウトしました (${timeoutMs}ms)`));
         }, timeoutMs);
 
         let stdout = '';
@@ -379,7 +517,8 @@ export class RemoteKijukuDB {
    * ローカルからリモートにファイルを転送
    */
   private async uploadFile(localPath: string, remotePath: string, timeoutMs = 120_000): Promise<void> {
-    if (!this.sshClient) {
+    const client = this.sshClient;
+    if (!client) {
       throw new Error('SSH接続が確立されていません');
     }
 
@@ -388,10 +527,11 @@ export class RemoteKijukuDB {
         reject(new Error(`ファイル転送がタイムアウトしました (${timeoutMs}ms): ${remotePath}`));
       }, timeoutMs);
 
-      this.sshClient!.sftp((err, sftp) => {
+      client.sftp((err, sftp) => {
         if (err) {
           clearTimeout(timer);
-          reject(new Error(`SFTP接続エラー: ${err.message}`));
+          // SFTP サブシステム確立失敗 = セッション健全性破綻 → slot 無効化（Rust `Ssh` parity）
+          reject(new SshSessionError(`SFTP接続エラー: ${err.message}`));
           return;
         }
 
@@ -399,6 +539,7 @@ export class RemoteKijukuDB {
         sftp.writeFile(remotePath, localData, (writeErr) => {
           clearTimeout(timer);
           if (writeErr) {
+            // リモートファイル作成失敗 = アプリケーションエラー → slot 保持（Rust `Other` parity）
             reject(new Error(`ファイル転送エラー: ${writeErr.message}`));
           } else {
             resolve();
@@ -432,16 +573,38 @@ export class RemoteKijukuDB {
   }
 
   /**
-   * リモートでJSONコマンドを実行
+   * リモートでJSONコマンドを実行（TASK-71・Rust `execute_remote_command_timed` + `execute_on_session` parity）。
+   *
+   * - SSH `Client` は `withSession` でプールから取得（初回のみ接続・以降再利用・`SshSessionError` で無効化）。
+   * - `binaryEnsured` で `ensureRemoteBinary`（getServerVersion ラウンドトリップ）を初回のみ実行し、
+   *   連続 RPC のオーバーヘッドを削減。
+   * - タイムアウトは `timeoutMs` 指定時はそれを採用、未指定時は長操作なら DB サイズから適応算出、
+   *   短操作なら `DEFAULT_RPC_TIMEOUT_MS` (30s)。
    */
-  private async executeRemoteCommand(request: CommandRequest, timeoutMs = 30_000): Promise<CommandResponse> {
-    await this.connect();
+  private async executeRemoteCommand(request: CommandRequest, timeoutMs?: number): Promise<CommandResponse> {
+    return this.withSession(async () => {
+      // バージョンベース自動デプロイ（TASK-69）。binaryEnsured で初回のみ（連続 RPC の getServerVersion
+      // オーバーヘッドを削減・Rust `binary_ensured` parity）。
+      if (!this.binaryEnsured) {
+        const remoteVersion = await this.getServerVersion();
+        if (needsDeploy(SDK_VERSION, remoteVersion)) {
+          await this.deployBinaryToRemote();
+        }
+        this.binaryEnsured = true;
+      }
 
-    try {
-      // バージョンベース自動デプロイ（TASK-69）。リモート CLI が古い/未存在なら最新へ更新。
-      const remoteVersion = await this.getServerVersion();
-      if (needsDeploy(SDK_VERSION, remoteVersion)) {
-        await this.deployBinaryToRemote();
+      // 適応的タイムアウト解決（Rust `execute_on_session` parity）。
+      //   指定あり → 呼出元上書き
+      //   未指定かつ長操作 → DB サイズから算出（restore は退避+復元で ×2）
+      //   未指定かつ短操作 → デフォルト 30s
+      let effectiveTimeout: number;
+      if (timeoutMs !== undefined) {
+        effectiveTimeout = timeoutMs;
+      } else {
+        const opTarget = this.longOpTarget(request.operation);
+        effectiveTimeout = opTarget
+          ? this.calcBackupTimeoutMs(await this.getRemoteFileSize(opTarget.dbPath)) * opTarget.multiplier
+          : DEFAULT_RPC_TIMEOUT_MS;
       }
 
       // コマンドを実行
@@ -457,13 +620,10 @@ export class RemoteKijukuDB {
       // target から readonly を正しく導出し、prod を RW で開く保護ホールを防ぐ。
       const command = `echo '${escapedJson}' | ${this.escapeShellPath(remoteBinaryPath)} --db ${this.escapeShellPath(remoteDbPath)} --target ${target}${mediaRootFlag}`;
 
-      const output = await this.execCommand(command, timeoutMs);
+      const output = await this.execCommand(command, effectiveTimeout);
       const response: CommandResponse = JSON.parse(output.trim());
-
       return response;
-    } finally {
-      await this.disconnect();
-    }
+    });
   }
 
   /**
@@ -600,30 +760,28 @@ export class RemoteKijukuDB {
    */
   async upload(localPath: string, remoteRel: string, timeoutMs = 120_000): Promise<void> {
     const remoteAbs = this.resolveRemoteWithinRoot(remoteRel);
-    await this.connect();
-    try {
+    await this.withSession(async (client) => {
       // 親ディレクトリを再帰作成（mkdir -p 相当）
       const lastSlash = remoteAbs.lastIndexOf('/');
       if (lastSlash > 0) {
         const remoteDir = remoteAbs.substring(0, lastSlash);
         await this.execCommand(`mkdir -p ${this.escapeShellPath(remoteDir)}`);
       }
-      if (!this.sshClient) {
-        throw new Error('SSH接続が確立されていません');
-      }
       await new Promise<void>((resolvePromise, reject) => {
         const timer = setTimeout(() => {
           reject(new Error(`アップロードがタイムアウトしました (${timeoutMs}ms): ${remoteAbs}`));
         }, timeoutMs);
-        this.sshClient!.sftp((err, sftp) => {
+        client.sftp((err, sftp) => {
           if (err) {
             clearTimeout(timer);
-            reject(new Error(`SFTP接続エラー: ${err.message}`));
+            // SFTP サブシステム確立失敗 = セッション健全性破綻 → slot 無効化（Rust `Ssh` parity）
+            reject(new SshSessionError(`SFTP接続エラー: ${err.message}`));
             return;
           }
           sftp.fastPut(localPath, remoteAbs, (putErr) => {
             clearTimeout(timer);
             if (putErr) {
+              // 書込失敗 = アプリケーションエラー → slot 保持（Rust `Other`/`Io` parity）
               reject(new Error(`アップロードエラー: ${putErr.message}`));
             } else {
               resolvePromise();
@@ -631,9 +789,7 @@ export class RemoteKijukuDB {
           });
         });
       });
-    } finally {
-      await this.disconnect();
-    }
+    });
   }
 
   /**
@@ -641,24 +797,22 @@ export class RemoteKijukuDB {
    */
   async download(remoteRel: string, localPath: string, timeoutMs = 120_000): Promise<void> {
     const remoteAbs = this.resolveRemoteWithinRoot(remoteRel);
-    await this.connect();
-    try {
-      if (!this.sshClient) {
-        throw new Error('SSH接続が確立されていません');
-      }
+    await this.withSession(async (client) => {
       await new Promise<void>((resolvePromise, reject) => {
         const timer = setTimeout(() => {
           reject(new Error(`ダウンロードがタイムアウトしました (${timeoutMs}ms): ${remoteAbs}`));
         }, timeoutMs);
-        this.sshClient!.sftp((err, sftp) => {
+        client.sftp((err, sftp) => {
           if (err) {
             clearTimeout(timer);
-            reject(new Error(`SFTP接続エラー: ${err.message}`));
+            // SFTP サブシステム確立失敗 = セッション健全性破綻 → slot 無効化（Rust `Ssh` parity）
+            reject(new SshSessionError(`SFTP接続エラー: ${err.message}`));
             return;
           }
           sftp.fastGet(remoteAbs, localPath, (getErr) => {
             clearTimeout(timer);
             if (getErr) {
+              // 読取失敗 = アプリケーションエラー → slot 保持（Rust `Other`/`Io` parity）
               reject(new Error(`ダウンロードエラー: ${getErr.message}`));
             } else {
               resolvePromise();
@@ -666,9 +820,7 @@ export class RemoteKijukuDB {
           });
         });
       });
-    } finally {
-      await this.disconnect();
-    }
+    });
   }
 
   /**
@@ -1000,19 +1152,15 @@ export class RemoteKijukuDB {
    * 手動バックアップを実行
    */
   async backup(label?: string, timeoutMs?: number): Promise<string> {
-    await this.connect();
-    try {
-      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
-      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
-      const response = await this.executeRemoteCommand({
+    const response = await this.executeRemoteCommand(
+      {
         operation: 'backup',
         params: { label: label ?? null },
-      }, resolvedTimeoutMs);
-      const data = this.checkResponse(response);
-      return data.path;
-    } finally {
-      await this.disconnect();
-    }
+      },
+      timeoutMs,
+    );
+    const data = this.checkResponse(response);
+    return data.path;
   }
 
   /**
@@ -1202,24 +1350,20 @@ export class RemoteKijukuDB {
     timeoutMs?: number,
     dryRun = false,
   ): Promise<string | BackupDiff> {
-    await this.connect();
-    try {
-      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
-      // restoreは「現在のDBの退避バックアップ」+「バックアップファイルからの復元」の2段階。
-      // バックアップファイルのサイズは事前に取得できないため、2倍のタイムアウトを設定する。
-      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes) * 2;
-      const response = await this.executeRemoteCommand({
+    // restore は「現在の DB の退避バックアップ」+「バックアップファイルからの復元」の 2 段階。
+    // バックアップファイルのサイズは事前に取得できないため、longOpTarget で ×2 のタイムアウトを適用。
+    const response = await this.executeRemoteCommand(
+      {
         operation: 'restore',
         params: { selector, dryRun },
-      }, resolvedTimeoutMs);
-      const data = this.checkResponse(response);
-      if (dryRun) {
-        return data.diff as BackupDiff;
-      }
-      return data.path as string;
-    } finally {
-      await this.disconnect();
+      },
+      timeoutMs,
+    );
+    const data = this.checkResponse(response);
+    if (dryRun) {
+      return data.diff;
     }
+    return data.path;
   }
 
   /**
@@ -1238,20 +1382,13 @@ export class RemoteKijukuDB {
       this.config.stgDbPath ??
       (this.config.dbPath !== undefined ? deriveStgDbPath(this.config.dbPath) : undefined) ??
       DEFAULT_REMOTE_STG_DB;
-    await this.connect();
-    try {
-      const dbSizeBytes = await this.getRemoteFileSize(prodPath);
-      // prod→stg の単一コピー（ Online Backup 1パス）。calcBackupTimeoutMs は MARGIN=2 含む。
-      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
-      const response = await this.executeRemoteCommand(
-        { operation, params: { from: prodPath, to: stgPath } },
-        resolvedTimeoutMs,
-      );
-      const data = this.checkResponse(response);
-      return { prodPath: data.prodPath, stgPath: data.stgPath };
-    } finally {
-      await this.disconnect();
-    }
+    // prod→stg の単一コピー（Online Backup 1パス）。適応タイムアウトは longOpTarget が prodPath から算出。
+    const response = await this.executeRemoteCommand(
+      { operation, params: { from: prodPath, to: stgPath } },
+      timeoutMs,
+    );
+    const data = this.checkResponse(response);
+    return { prodPath: data.prodPath, stgPath: data.stgPath };
   }
 
   /**
@@ -1273,18 +1410,14 @@ export class RemoteKijukuDB {
     params: { selector?: RemoteBackupSelector; options?: { detail?: DiffDetail } } = {},
     timeoutMs?: number,
   ): Promise<BackupDiff> {
-    await this.connect();
-    try {
-      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
-      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
-      const response = await this.executeRemoteCommand({
+    const response = await this.executeRemoteCommand(
+      {
         operation: 'diffBackup',
         params: { selector: params.selector, options: params.options },
-      }, resolvedTimeoutMs);
-      return this.checkResponse(response) as BackupDiff;
-    } finally {
-      await this.disconnect();
-    }
+      },
+      timeoutMs,
+    );
+    return this.checkResponse(response);
   }
   /**
    * prod(RO) と現在DB(stg) の差分を取得（promote 判断用・設計 §4.4・TASK-53）。
@@ -1296,18 +1429,14 @@ export class RemoteKijukuDB {
     params: { prodDbPath?: string; options?: { detail?: DiffDetail } } = {},
     timeoutMs?: number,
   ): Promise<BackupDiff> {
-    await this.connect();
-    try {
-      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
-      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
-      const response = await this.executeRemoteCommand({
+    const response = await this.executeRemoteCommand(
+      {
         operation: 'diffProdStg',
         params: { prodDbPath: params.prodDbPath, options: params.options },
-      }, resolvedTimeoutMs);
-      return this.checkResponse(response) as BackupDiff;
-    } finally {
-      await this.disconnect();
-    }
+      },
+      timeoutMs,
+    );
+    return this.checkResponse(response);
   }
 
   /**
@@ -1318,21 +1447,14 @@ export class RemoteKijukuDB {
     params: { prodDbPath?: string; options?: ObserveOptions } = {},
     timeoutMs?: number,
   ): Promise<ObserveResult> {
-    await this.connect();
-    try {
-      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
-      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
-      const response = await this.executeRemoteCommand(
-        {
-          operation: 'observe',
-          params: { prodDbPath: params.prodDbPath, options: params.options },
-        },
-        resolvedTimeoutMs,
-      );
-      return this.checkResponse(response) as ObserveResult;
-    } finally {
-      await this.disconnect();
-    }
+    const response = await this.executeRemoteCommand(
+      {
+        operation: 'observe',
+        params: { prodDbPath: params.prodDbPath, options: params.options },
+      },
+      timeoutMs,
+    );
+    return this.checkResponse(response);
   }
 
   /**
@@ -1347,62 +1469,40 @@ export class RemoteKijukuDB {
     params: { prodDbPath?: string; options?: ObserveOptions; backupOpts?: BackupOptions } = {},
     timeoutMs?: number,
   ): Promise<PromoteOutcome> {
-    await this.connect();
-    try {
-      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
-      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
-      const response = await this.executeRemoteCommand(
-        {
-          operation: 'promote',
-          params: { prodDbPath: params.prodDbPath, options: params.options, backupOpts: params.backupOpts },
-        },
-        resolvedTimeoutMs,
-      );
-      return this.checkResponse(response) as PromoteOutcome;
-    } finally {
-      await this.disconnect();
-    }
+    const response = await this.executeRemoteCommand(
+      {
+        operation: 'promote',
+        params: { prodDbPath: params.prodDbPath, options: params.options, backupOpts: params.backupOpts },
+      },
+      timeoutMs,
+    );
+    return this.checkResponse(response);
   }
 
   /** バックアップにラベルを付与（事後） */
   async setBackupLabel(id: string, label: string | undefined): Promise<void> {
-    await this.connect();
-    try {
-      const response = await this.executeRemoteCommand({
-        operation: 'setBackupLabel',
-        params: { id, label },
-      });
-      this.checkResponse(response);
-    } finally {
-      await this.disconnect();
-    }
+    const response = await this.executeRemoteCommand({
+      operation: 'setBackupLabel',
+      params: { id, label },
+    });
+    this.checkResponse(response);
   }
 
   /** バックアップにメモを付与（事後） */
   async setBackupNote(id: string, note: string | undefined): Promise<void> {
-    await this.connect();
-    try {
-      const response = await this.executeRemoteCommand({
-        operation: 'setBackupNote',
-        params: { id, note },
-      });
-      this.checkResponse(response);
-    } finally {
-      await this.disconnect();
-    }
+    const response = await this.executeRemoteCommand({
+      operation: 'setBackupNote',
+      params: { id, note },
+    });
+    this.checkResponse(response);
   }
 
   /** バックアップの事後メタを取得 */
   async getBackupMeta(id: string): Promise<BackupMetaEntry | null> {
-    await this.connect();
-    try {
-      const response = await this.executeRemoteCommand({
-        operation: 'getBackupMeta',
-        params: { id },
-      });
-      return this.checkResponse(response);
-    } finally {
-      await this.disconnect();
-    }
+    const response = await this.executeRemoteCommand({
+      operation: 'getBackupMeta',
+      params: { id },
+    });
+    return this.checkResponse(response);
   }
 }

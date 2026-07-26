@@ -289,4 +289,29 @@ describeRemote('RemoteKijukuDB 統合テスト', () => {
       }
     });
   });
+
+  describe('SSH Session 接続プール（TASK-71・Rust parity）', () => {
+    // 専用インスタンスで connectCount 0 から検証する
+    const poolDbPath = `${REMOTE_DB_PATH}.pool`;
+
+    it('連続 RPC で Session を再利用し connectCount は増えない', async () => {
+      const remote = new RemoteKijukuDB({ sshHost: SSH_HOST!, dbPath: poolDbPath });
+      await remote.migrate(); // 初回 RPC で接続確立
+      const afterFirst = remote.connectCount;
+      expect(afterFirst).toBeGreaterThanOrEqual(1);
+
+      await remote.getSchemaVersion(); // 2 回目は Session 再利用
+      expect(remote.connectCount).toBe(afterFirst);
+    });
+
+    it('disconnect() 後の RPC は再接続する', async () => {
+      const remote = new RemoteKijukuDB({ sshHost: SSH_HOST!, dbPath: poolDbPath });
+      await remote.migrate();
+      const before = remote.connectCount;
+
+      await remote.disconnect();
+      await remote.getSchemaVersion(); // 再接続
+      expect(remote.connectCount).toBe(before + 1);
+    });
+  });
 });
