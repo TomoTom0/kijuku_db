@@ -320,6 +320,12 @@ pub struct DBOptions {
     pub readonly: bool,
     pub verbose: bool,
     pub backup: Option<crate::backup::BackupOptions>,
+    /// media root ディレクトリ（ファイル操作APIのサンドボックス境界）。
+    ///
+    /// このディレクトリ配下のみファイル操作（cp/mv/sync/upload/download 等）を許可し、
+    /// 外への脱出（`..`・絶対パス・シンボリックリンク経由）を拒否する。
+    /// 未設定（None）の場合、ファイル操作APIはエラーで拒否される。
+    pub media_root: Option<String>,
 }
 
 impl Default for DBOptions {
@@ -329,6 +335,7 @@ impl Default for DBOptions {
             readonly: false,
             verbose: false,
             backup: Some(crate::backup::BackupOptions::default()),
+            media_root: None,
         }
     }
 }

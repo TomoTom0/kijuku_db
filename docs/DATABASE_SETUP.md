@@ -6,15 +6,15 @@
 
 ### 1.1. 新規データベースの作成
 
-```bash
-# CLIを使用
-node ts-sdk/dist/cli.js migrate <データベースパス>
+Rust CLI（`kijuku-cli`）はデータベースを開く際、書込可能な対象（既定の `stg`）であればスキーマ未作成・旧バージョン時に自動でマイグレーションを実行します。新規 DB は最初の書込コマンド実行時に作成・マイグレーションされるため、明示的な `migrate` コマンドは不要です。
 
-# 例
-node ts-sdk/dist/cli.js migrate db/my-media.db
+```bash
+# 新規 DB は最初の書込コマンド（例: import）の実行時に自動作成・マイグレーションされる
+# （import の詳細は §2.1 を参照）
+kijuku-cli --db db/my-media.db --target stg import path/to/data.tsv
 ```
 
-または、SDKを使用：
+明示的にマイグレーションのみ実行する場合は SDK を使用します：
 
 ```typescript
 import { KijukuDB } from './src/index.js';
@@ -51,20 +51,20 @@ TSVファイルには以下のカラムが必要です：
 
 - **必須**: `media_type` (comic/video/music), `title`
 - **推奨**: `artist`, `path`, `language`
-- **オプション**: その他のメディア属性
+- **オプション**: その他のメディア属性（`tags` 列はカンマ区切りでタグとして関連付け）
 
 ```bash
-# TSVディレクトリからインポート
-node ts-sdk/dist/cli.js import <データベースパス> <TSVディレクトリ>
+# TSVファイルをインポート（1行目をヘッダとして扱う）
+kijuku-cli --db db/my-media.db import tmp/data.tsv
 
-# 例
-node ts-sdk/dist/cli.js import db/my-media.db tmp/tsv/
+# 例: 追加カラムをメディア属性（media_attributes）として保存
+kijuku-cli --db db/my-media.db import tmp/data.tsv --additional-columns id_old,custom_field
 ```
 
 ### 2.2. JSONファイルからのインポート
 
 ```bash
-node ts-sdk/dist/cli.js import db/my-media.db data.json
+kijuku-cli --db db/my-media.db import data.json
 ```
 
 JSON形式例：

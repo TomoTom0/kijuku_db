@@ -17,6 +17,8 @@ TypeScript SDKを基準に記載し、Rust SDKの相違点は[Rust SDK](#rust-sd
   - [バックアップ読み取り操作](#バックアップ読み取り操作)
   - [ファイル存在チェック](#ファイル存在チェック)
   - [サムネイル操作](#サムネイル操作)
+  - [ファイル操作](#ファイル操作)
+  - [trash操作](#trash操作)
   - [その他](#その他)
 - [RemoteKijukuDB](#remotekijukud)
   - [コンストラクタ](#remotekijukudコンストラクタ)
@@ -126,6 +128,25 @@ db.migrate(); // スキーマを初期化
 ```typescript
 const version = db.getSchemaVersion();
 console.log(`Schema version: ${version}`);
+```
+
+---
+
+#### `getServerVersion(): string`
+
+リモート CLI バイナリ自身のバージョンを取得します（TASK-69・自動デプロイのバージョン比較用）。DB アクセス不要・prod/stg 両バックエンドで共通。`MAJOR.MINOR.PATCH` 形式（例: `"0.2.2"`）。
+
+> **Note:** リモート（`RemoteKijukuDB`）では毎 RPC の先頭でこの operation を呼び、クライアント（ローカル CLI）バージョンと比較してリモート CLI が古い場合に自動デプロイします（設計: 後述の自動デプロイ節）。
+
+**パラメータ:** なし
+
+**戻り値:** `string` - CLI バイナリのバージョン（`CARGO_PKG_VERSION`）
+
+**使用例:**
+
+```typescript
+const cliVersion = await db.getServerVersion();
+console.log(`CLI version: ${cliVersion}`);
 ```
 
 ---
@@ -1082,6 +1103,26 @@ backups.forEach((backup) => {
 
 ---
 
+#### `listPreStashes(): BackupInfo[]`
+
+pre-stash（即時復旧用ロールバックファイル）の一覧を取得します（設計 [§8](./design/db-protection.md)）。`listBackups` は pre-stash を除外するため、promote/(b)操作が返す `preStashPath` を失った場合の発見経路として使います。
+
+**パラメータ:** なし
+
+**戻り値:** `BackupInfo[]` - pre-stash 情報の配列（id 降順）。`path` はそのまま `BackupSelector.byPath()` で `restore` に渡して prod を即時復旧できます。
+
+**使用例:**
+
+```typescript
+const stashes = db.listPreStashes();
+// path を byPath で restore に渡し prod を即時復旧（§8）
+if (stashes[0]) {
+  db.restore(BackupSelector.byPath(stashes[0].path));
+}
+```
+
+---
+
 #### `backupWithLabel(label: string): Promise<string | null>`
 
 ラベル付き手動バックアップを実行します。
@@ -1154,6 +1195,46 @@ if (manager) {
   const backups = manager.listBackups();
   console.log(`バックアップ数: ${backups.length}`);
 }
+```
+
+---
+
+### DB複製（sync）
+
+prod(RO)→stg(RW) のフル複製を行います（設計 §4.2/§4.5・本番DB保護 P1）。LLM 編集用の stg を prod から生成・更新する基盤。Online Backup API で src を読み取り専用コピーし、dst を新規生成します（既存 dst は完全上書き）。
+
+#### `static replicateDb(src: string, dst: string): Promise<void>`
+
+`src`（prod）を `dst`（stg）へフル複製します。`BackupManager.copyDbOnline` で src を RO コピーし dst を生成します。既存 dst と WAL/SHM 副産物（`-wal`/`-shm`）は事前に削除し、WAL モードの残留を排除して完全な複製を保証します。Rust の `KijukuDB::replicate_db` と同等。
+
+**排他前提:** dst（stg）に接続中のプロセスがないこと（呼出側の責任・設計 §15-11 P1）。`src === dst` は誤設定としてエラー。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `src` | `string` | ○ | 複製元（prod）のDBパス |
+| `dst` | `string` | ○ | 複製先（stg）のDBパス |
+
+**使用例:**
+
+```typescript
+// prod → stg へ複製（stg を LLM 編集用に最新化）
+await KijukuDB.replicateDb('/data/kijuku.db', '/data/kijuku.stg.db');
+```
+
+---
+
+#### `static BackupManager.copyDbOnline(src: string, dst: string): Promise<void>`
+
+任意の src→dst の Online Backup コピー（設計 §4.5）。`replicateDb` の基盤となる関連関数で、`BackupManager` インスタンスに依存せず src を RO で開いて dst を新規生成します。
+
+**使用例:**
+
+```typescript
+import { BackupManager } from 'kijuku-db';
+
+await BackupManager.copyDbOnline('/data/prod.db', '/data/stg.db');
 ```
 
 ---
@@ -1360,6 +1441,56 @@ console.log(`${result.updated}/${result.total}件を更新`);
 
 ---
 
+### ファイル操作
+
+media root（`DBOptions.mediaRoot`）配下のファイル操作（cp/mv/sync）。すべて **dry-run ファースト**（`opts.apply` は `false` 既定で、計画のみ返し FS を触らない）。上書き・削除で消えるファイルは [trash 操作](#trash操作) 経由で `.trash/` へ退避される。`mediaRoot` 未設定だとエラー。パスは `..`・絶対パス・シンボリックリンク経由での root 脱出を拒否する。
+
+#### `getMediaRoot(): string | undefined`
+
+設定された media root を返す（未設定は `undefined`）。ファイル操作 API のサンドボックス境界。
+
+#### `mediaCp(src: string, dst: string, opts?: FileOpOptions): FileOpResult`
+
+`src` を `dst` へ複製する（ファイル/ディレクトリ両対応）。`dst` が既存なら上書き前に旧ファイルを trash へ退避する。
+
+```ts
+const plan = db.mediaCp('abc/content', 'abc/content_backup'); // dry-run（FS 不変）
+console.log(plan.steps, plan.applied);
+const done = db.mediaCp('abc/content', 'abc/content_backup', { apply: true, updateDb: false });
+```
+
+#### `mediaMv(src: string, dst: string, opts?: FileOpOptions): FileOpResult`
+
+`src` を `dst` へ移動する。`dst` が既存なら上書き前に旧ファイルを trash へ退避してから移動する。
+
+#### `mediaSync(src: string, dst: string, opts?: FileOpOptions): FileOpResult`
+
+`src`（ディレクトリ）の内容を `dst` へ同期する（safe モード）。dst にあって src に無いファイルは trash へ回し（生 `--delete` 相当だが trash 経由）、内容が異なるファイルは旧内容を trash へ退避してからコピーする。source 側ファイルは削除しない。
+
+### trash操作
+
+ファイル操作で削除・上書きされるファイルを `mediaRoot/.trash/` 配下へ退避する論理削除方式。物理削除を伴うのは `purgeTrash` の実行（`dryRun` 既定で安全）のみ。通常の削除・上書きは trash への移動となり、`restoreFromTrash` で復元できる。
+
+#### `moveToTrash(targetRel: string, operation: TrashOperation, reason?: string): string`
+
+`targetRel` を trash へ移動し、trash ID を返す。target は media root 配下の既存パスで `.trash/` 自身でないこと。存在しないパス・`.trash/` 配下のパスはエラー。
+
+#### `listTrash(): TrashEntry[]`
+
+trash 内の全エントリを一覧する（trash が無ければ空）。
+
+#### `restoreFromTrash(id: string): string`
+
+trash エントリ `id` を元の位置へ復元し、復元先パスを返す。元の位置に既にファイルが存在する場合は**上書きせずエラー**にする（安全停止）。
+
+#### `purgeTrash(ids?: string[], dryRun?: boolean): string[]`
+
+trash を物理削除する。`dryRun=true`（既定）なら対象 ID の一覧を返すだけで削除しない。`ids` を指定すればその ID のみ、未指定なら全エントリを対象とする。**trash からファイルを完全に消す唯一の経路**である。
+
+> **RemoteKijukuDB**: 上記のファイル操作・trash 操作はすべて非同期（`Promise` を返す）で同名で公開されている（`mediaCp` / `mediaMv` / `mediaSync` / `moveToTrash` / `listTrash` / `restoreFromTrash` / `purgeTrash`）。SSH 先のリモート CLI に委譲する。
+
+---
+
 ### その他
 
 #### `close(): void`
@@ -1480,10 +1611,26 @@ const remoteDb = new RemoteKijukuDB({
 | **サムネイル** | `checkThumbnail()`, `updateThumbnail()` | |
 | **ハッシュ操作** | `addMediaHash()`, `addMediaHashes()`, `getMediaHashes()`, `getMediaHash()`, `findByContentHash()`, `deleteMediaHash()`, `deleteMediaHashes()`, `findDuplicateHashes()`, `computeMediaHash()`, `computeMediaHashes()` | |
 | **ファイル存在** | `updateExist()` | |
+| **DB複製** | `sync()` | prod(RO)→stg(RW) のフル複製 |
 
 **相違点:**
 - 全メソッドが`Promise`を返す（例: `getMedia(id): Promise<Media | null>`）
 - `close()`は不要（使用後に自動的に切断される）
+
+### RemoteKijukuDB DB複製（sync）
+
+#### `sync(timeoutMs?: number): Promise<{ prodPath: string; stgPath: string }>`
+
+prod(RO)→stg(RW) のフル複製をリモート CLI に委譲します（設計 §4.2/§4.5）。リモート側の prod/stg パス間でファイルコピーが完結し（NAS 上で閉じる）、SSH 経由で DB 実体を転送しません。prod/stg パスは config（`dbPath`/`stgDbPath`）から自動解決し `from`/`to` でリモートに明示渡します（リモート側の環境変数に依存しない）。タイムアウトは prod DB サイズから自動計算します（`timeoutMs` で上書き可）。`prodPath === stgPath` はリモート側で弾かれます。
+
+**使用例:**
+
+```typescript
+// リモートの prod → stg を複製（パスは config から自動解決・タイムアウト自動計算）
+const { prodPath, stgPath } = await remoteDb.sync();
+```
+
+---
 
 ### RemoteKijukuDBバックアップ操作
 
@@ -1522,6 +1669,24 @@ const pathWithTimeout = await remoteDb.backup('large_db', 30 * 60_000);
 ```typescript
 const backups = await remoteDb.listBackups();
 backups.forEach(b => console.log(`${b.name} (${b.scope})`));
+```
+
+---
+
+#### `listPreStashes(): Promise<BackupInfo[]>`
+
+リモートDBの pre-stash（即時復旧用ロールバックファイル）一覧を取得します（設計 [§8](./design/db-protection.md)）。`listBackups` は pre-stash を除外するため、promote/(b)操作が返す `preStashPath` を失った場合の発見経路として使います。
+
+**戻り値:** `Promise<BackupInfo[]>` - pre-stash 情報の配列（id 降順）。`path` はそのまま `RemoteBackupSelector` の `{ type: 'byPath', path }` で `restore` に渡して prod を即時復旧できます。
+
+**使用例:**
+
+```typescript
+const stashes = await remoteDb.listPreStashes();
+// path を byPath で restore に渡し prod を即時復旧（§8）
+if (stashes[0]) {
+  await remoteDb.restore({ type: 'byPath', path: stashes[0].path });
+}
 ```
 
 ---
@@ -1621,6 +1786,7 @@ Rust SDKのメソッドはsnake_caseで、戻り値が`Result<T>`で包まれま
 | `backupWithLabel(label)` | `backup_with_label(&self, label: &str)` | |
 | `restore(selector)` | `restore(&mut self, selector: &BackupSelector) -> Result<PathBuf>` | `&mut self` |
 | `listBackups()` | `list_backups(&self) -> Result<Vec<BackupInfo>>` | |
+| `listPreStashes()` | `list_pre_stashes(&self) -> Result<Vec<BackupInfo>>` | pre-stash 発見経路（§8） |
 | `getBackupManager()` | `get_backup_manager(&self) -> Option<&BackupManager>` | |
 | `getMediaFromBackup(id, sel)` | `get_media_from_backup(&self, id: i64, selector: &BackupSelector)` | |
 | `findMediaFromBackup(f, o, s)` | `find_media_from_backup(&self, filter: &MediaFilter, options: Option<&QueryOptions>, selector: &BackupSelector)` | |
@@ -1965,6 +2131,44 @@ interface DBOptions {
 ```
 
 データベース接続オプション。
+
+---
+
+### FileOpOptions
+
+ファイル操作（cp/mv/sync）のオプション。既定は `{ apply: false, updateDb: false }`（`defaultFileOpOptions`）。
+
+| フィールド | 型 | 既定 | 説明 |
+|-----------|----|----|------|
+| `apply` | `boolean` | `false` | 実際に FS へ変更を適用するか。`false` なら dry-run で計画のみ返す |
+| `updateDb` | `boolean` | `false` | DB の `Media.path` を追従させるか。※当面はフラグを受領するのみで DB 更新は未サポート（後続タスクで拡張） |
+
+### FileOpResult
+
+ファイル操作の実行結果（dry-run 含む）。
+
+| フィールド | 型 | 説明 |
+|-----------|----|------|
+| `steps` | `FileOpStep[]` | 実行する（した）操作ステップ一覧 |
+| `applied` | `boolean` | 実際に FS へ変更を加えたか |
+
+### FileOpStep
+
+個々の操作ステップ。判別共用体で、`kind` で判別する。
+
+| `kind` | 追加フィールド | 説明 |
+|--------|--------------|------|
+| `copy` | `from`, `to` | コピー |
+| `move` | `from`, `to` | 移動 |
+| `trash` | `path`, `reason` | trash へ退避 |
+
+### TrashOperation
+
+trash 行きの原因となった操作の種別: `'delete'`（明示削除）/ `'overwrite'`（上書きで消える旧ファイル）/ `'sync_extra'`（sync で余分と判断されたファイル）。
+
+### TrashEntry / TrashMeta
+
+trash エントリ。`TrashEntry` は `{ id: string; meta: TrashMeta }`。`TrashMeta`（`.trash/<id>/.meta.json`）は `originalPath`（元パス・root 相対）/ `trashedAt`（RFC3339）/ `operation`（`TrashOperation`）/ `reason?`（呼び出し元識別）を持つ。
 
 ---
 

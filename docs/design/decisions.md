@@ -174,12 +174,17 @@ CREATE TABLE schema_version (
 ## 実装戦略
 
 ### SDK実装の優先順位
-**決定**: TypeScript SDK優先
+**決定**: Rust SDK優先（Rust-first）。新機能はまず Rust SDK の `KijukuDB` に実装し、TypeScript SDK は parity を取って追従する。CLI（`kijuku-cli`）は Rust SDK の薄いラッパーとして実装する（`.claude/CLAUDE.md`「SDKが先、CLIはSDKの薄いラッパー」参照）。
 
 **理由**:
-- API設計を早く固められる
-- 動作確認が早い（Node.js環境ですぐ試せる）
-- 設計が固まった段階でRust SDKに移植すれば、手戻りが少ない
+- Rust SDK が CLI の実装基盤であり、SDK/CLI の真実の情報源（single source of truth）となる
+- Rust で API と型を先に固めれば、TypeScript SDK への移植時の手戻りが小さい
+- TypeScript 版 CLI は廃止し、CLI は Rust 版（`kijuku-cli`）に一本化した（remote/SSH 運用も含む）
+
+**変更履歴（supersede）**:
+- 旧決定: 「TypeScript SDK優先」— API 設計を TypeScript で先行し、固まった段階で Rust SDK に移植する方針
+  - 旧理由: API設計を早く固められる、Node.js 環境で動作確認が早い
+- 変更契機: CLI を Rust（`kijuku-cli`）に統一したことで Rust SDK が実装の起点となった。TypeScript SDK は parity 追随に役割を変更（TASK-66）
 
 ### 機能実装の順序
 1. マイグレーション機能（スキーマ初期化、バージョン管理）
@@ -218,7 +223,7 @@ const tmpDb = new Database('/tmp/test-kijuku.db');
 ## 実行環境
 
 ### SDK実行場所
-**決定**: NAS上のNode.js環境のみ
+**決定**: NAS上で Rust バイナリ（`kijuku-cli`）を動かし、DB アクセスは NAS ローカルで行う。
 
 **理由**:
 - ネットワークファイルシステム越しのSQLiteアクセスは信頼性が低い
@@ -226,8 +231,8 @@ const tmpDb = new Database('/tmp/test-kijuku.db');
 - データ破損リスクを避ける
 
 **PC側からの利用方法**:
-- SSH経由でNAS上のコマンド実行
-- CLIツール経由での操作
+- SSH経由でNAS上の `kijuku-cli` を実行（remote クライアントが SSH RPC で操作）
+- CLI は Rust 版（`kijuku-cli`）に統一しており、Node.js 版 CLI は廃止した（TASK-66）
 
 ## 依存パッケージ（TypeScript SDK）
 

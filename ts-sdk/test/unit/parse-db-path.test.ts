@@ -2,7 +2,7 @@
  * parseDbPath() 関数の単体テスト
  */
 import { describe, it, expect } from 'vitest';
-import { parseDbPath } from '../../src/cli.js';
+import { parseDbPath } from '../../src/config.js';
 
 describe('parseDbPath', () => {
   describe('リモートパス（host:path形式）', () => {

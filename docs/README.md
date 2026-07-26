@@ -16,6 +16,8 @@ docs/
 │   └── unreleased.md          # リリース前の変更履歴
 ├── design/
 │   ├── decisions.md           # 設計上の意思決定記録
+│   ├── path-design.md         # path設計（決定論path + root管理）の設計・実装計画
+│   ├── db-protection.md       # 本番DB保護（LLM破壊的操作対策）の設計・実装計画
 │   ├── init/                  # 初期設計ドキュメント
 │   └── update-exist*.md       # update-exist機能の設計
 ├── dev/

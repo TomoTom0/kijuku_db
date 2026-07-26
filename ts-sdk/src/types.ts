@@ -242,6 +242,14 @@ export interface DBOptions {
    * - BackupOptions: 指定の内容で有効
    */
   backup?: BackupOptions | null;
+  /**
+   * media root ディレクトリ（ファイル操作APIのサンドボックス境界）。
+   *
+   * このディレクトリ配下のみファイル操作（cp/mv/sync/upload/download 等）を許可し、
+   * 外への脱出（`..`・絶対パス・シンボリックリンク経由）を拒否する。
+   * 未設定（undefined）の場合、ファイル操作APIはエラーで拒否される。
+   */
+  mediaRoot?: string;
 }
 
 /**
@@ -395,4 +403,133 @@ export interface BackupDiff {
   attributes: AttributeDiff;
   hashes: HashDiff;
   summary: BackupDiffSummary;
+}
+
+// ---------- prod/stg 差分の要約・LLM explanation prompt（設計 §4.4/§15-15・TASK-53）----------
+// これらは BackupDiff（stg 編集視点）を入力に取るクライアント側の純粋計算結果。
+// エンティティ型（Media 等）は Rust serde と一致する snake_case、
+// SDK 構造型は BackupDiff 等に倣い camelCase で定義する。
+
+/** 全テーブル横断の合計件数（gate しきい値比較用） */
+export interface DiffTotals {
+  added: number;
+  removed: number;
+  changed: number;
+}
+
+/** media テーブルの分布 */
+export interface MediaDistribution {
+  /** media_type 別の件数（"comic"/"video"/"music" ...） */
+  byType: Record<string, DiffCounts>;
+  /** artist 別上位 N（None は "unknown"）。変動件数（total）降順 */
+  byArtistTop: Array<{ artist: string; counts: DiffCounts }>;
+  /** flag_exist 別の件数（"true"/"false"）。一括存在フラグ変更の検出 */
+  byFlagExist: Record<string, DiffCounts>;
+}
+
+/** media_tags（紐付け）の分布。tag_id 別上位 N */
+export interface MediaTagAssocDistribution {
+  byTagTop: Array<{ tagId: number; counts: DiffCounts }>;
+}
+
+/** attributes（EAV）の分布。key 別の件数 */
+export interface AttributeDistribution {
+  byKey: Record<string, DiffCounts>;
+}
+
+/** hashes の分布。filename 別上位 N */
+export interface HashDistribution {
+  byFilenameTop: Array<{ filename: string; counts: DiffCounts }>;
+}
+
+/** テーブル別の偏り（異常な一括変更の検出） */
+export interface DiffDistribution {
+  media: MediaDistribution;
+  mediaTags: MediaTagAssocDistribution;
+  attributes: AttributeDistribution;
+  hashes: HashDistribution;
+}
+
+/** BackupDiff（stg 編集視点）の要約。機械的 gate（TASK-54）や LLM explanation prompt の素材 */
+export interface ProdStgDiffSummary {
+  /** 5テーブル別の件数（既存 BackupDiffSummary を再利用） */
+  counts: BackupDiffSummary;
+  /** 全テーブル横断の合計 */
+  totals: DiffTotals;
+  /** テーブル別の偏り */
+  distribution: DiffDistribution;
+}
+
+/** buildDiffExplanationPrompt のオプション（既定値は defaultDiffExplanationPromptOptions） */
+export interface DiffExplanationPromptOptions {
+  /** 各セクションの代表サンプル最大件数（token 節約・既定 10） */
+  maxSamplesPerSection: number;
+  /** 分布セクションを含めるか（既定 true） */
+  includeDistribution: boolean;
+  /** 呼出側の任意メタ（session ID 等）。プロンプト先頭に記載 */
+  extraContext?: string;
+}
+
+// ---------- 機械的 promote gate（observe・設計 §3.4/§15-10・TASK-54）----------
+// Rust diff.rs の GateConfig/GoldenAssertion/GoldenResult/GateCheck/ObserveResult/ObserveOptions と parity。
+
+/** golden assertion（運用者定義のドメイン不変条件・設計 §3.4）。
+ *  `sql` の最初のカラム・最初の行を件数として実行し、`expectedMin`/`expectedMax` の範囲内なら合格。 */
+export interface GoldenAssertion {
+  name: string;
+  sql: string;
+  expectedMin?: number;
+  expectedMax?: number;
+}
+
+/** golden assertion の SQL 実行結果（evaluateGate に渡す・純粋性担保・wire 非対象）。
+ *  SQL エラー時は `ok:false` とし gate を FAIL 扱いにする（安全側）。 */
+export type GoldenResult =
+  | { ok: true; count: number }
+  | { ok: false; error: string };
+
+/** gate 設定（設計 §3.4/§15-10）。閾値は `ProdStgDiffSummary.totals` と比較する。 */
+export interface GateConfig {
+  /** promote で prod に追加される行数の上限（`totals.added`） */
+  maxAdded: number;
+  /** promote で prod から削除される行数の上限（`totals.removed`・削除は最も危険なので厳しめ） */
+  maxRemoved: number;
+  /** promote で prod が上書きされる行数の上限（`totals.changed`） */
+  maxChanged: number;
+  /** 運用者定義の golden assertion（デフォルト空） */
+  goldenAssertions: GoldenAssertion[];
+}
+
+/** 個別 gate 検査の結果 */
+export interface GateCheck {
+  name: string;
+  passed: boolean;
+  detail: string;
+}
+
+/** observe の結果（設計 §3.4/§4.4）。`passed` は全 gate check 合格か（promote 可否の客観判定）。 */
+export interface ObserveResult {
+  passed: boolean;
+  prodSchemaVersion: number;
+  stgSchemaVersion: number;
+  /** 差分要約（gate の素材・`summarizeDiff` の出力） */
+  summary: ProdStgDiffSummary;
+  /** 各 gate 検査の結果 */
+  checks: GateCheck[];
+}
+
+/** observe のオプション（設計 §4.4）。差分取得と gate 評価の設定を束ねる。 */
+export interface ObserveOptions {
+  diffOptions?: DiffOptions;
+  gateConfig?: GateConfig;
+}
+
+/** promote（stg→prod 反映）の結果（設計 §4.5・TASK-58）。Rust `PromoteOutcome` と parity。
+ *  gate 合格時のみ返る（不合格時は `PromoteGateFailedError`）。 */
+export interface PromoteOutcome {
+  /** gate 評価結果（全 gate 合格） */
+  observe: ObserveResult;
+  /** pre-stash パス（§8 即時復旧の戻し先・`tmp/{stem}.{ts}-pre_promote.db`）。
+   *  prod がファイル実体を持たない（`:memory:` 等）場合は undefined。 */
+  preStashPath?: string;
 }

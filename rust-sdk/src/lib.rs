@@ -48,12 +48,17 @@ pub mod error;
 pub mod exec;
 pub mod exec_d1;
 pub mod exec_local;
+pub mod file_ops;
 pub mod hash;
+pub mod media_path;
 pub mod migration;
+pub mod prod_rw;
 pub mod remote;
 pub mod search;
 pub mod server;
+pub mod stg_session;
 pub mod tag;
+pub mod trash;
 pub mod thumbnail;
 pub mod types;
 pub mod update_exist;
@@ -66,7 +71,10 @@ pub use backend::KijukuBackend;
 pub use bulk_load::{transfer, verify, TransferOptions, TransferReport};
 pub use d1_backend::D1KijukuDB;
 pub use d1_client::D1Config;
-pub use config::{load_config, BackupConfig, KijukuConfig};
+pub use config::{
+    load_config, BackupConfig, EnvProvider, KijukuConfig, ParsedDbPath, SystemEnv, Target,
+    TargetResolution, parse_db_path, resolve_prod_and_stg_paths, resolve_target,
+};
 pub use db_value::{SqlParam, SqlRow};
 pub use error::{KijukuError, Result};
 pub use exec::SqlExec;
@@ -76,6 +84,11 @@ pub use remote::{RemoteConfig, RemoteKijukuDB};
 pub use search::ALLOWED_DISTINCT_FIELDS;
 pub use server::auth::{AuthManager, generate_password};
 pub use server::{ServerOptions, start_server};
+pub use stg_session::{
+    ProdRevision, StgLock, StgMeta, SyncedFrom, compute_prod_revision, lock_path, meta_path,
+    read_stg_meta, write_stg_meta,
+};
+pub use prod_rw::ProdRwScope;
 pub use types::*;
 pub use thumbnail::{
     CheckThumbnailItemResult, CheckThumbnailResult, CheckThumbnailStatus, ThumbnailOptions,
@@ -87,8 +100,21 @@ pub use update_exist::{UpdateExistItemResult, UpdateExistOptions, UpdateExistRes
 use parking_lot::ReentrantMutex;
 use rusqlite::Connection;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// promote（stg→prod 反映）の結果（設計 §4.5・TASK-57）。
+///
+/// 成功時のみ返る。gate 不合格時は `KijukuError::PromoteGateFailed`（prod は未更新）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromoteOutcome {
+    /// gate 評価結果（promote 判断の客観根拠・設計 §3.4）。全 gate 合格を表す。
+    pub observe: diff::ObserveResult,
+    /// pre-stash パス（§8 即時復旧の戻し先・`tmp/{stem}.{ts}-pre_promote.db`）。
+    /// 監査/復旧用に呼び出し側が保持する。pre-stash が空（prod 空等）の場合は None。
+    pub pre_stash_path: Option<PathBuf>,
+}
 
 /// きじゅくDBのメインクラス（Local バックエンド）
 ///
@@ -101,7 +127,11 @@ pub struct KijukuDB {
     conn: Arc<ReentrantMutex<Connection>>,
     exec: LocalExec,
     options: DBOptions,
+    db_path: PathBuf,
     backup_manager: Option<BackupManager>,
+    /// stg 編集セッションが保持する排他ロック（設計 §15-11）。None はロック未取得
+    /// （prod RO 読込や in-memory 等）。Drop で自動解放。
+    stg_lock: Option<stg_session::StgLock>,
 }
 
 impl KijukuDB {
@@ -136,6 +166,16 @@ impl KijukuDB {
         };
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
+        // busy_timeout: RO/RW 両方で設定（ロック競合時のリトライ待ち・設計 §5.3）。
+        // `DBOptions.timeout`(ms) を流用。未設定時は 5000ms。
+        let busy_timeout_ms = options.timeout.unwrap_or(5000);
+        conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms))?;
+
+        // WAL は RW 接続のみ。readonly で `journal_mode=WAL` は書込を伴うため失敗する（設計 §5.3）。
+        if !options.readonly {
+            conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        }
+
         if options.verbose {
             conn.trace(Some(|sql: &str| eprintln!("[SQL] {sql}")));
         }
@@ -153,7 +193,9 @@ impl KijukuDB {
             conn,
             exec,
             options,
+            db_path: path_ref.to_path_buf(),
             backup_manager,
+            stg_lock: None,
         })
     }
 
@@ -161,14 +203,91 @@ impl KijukuDB {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         let conn = Arc::new(ReentrantMutex::new(conn));
         let exec = LocalExec::new(Arc::clone(&conn));
         Ok(Self {
             conn,
             exec,
             options: DBOptions::default(),
+            db_path: PathBuf::new(),
             backup_manager: None,
+            stg_lock: None,
         })
+    }
+
+    /// stg 編集セッションの排他ロックを取得・保持（設計 §15-11）。
+    ///
+    /// `<db_path>.lock` の排他ロックを取得し、インスタンスの `Drop` まで保持する。
+    /// 別セッションが保持中なら `StgBusy`。prod RO 読込専用セッションでは呼ばないこと。
+    pub fn acquire_stg_lock(&mut self) -> Result<()> {
+        if self.stg_lock.is_some() {
+            return Ok(()); // 既に保持済み（冪等）
+        }
+        let lock = stg_session::StgLock::acquire(&self.db_path)?;
+        self.stg_lock = Some(lock);
+        Ok(())
+    }
+
+    /// この接続が開いているDBファイルパス。
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
+
+    /// prod(RO) → stg(RW) のフル複製（sync・設計 §4.2/§4.5）。
+    ///
+    /// `copy_db_online`（Online Backup API）で src を読み取り専用コピーし dst を新規生成する。
+    /// 既存 dst と WAL/SHM 副産物（`-wal`/`-shm`）は事前に削除し、stg が WAL モードで
+    /// 使用されていた場合の残留を排除して完全な複製を保証する。
+    ///
+    /// **排他**: 先頭で `<dst>.lock` の排他ロックを取得し（設計 §15-11）、sync 全体を保護する。
+    /// 別セッションが stg を編集中（ロック保持中）なら `StgBusy`。コピー後に sync 元 prod の
+    /// revision 指紋を `<dst>.meta.json` に記録し、observe が drift を検出できるようにする。
+    /// `src == dst` は誤設定としてエラー。
+    pub fn replicate_db(src: &Path, dst: &Path) -> Result<()> {
+        if src == dst {
+            return Err(KijukuError::Other(format!(
+                "sync source and destination are the same path: {}",
+                src.display()
+            )));
+        }
+        // sync 全体を排他ロックで保護（設計 §15-11）。別セッション編集中なら StgBusy。
+        let _lock = stg_session::StgLock::acquire(dst)?;
+
+        // sync 元 prod revision を src から算出（dst の WAL 残留に依存しないよう src から・設計 §15-11）。
+        let revision = {
+            let src_db = KijukuDB::open_with_options(
+                src,
+                DBOptions {
+                    readonly: true,
+                    ..Default::default()
+                },
+            )?;
+            let conn = src_db.conn.lock();
+            stg_session::compute_prod_revision(&conn)?
+        };
+
+        // 既存 dst + WAL/SHM 副産物を削除（完全な複製のため・設計 §4.2）
+        let dst_str = dst.to_string_lossy();
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate = format!("{}{}", dst_str, suffix);
+            let p = Path::new(&candidate);
+            if p.exists() {
+                std::fs::remove_file(p)?;
+            }
+        }
+        backup::BackupManager::copy_db_online(src, dst)?;
+
+        // revision 指紋を `<dst>.meta.json` に原子書き込み。
+        let meta = stg_session::StgMeta {
+            synced_from: stg_session::SyncedFrom {
+                prod_path: src.display().to_string(),
+                revision,
+                synced_at: chrono::Utc::now(),
+            },
+        };
+        stg_session::write_stg_meta(dst, &meta)?;
+        Ok(())
     }
 
     /// 接続の `Arc` ハンドルを取得（同プロセス内で `LocalExec` 等と共有する用途・内部用）。
@@ -184,9 +303,82 @@ impl KijukuDB {
         &self.options
     }
 
+    /// 設定された media root を返す（未設定は None）。
+    ///
+    /// ファイル操作API（cp/mv/sync/upload/download 等）のサンドボックス境界。
+    /// 未設定の場合、ファイル操作APIはエラーで拒否される。
+    pub fn media_root(&self) -> Option<&str> {
+        self.options.media_root.as_deref()
+    }
+
+    /// `src` を `dst` へ複製する（dry-run ファースト、上書きは trash 経由）。
+    pub fn media_cp(
+        &self,
+        src: &str,
+        dst: &str,
+        opts: &crate::file_ops::FileOpOptions,
+    ) -> Result<crate::file_ops::FileOpResult> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        file_ops::media_cp(&root, src, dst, opts)
+    }
+
+    /// `src` を `dst` へ移動する（dry-run ファースト、上書きは trash 経由）。
+    pub fn media_mv(
+        &self,
+        src: &str,
+        dst: &str,
+        opts: &crate::file_ops::FileOpOptions,
+    ) -> Result<crate::file_ops::FileOpResult> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        file_ops::media_mv(&root, src, dst, opts)
+    }
+
+    /// `src`（ディレクトリ）の内容を `dst` へ同期する（safe モード、dry-run ファースト、余分・上書きは trash 経由）。
+    pub fn media_sync(
+        &self,
+        src: &str,
+        dst: &str,
+        opts: &crate::file_ops::FileOpOptions,
+    ) -> Result<crate::file_ops::FileOpResult> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        file_ops::media_sync(&root, src, dst, opts)
+    }
+
+    /// `target_rel` を trash へ移動する（論理削除・物理削除はしない）。
+    pub fn move_to_trash(
+        &self,
+        target_rel: &str,
+        operation: crate::trash::TrashOperation,
+        reason: Option<&str>,
+    ) -> Result<crate::trash::TrashId> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        crate::trash::move_to_trash(&root, target_rel, operation, reason)
+    }
+
+    /// trash 内のエントリ一覧を返す。
+    pub fn list_trash(&self) -> Result<Vec<crate::trash::TrashEntry>> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        crate::trash::list_trash(&root)
+    }
+
+    /// trash から `id` のエントリを元の位置へ復元する（衝突時はエラー）。
+    pub fn restore_from_trash(&self, id: &str) -> Result<std::path::PathBuf> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        crate::trash::restore_from_trash(&root, id)
+    }
+
+    /// trash 内のエントリを物理削除する（dry-run ファースト）。
+    pub fn purge_trash(&self, ids: Option<&[String]>, dry_run: bool) -> Result<Vec<String>> {
+        let root = media_path::require_media_root(&self.options.media_root)?;
+        crate::trash::purge_trash(&root, ids, dry_run)
+    }
+
     /// マイグレーションを実行
     #[deprecated(note = "async API を使用してください (KijukuBackend::migrate)")]
     pub fn migrate(&self) -> Result<()> {
+        if let Some(bm) = &self.backup_manager {
+            bm.create_pre_migrate_snapshot()?;
+        }
         let conn = self.conn.lock();
         migration::migrate(&conn)
     }
@@ -772,6 +964,17 @@ impl KijukuDB {
         }
     }
 
+    /// pre-stash（即時復旧用ロールバックファイル）一覧を取得（設計 §8）。
+    ///
+    /// promote/(b)操作が返す `pre_stash_path` を呼出側が失った場合の発見経路。
+    /// 戻り値の `path` はそのまま `BackupSelector::by_path` で `restore` に渡せる。
+    pub fn list_pre_stashes(&self) -> Result<Vec<BackupInfo>> {
+        match &self.backup_manager {
+            Some(manager) => manager.list_pre_stashes(),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// データベース接続を明示的に閉じる
     ///
     /// Rustでは通常、Dropトレイトによって自動的にクローズされますが、
@@ -1017,6 +1220,209 @@ impl KijukuDB {
         Ok(diff::compute_diff(&current_snap, &backup_snap, options))
     }
 
+    /// prod と stg（self）の差分を取得（promote 判断用・設計 §4.4/§14.3）。
+    ///
+    /// **セマンティクス（stg 編集視点・`diff_with_backup` と逆）**:
+    /// - `added`:   stg のみ（promote で prod に追加される）
+    /// - `removed`: prod のみ（promote で prod から削除される）
+    /// - `changed`: 両方に在り内容が異なる（promote で prod が上書きされる）
+    ///
+    /// self は stg（RW）。prod を `SQLITE_OPEN_READ_ONLY` 別接続で開き（設計 §15-8 推奨方式）、
+    /// snapshot を比較する。`compute_diff(current=prod, backup=stg)` で呼ぶことで stg 編集視点に
+    /// 反転させる（`diff_with_backup` は `compute_diff(current=self, backup=backupDB)` で方向が逆）。
+    /// prod 読込経路では migrate をスキップ（readonly open のため自動的にスキップされる）。
+    pub fn diff_with_prod(
+        &self,
+        prod_db_path: &Path,
+        options: &diff::DiffOptions,
+    ) -> Result<diff::BackupDiff> {
+        let prod_snap = {
+            let prod_db = KijukuDB::open_with_options(
+                prod_db_path,
+                DBOptions { readonly: true, ..Default::default() },
+            )?;
+            prod_db.collect_snapshot()?
+        };
+        let stg_snap = self.collect_snapshot()?;
+        // セマンティクス反転: current=prod, backup=stg（diff_with_backup と逆）
+        Ok(diff::compute_diff(&prod_snap, &stg_snap, options))
+    }
+
+    /// stg（self）と prod を比較し、機械的 promote gate を評価（設計 §3.4/§4.4）。
+    ///
+    /// 内部で差分（`diff_with_prod` と同等）を計算し `summarize_diff` で要約した上で、
+    /// 以下の gate を評価する（`diff::evaluate_gate`）:
+    /// - `PRAGMA integrity_check` == "ok"
+    /// - 外部キー整合性（`foreign_key_check` 空 + FK 有効）
+    /// - prod/stg の `schema_version` 一致
+    /// - 件数・差分上限（`summary.totals` vs `GateConfig`）
+    /// - 運用者定義 golden assertion
+    ///
+    /// self は stg（RW）。prod を `SQLITE_OPEN_READ_ONLY` 別接続で開く（設計 §15-8）。
+    /// `passed` が全 gate 合格を表す（promote 可否の客観判定・人間 gate でない・設計 §3/§6.4）。
+    #[allow(deprecated)]
+    pub fn observe(
+        &self,
+        prod_db_path: &Path,
+        options: &diff::ObserveOptions,
+    ) -> Result<diff::ObserveResult> {
+        // --- prod 側（RO 別接続）: snapshot + schema_version + revision 指紋 ---
+        let (prod_snap, prod_schema_version, prod_revision) = {
+            let prod_db = KijukuDB::open_with_options(
+                prod_db_path,
+                DBOptions { readonly: true, ..Default::default() },
+            )?;
+            let prod_revision = {
+                let conn = prod_db.conn.lock();
+                stg_session::compute_prod_revision(&conn)?
+            };
+            (prod_db.collect_snapshot()?, prod_db.get_schema_version()?, prod_revision)
+        };
+
+        // --- stg 側（self）: snapshot + gate 用 DB 検査を1ロックで実行 ---
+        let stg_snap = self.collect_snapshot()?;
+        let conn = self.conn.lock();
+        let integrity = migration::integrity_check(&conn)?;
+        let fk_violations = migration::foreign_key_check(&conn)?;
+        let fk_enabled = migration::is_foreign_keys_enabled(&conn)?;
+        let stg_schema_version = migration::get_schema_version(&conn)?;
+        let golden_results: Vec<diff::GoldenResult> = options
+            .gate_config
+            .golden_assertions
+            .iter()
+            .map(|ga| match conn.query_row(&ga.sql, [], |row| row.get::<_, i64>(0)) {
+                Ok(c) => diff::GoldenResult::Count(c),
+                Err(e) => diff::GoldenResult::Error(e.to_string()),
+            })
+            .collect();
+        drop(conn);
+
+        // --- 差分 → 要約 → gate 評価 ---
+        let diff = diff::compute_diff(&prod_snap, &stg_snap, &options.diff_options);
+        let summary = diff::summarize_diff(&diff);
+        let mut checks = diff::evaluate_gate(
+            &summary,
+            &integrity,
+            &fk_violations,
+            fk_enabled,
+            prod_schema_version,
+            stg_schema_version,
+            &golden_results,
+            &options.gate_config,
+        );
+
+        // prod_sync_revision gate: sync 元 revision（`<stg>.meta.json`）と現 prod revision を比較
+        // し、prod が sync 後に更新された（stg が stale）なら不合格（設計 §15-11）。
+        // meta なし（旧 stg・後方互換）はスキップ。
+        if let Some(meta) = stg_session::read_stg_meta(&self.db_path)? {
+            let drift = meta.synced_from.revision != prod_revision;
+            checks.push(diff::GateCheck {
+                name: "prod_sync_revision".to_string(),
+                passed: !drift,
+                detail: if drift {
+                    format!(
+                        "prod drifted since sync (recorded media_count={} / current {}) -> re-sync required",
+                        meta.synced_from.revision.media_count, prod_revision.media_count
+                    )
+                } else {
+                    "prod unchanged since sync".to_string()
+                },
+            });
+        }
+
+        Ok(diff::ObserveResult {
+            passed: diff::ObserveResult::all_passed(&checks),
+            prod_schema_version,
+            stg_schema_version,
+            summary,
+            checks,
+        })
+    }
+
+    /// stg（self）→ prod への反映（promote・設計 §4.5/§6.4・TASK-57）。
+    ///
+    /// `replicate_db`（sync: prod→stg・§4.2）を反転させた構造:
+    /// 1. `observe` で機械的 gate を評価（§3.4）。不合格なら **prod を触る前に拒否**
+    ///    （`PromoteGateFailed`）。pre-stash も無駄に実行しない。
+    /// 2. `ProdRwScope::acquire` で prod の排他ロック + pre-stash 強制（`enabled` と独立・§7.2/§7.3）。
+    /// 2b. **排他ロック下で `observe` を再評価**（authoritative）。1→2 の間に別 promoter が prod を
+    ///    更新すると 1 の gate 結果は stale となり上書き競合を生むため、prod を触る前に再観察する。
+    /// 3. 既存 prod + WAL/SHM を削除（Online Backup API は空 dst を要求・§4.2）。
+    ///    pre-stash 済み（手順2）のため prod 上書き前の状態は `pre_stash_path` に完全保存されている。
+    /// 4. `copy_db_online(stg, prod)` でファイル全体コピー（既定・§15-1）。
+    /// 5. `ProdRwScope` の `Drop` で排他ロックを解放。
+    ///
+    /// prod RW は本メソッド内部（scope 経由）でのみ一時取得（構造的保護・§5.2・人間 gate なし）。
+    /// 成功時の `pre_stash_path` は §8 即時復旧の戻し先（promote 直後の分単位ロールバック）。
+    ///
+    /// * `prod_db_path` - 反映先の prod DB ファイルパス（`self.db_path` と異なること）
+    /// * `observe_options` - gate 評価の設定（`ObserveOptions`）
+    /// * `backup_opts` - pre-stash 先の BackupManager 設定（`None` は `enabled:false`・auto/meta
+    ///   ディレクトリを作らず `tmp/` のみ）。`enabled` 値にかかわらず pre-stash は常時実行
+    pub fn promote(
+        &self,
+        prod_db_path: &Path,
+        observe_options: &diff::ObserveOptions,
+        backup_opts: Option<BackupOptions>,
+    ) -> Result<PromoteOutcome> {
+        // 誤設定: stg と prod が同一パス。
+        if self.db_path == prod_db_path {
+            return Err(KijukuError::Other(format!(
+                "promote: stg and prod are the same path: {}",
+                prod_db_path.display()
+            )));
+        }
+
+        // 1. gate 評価 → 不合格なら prod を触る前に拒否（pre-stash も無駄にしない）。
+        let observe = self.observe(prod_db_path, observe_options)?;
+        if !observe.passed {
+            let failed_checks = observe
+                .checks
+                .iter()
+                .filter(|c| !c.passed)
+                .map(|c| format!("{}: {}", c.name, c.detail))
+                .collect();
+            return Err(KijukuError::PromoteGateFailed { failed_checks });
+        }
+
+        // 2. prod RW scope（排他ロック + pre-stash 強制）。
+        let scope = ProdRwScope::acquire(prod_db_path, backup_opts)?;
+        let pre_stash_path = scope.pre_stash_path().map(PathBuf::from);
+
+        // 2b. 排他ロック下で gate を再評価（authoritative）。手順1の observe → 手順2の acquire の間に
+        //     別 promoter が prod を更新すると、手順1の gate 結果は stale となり上書き競合を生む。
+        //     prod を触る前にロック保持状態で再観察し、不合格なら pre-stash を残して拒否する。
+        let observe = self.observe(prod_db_path, observe_options)?;
+        if !observe.passed {
+            let failed_checks = observe
+                .checks
+                .iter()
+                .filter(|c| !c.passed)
+                .map(|c| format!("{}: {}", c.name, c.detail))
+                .collect();
+            return Err(KijukuError::PromoteGateFailed { failed_checks });
+        }
+
+        // 3. 既存 prod + WAL/SHM 削除（空 dst 要求・pre-stash 済みで安全・replicate_db と同パターン）。
+        let prod_str = prod_db_path.to_string_lossy();
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate = format!("{}{}", prod_str, suffix);
+            let p = Path::new(&candidate);
+            if p.exists() {
+                std::fs::remove_file(p)?;
+            }
+        }
+
+        // 4. stg → prod コピー（ファイル全体・§15-1）。
+        // 5. scope の Drop で排他ロック解放。
+        BackupManager::copy_db_online(&self.db_path, scope.prod_path())?;
+
+        Ok(PromoteOutcome {
+            observe,
+            pre_stash_path,
+        })
+    }
+
     /// バックアップにラベルを付与（事後）。None でクリア
     pub fn set_backup_label(&self, id: &str, label: Option<&str>) -> Result<()> {
         self.backup_manager
@@ -1045,6 +1451,9 @@ impl KijukuDB {
 #[async_trait::async_trait]
 impl KijukuBackend for KijukuDB {
     async fn migrate(&self) -> Result<()> {
+        if let Some(bm) = &self.backup_manager {
+            bm.create_pre_migrate_snapshot()?;
+        }
         migration::migrate_async(&self.exec).await
     }
 

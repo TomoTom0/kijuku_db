@@ -21,10 +21,19 @@ import type {
   ComputeHashResult,
   BackupDiff,
   DiffDetail,
+  ObserveOptions,
+  ObserveResult,
+  PromoteOutcome,
 } from './types.js';
 import type { UpdateExistOptions, UpdateExistResult } from './update_exist.js';
-import type { BackupInfo, BackupScope, BackupKind, BackupMetaEntry } from './backup.js';
+import type { BackupInfo, BackupScope, BackupKind, BackupMetaEntry, BackupOptions } from './backup.js';
 import type { ThumbnailOptions, CheckThumbnailResult, UpdateThumbnailResult } from './types.js';
+import type { FileOpOptions, FileOpResult } from './file_ops.js';
+import { defaultFileOpOptions } from './file_ops.js';
+import type { TrashEntry, TrashOperation } from './trash.js';
+import { resolveWithinRoot, isProtected, trashDir } from './media_path.js';
+import type { Target } from './config.js';
+import { SDK_VERSION } from './version.js';
 
 /**
  * バックアップセレクター
@@ -32,17 +41,96 @@ import type { ThumbnailOptions, CheckThumbnailResult, UpdateThumbnailResult } fr
 export type RemoteBackupSelector =
   | { type: 'latest' }
   | { type: 'nth'; n: number }
-  | { type: 'byId'; id: string };
+  | { type: 'byId'; id: string }
+  | { type: 'byPath'; path: string };
+
+/** リモート CLI が返す BackupInfo の生 JSON 形状（listBackups/listPreStashes で共有）。 */
+type RemoteBackupInfoRaw = {
+  id: string;
+  name: string;
+  path: string;
+  createdAt: number;
+  scope: string;
+  kind: { type: string; baseId?: string };
+  label?: string;
+  labelSource?: string;
+  note?: string;
+};
 
 /**
  * リモート接続設定
  */
 export interface RemoteConfig {
   sshHost: string;           // .ssh/configのHost名（必須）
-  dbPath?: string;           // リモートのDBパス（デフォルト: ~/.local/share/kijuku/kijuku.db）
+  dbPath?: string;           // リモートの prod DB パス（デフォルト: ~/.local/share/kijuku/kijuku.db）
+  /** リモートの stg DB パス（未指定時は dbPath から `<stem>.stg.db` を導出・設計 §4.1） */
+  stgDbPath?: string;
   workDir?: string;          // 作業ディレクトリ（省略可、将来の拡張用）
   binaryPath?: string;       // バイナリパス（デフォルト: ~/.local/bin/kijuku-cli）
   port?: number;             // SSHポート（省略時はSSH設定から読み取り）
+  mediaRoot?: string;        // リモートホスト上の media root（ファイル操作APIのサンドボックス境界）
+  /** 操作対象 DB（未指定 = デフォルト stg・設計 §13）。prod は readonly + migrate skip。 */
+  target?: Target;
+}
+
+const DEFAULT_REMOTE_PROD_DB = '~/.local/share/kijuku/kijuku.db';
+const DEFAULT_REMOTE_STG_DB = '~/.local/share/kijuku/kijuku.stg.db';
+
+/**
+ * リモートの prod DB パスから stg DB パスを導出する（設計 §4.1）。
+ * `<stem>.db` → `<stem>.stg.db`（拡張子の前に `.stg` を挿入）。`~` 含むパスもそのまま処理。
+ */
+export function deriveStgDbPath(prodPath: string): string {
+  const lastSlash = prodPath.lastIndexOf('/');
+  const lastDot = prodPath.lastIndexOf('.');
+  if (lastDot > lastSlash) {
+    return `${prodPath.slice(0, lastDot)}.stg${prodPath.slice(lastDot)}`;
+  }
+  return `${prodPath}.stg.db`;
+}
+
+/**
+ * `RemoteConfig` から target に応じたリモート DB パスを解決する（設計 §4.1・§13）。
+ * - prod: `dbPath`（未設定時は prod デフォルト）
+ * - stg: `stgDbPath`、未設定なら `dbPath` から導出、それも無ければ stg デフォルト
+ */
+export function resolveRemoteDbPath(config: RemoteConfig): string {
+  const target: Target = config.target ?? 'stg';
+  if (target === 'prod') {
+    return config.dbPath ?? DEFAULT_REMOTE_PROD_DB;
+  }
+  return (
+    config.stgDbPath ??
+    (config.dbPath !== undefined ? deriveStgDbPath(config.dbPath) : undefined) ??
+    DEFAULT_REMOTE_STG_DB
+  );
+}
+
+/**
+ * `MAJOR.MINOR.PATCH` を `[major, minor, patch]` にパース（TASK-69・Rust `parse_semver` parity）。
+ * 3要素未満は 0 補間。4要素以上・非整数・負数は `null`。
+ * kijuku-cli のバージョンは厳密 `MAJOR.MINOR.PATCH` 形式前提（pre-release 非対応・パース失敗は呼び元でデプロイ扱い）。
+ */
+export function parseSemver(s: string): [number, number, number] | null {
+  const parts = s.split('.');
+  if (parts.length > 3) return null;
+  const nums = parts.map((p) => Number(p));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0)) return null;
+  return [nums[0] ?? 0, nums[1] ?? 0, nums[2] ?? 0];
+}
+
+/**
+ * ローカルよりリモートが古い場合にデプロイが必要か（TASK-69・Rust `needs_deploy` parity）。
+ * - `local > remote`（厳密大なり）→ `true`（アップデート）
+ * - equal / ローカルが古い（ダウングレード保護）→ `false`
+ * - リモート未取得（`null`）またはパース失敗 → `true`（フェイルセーフ・自動回復）
+ */
+export function needsDeploy(local: string, remote: string | null): boolean {
+  const l = parseSemver(local);
+  if (!l) return true;
+  const r = remote !== null ? parseSemver(remote) : null;
+  if (!r) return true;
+  return l[0] !== r[0] ? l[0] > r[0] : l[1] !== r[1] ? l[1] > r[1] : l[2] > r[2];
 }
 
 /**
@@ -122,10 +210,17 @@ export class RemoteKijukuDB {
   }
 
   /**
-   * リモートDBパスを取得
+   * リモートDBパスを取得（target に応じて prod/stg を解決・設計 §4.1・§13）
    */
   private getRemoteDbPath(): string {
-    return this.config.dbPath || '~/.local/share/kijuku/kijuku.db';
+    return resolveRemoteDbPath(this.config);
+  }
+
+  /**
+   * 操作対象 target を取得（未指定 = stg・設計 §13）
+   */
+  private getTarget(): Target {
+    return this.config.target ?? 'stg';
   }
 
   /**
@@ -252,21 +347,38 @@ export class RemoteKijukuDB {
   }
 
   /**
-   * リモートファイルの存在確認
+   * リモート CLI バイナリのバージョンを取得（TASK-69・`getServerVersion` operation）。
+   * バイナリ未存在/起動失敗/operation 未対応（古いバイナリ）は `null`（呼び元でデプロイ→自動回復）。
    */
-  private async checkFileExists(filePath: string): Promise<boolean> {
+  private async getServerVersion(): Promise<string | null> {
+    const remoteBinaryPath = this.getRemoteBinaryPath();
+    const remoteDbPath = this.getRemoteDbPath();
+    const target = this.getTarget();
+    const jsonInput = JSON.stringify({ operation: 'getServerVersion', params: {} });
+    const escapedJson = jsonInput.replace(/'/g, "'\\''");
+    const mediaRootFlag = this.config.mediaRoot
+      ? ` --media-root ${this.escapeShellPath(this.config.mediaRoot)}`
+      : '';
+    const command = `echo '${escapedJson}' | ${this.escapeShellPath(remoteBinaryPath)} --db ${this.escapeShellPath(remoteDbPath)} --target ${target}${mediaRootFlag}`;
     try {
-      await this.execCommand(`test -f ${this.escapeShellPath(filePath)} && echo "exists"`);
-      return true;
+      const output = await this.execCommand(command);
+      const response: CommandResponse = JSON.parse(output.trim());
+      if (!response.success) return null;
+      const data: unknown = response.data;
+      if (typeof data === 'object' && data !== null && 'version' in data) {
+        const version = data.version;
+        if (typeof version === 'string') return version;
+      }
+      return null;
     } catch {
-      return false;
+      return null;
     }
   }
 
   /**
    * ローカルからリモートにファイルを転送
    */
-  private async uploadFile(localPath: string, remotePath: string, timeoutMs = 60_000): Promise<void> {
+  private async uploadFile(localPath: string, remotePath: string, timeoutMs = 120_000): Promise<void> {
     if (!this.sshClient) {
       throw new Error('SSH接続が確立されていません');
     }
@@ -301,17 +413,22 @@ export class RemoteKijukuDB {
    */
   private async deployBinaryToRemote(): Promise<void> {
     const localBinaryPath = resolve(homedir(), '.local', 'bin', 'kijuku-cli');
-    const remoteBinaryPath = this.getRemoteBinaryPath();
-    const remoteDir = remoteBinaryPath.substring(0, remoteBinaryPath.lastIndexOf('/'));
+    // deploy-local.sh parity: 実体 + symlink 構成（TASK-69・Rust parity）。ssh2 SFTP は ~ を展開する。
+    const remoteReal = '~/.local/kijuku-db/bin/kijuku-cli';
+    const remoteLink = '~/.local/bin/kijuku-cli';
 
-    // リモートにディレクトリ作成
-    await this.execCommand(`mkdir -p ${this.escapeShellPath(remoteDir)}`);
-
-    // バイナリを転送
-    await this.uploadFile(localBinaryPath, remoteBinaryPath);
-
-    // 実行権限を付与
-    await this.execCommand(`chmod +x ${this.escapeShellPath(remoteBinaryPath)}`);
+    // (1) 実体Dir + symlinkDir を作成
+    await this.execCommand(
+      `mkdir -p ${this.escapeShellPath('~/.local/kijuku-db/bin')} ${this.escapeShellPath('~/.local/bin')}`,
+    );
+    // (2) バイナリを転送（uploadFile は media_root 制約なしの SFTP 直接書き込み）
+    await this.uploadFile(localBinaryPath, remoteReal);
+    // (3) 実行権限を付与
+    await this.execCommand(`chmod +x ${this.escapeShellPath(remoteReal)}`);
+    // (4) symlink 作成（冪等・上書き）
+    await this.execCommand(
+      `ln -sf ${this.escapeShellPath(remoteReal)} ${this.escapeShellPath(remoteLink)}`,
+    );
   }
 
   /**
@@ -321,20 +438,24 @@ export class RemoteKijukuDB {
     await this.connect();
 
     try {
-      // バイナリの存在確認
-      const remoteBinaryPath = this.getRemoteBinaryPath();
-      const exists = await this.checkFileExists(remoteBinaryPath);
-
-      if (!exists) {
-        // バイナリが存在しない場合は自動デプロイ
+      // バージョンベース自動デプロイ（TASK-69）。リモート CLI が古い/未存在なら最新へ更新。
+      const remoteVersion = await this.getServerVersion();
+      if (needsDeploy(SDK_VERSION, remoteVersion)) {
         await this.deployBinaryToRemote();
       }
 
       // コマンドを実行
+      const remoteBinaryPath = this.getRemoteBinaryPath();
       const remoteDbPath = this.getRemoteDbPath();
+      const target = this.getTarget();
       const jsonInput = JSON.stringify(request);
       const escapedJson = jsonInput.replace(/'/g, "'\\''");
-      const command = `echo '${escapedJson}' | ${this.escapeShellPath(remoteBinaryPath)} --db ${this.escapeShellPath(remoteDbPath)}`;
+      const mediaRootFlag = this.config.mediaRoot
+        ? ` --media-root ${this.escapeShellPath(this.config.mediaRoot)}`
+        : '';
+      // --target を常に付与（設計 §13「CLI が常に勝つ」）。リモート側 resolveTarget が
+      // target から readonly を正しく導出し、prod を RW で開く保護ホールを防ぐ。
+      const command = `echo '${escapedJson}' | ${this.escapeShellPath(remoteBinaryPath)} --db ${this.escapeShellPath(remoteDbPath)} --target ${target}${mediaRootFlag}`;
 
       const output = await this.execCommand(command, timeoutMs);
       const response: CommandResponse = JSON.parse(output.trim());
@@ -409,6 +530,160 @@ export class RemoteKijukuDB {
       params: { data },
     });
     return this.checkResponse(response);
+  }
+
+  /** src を dst へ複製する（リモート CLI に委譲・dry-run ファースト・上書きは trash 経由）。 */
+  async mediaCp(src: string, dst: string, options: FileOpOptions = defaultFileOpOptions): Promise<FileOpResult> {
+    const response = await this.executeRemoteCommand({
+      operation: 'mediaCp',
+      params: { src, dst, options },
+    });
+    return this.checkResponse(response);
+  }
+
+  /** src を dst へ移動する（リモート CLI に委譲・dry-run ファースト・上書きは trash 経由）。 */
+  async mediaMv(src: string, dst: string, options: FileOpOptions = defaultFileOpOptions): Promise<FileOpResult> {
+    const response = await this.executeRemoteCommand({
+      operation: 'mediaMv',
+      params: { src, dst, options },
+    });
+    return this.checkResponse(response);
+  }
+
+  /** src（ディレクトリ）の内容を dst へ同期する（リモート CLI に委譲・safe モード）。 */
+  async mediaSync(src: string, dst: string, options: FileOpOptions = defaultFileOpOptions): Promise<FileOpResult> {
+    const response = await this.executeRemoteCommand({
+      operation: 'mediaSync',
+      params: { src, dst, options },
+    });
+    return this.checkResponse(response);
+  }
+
+  /** targetRel を trash へ移動する（リモート CLI に委譲・論理削除）。 */
+  async moveToTrash(targetRel: string, operation: TrashOperation, reason?: string): Promise<string> {
+    const response = await this.executeRemoteCommand({
+      operation: 'moveToTrash',
+      params: { target_rel: targetRel, operation, reason: reason ?? null },
+    });
+    return this.checkResponse(response);
+  }
+
+  /** trash 内のエントリ一覧を返す（リモート CLI に委譲）。 */
+  async listTrash(): Promise<TrashEntry[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'listTrash',
+      params: {},
+    });
+    return this.checkResponse(response);
+  }
+
+  /** trash から id のエントリを復元する（リモート CLI に委譲）。戻り値はリモートホスト上の絶対パス。 */
+  async restoreFromTrash(id: string): Promise<string> {
+    const response = await this.executeRemoteCommand({
+      operation: 'restoreFromTrash',
+      params: { id },
+    });
+    return this.checkResponse(response);
+  }
+
+  /** trash 内のエントリを物理削除する（リモート CLI に委譲・dry-run ファースト）。 */
+  async purgeTrash(ids?: string[], dryRun = false): Promise<string[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'purgeTrash',
+      params: { ids: ids ?? null, dry_run: dryRun },
+    });
+    return this.checkResponse(response);
+  }
+
+  /**
+   * ローカルの localPath をリモートの remoteRel（mediaRoot 相対）へアップロード（SFTP・fastPut）。
+   */
+  async upload(localPath: string, remoteRel: string, timeoutMs = 120_000): Promise<void> {
+    const remoteAbs = this.resolveRemoteWithinRoot(remoteRel);
+    await this.connect();
+    try {
+      // 親ディレクトリを再帰作成（mkdir -p 相当）
+      const lastSlash = remoteAbs.lastIndexOf('/');
+      if (lastSlash > 0) {
+        const remoteDir = remoteAbs.substring(0, lastSlash);
+        await this.execCommand(`mkdir -p ${this.escapeShellPath(remoteDir)}`);
+      }
+      if (!this.sshClient) {
+        throw new Error('SSH接続が確立されていません');
+      }
+      await new Promise<void>((resolvePromise, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error(`アップロードがタイムアウトしました (${timeoutMs}ms): ${remoteAbs}`));
+        }, timeoutMs);
+        this.sshClient!.sftp((err, sftp) => {
+          if (err) {
+            clearTimeout(timer);
+            reject(new Error(`SFTP接続エラー: ${err.message}`));
+            return;
+          }
+          sftp.fastPut(localPath, remoteAbs, (putErr) => {
+            clearTimeout(timer);
+            if (putErr) {
+              reject(new Error(`アップロードエラー: ${putErr.message}`));
+            } else {
+              resolvePromise();
+            }
+          });
+        });
+      });
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  /**
+   * リモートの remoteRel（mediaRoot 相対）をローカルの localPath へダウンロード（SFTP・fastGet）。
+   */
+  async download(remoteRel: string, localPath: string, timeoutMs = 120_000): Promise<void> {
+    const remoteAbs = this.resolveRemoteWithinRoot(remoteRel);
+    await this.connect();
+    try {
+      if (!this.sshClient) {
+        throw new Error('SSH接続が確立されていません');
+      }
+      await new Promise<void>((resolvePromise, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error(`ダウンロードがタイムアウトしました (${timeoutMs}ms): ${remoteAbs}`));
+        }, timeoutMs);
+        this.sshClient!.sftp((err, sftp) => {
+          if (err) {
+            clearTimeout(timer);
+            reject(new Error(`SFTP接続エラー: ${err.message}`));
+            return;
+          }
+          sftp.fastGet(remoteAbs, localPath, (getErr) => {
+            clearTimeout(timer);
+            if (getErr) {
+              reject(new Error(`ダウンロードエラー: ${getErr.message}`));
+            } else {
+              resolvePromise();
+            }
+          });
+        });
+      });
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  /**
+   * リモートの remoteRel を mediaRoot 配下に解決し、保護パス（.trash 等）を拒否する。
+   * リモート FS を canonicalize できないため lexical 解決のみ。
+   */
+  private resolveRemoteWithinRoot(remoteRel: string): string {
+    if (!this.config.mediaRoot) {
+      throw new Error('mediaRoot is not configured; set RemoteConfig.mediaRoot to use upload/download');
+    }
+    const abs = resolveWithinRoot(this.config.mediaRoot, remoteRel);
+    if (isProtected(abs, [trashDir(this.config.mediaRoot)])) {
+      throw new Error(`remote path is a protected path (${remoteRel}); refused`);
+    }
+    return abs;
   }
 
   /**
@@ -748,18 +1023,27 @@ export class RemoteKijukuDB {
       operation: 'listBackups',
       params: {},
     });
-    const data: Array<{
-      id: string;
-      name: string;
-      path: string;
-      createdAt: number;
-      scope: string;
-      kind: { type: string; baseId?: string };
-      label?: string;
-      labelSource?: string;
-      note?: string;
-    }> = this.checkResponse(response);
-    return data.map((item) => ({
+    const data: RemoteBackupInfoRaw[] = this.checkResponse(response);
+    return data.map((item) => this.convertBackupInfoFromRemote(item));
+  }
+
+  /**
+   * pre-stash（即時復旧用ロールバックファイル）一覧を取得（設計 §8）。
+   * promote/(b)操作が返す preStashPath を呼出側が失った場合の発見経路。
+   * 戻り値の path はそのまま RemoteBackupSelector の byPath で restore に渡せる。
+   */
+  async listPreStashes(): Promise<BackupInfo[]> {
+    const response = await this.executeRemoteCommand({
+      operation: 'listPreStashes',
+      params: {},
+    });
+    const data: RemoteBackupInfoRaw[] = this.checkResponse(response);
+    return data.map((item) => this.convertBackupInfoFromRemote(item));
+  }
+
+  /** リモート CLI の BackupInfo JSON を BackupInfo に変換（listBackups/listPreStashes で共有）。 */
+  private convertBackupInfoFromRemote(item: RemoteBackupInfoRaw): BackupInfo {
+    return {
       id: item.id,
       name: item.name,
       path: item.path,
@@ -771,7 +1055,7 @@ export class RemoteKijukuDB {
       label: item.label,
       labelSource: (item.labelSource ?? 'filename') as BackupInfo['labelSource'],
       note: item.note,
-    }));
+    };
   }
 
   // ========== メディアハッシュ操作 ==========
@@ -900,9 +1184,24 @@ export class RemoteKijukuDB {
   }
 
   /**
-   * バックアップを復元
+   * バックアップを復元（(b) 制限操作・設計 §9.2）。`config.target='prod'` の前提で prod 直接経路
+   * （ProdRwScope + pre-stash gate）で実行する（target=stg のまま呼ぶと (b) 操作として CLI 側で拒否される）。
+   * `dryRun: true` で復元差分を返し prod 不変（§15-13）。
    */
-  async restore(selector: RemoteBackupSelector = { type: 'latest' }, timeoutMs?: number): Promise<string> {
+  async restore(
+    selector?: RemoteBackupSelector,
+    timeoutMs?: number,
+  ): Promise<string>;
+  async restore(
+    selector: RemoteBackupSelector,
+    timeoutMs: number | undefined,
+    dryRun: true,
+  ): Promise<BackupDiff>;
+  async restore(
+    selector: RemoteBackupSelector = { type: 'latest' },
+    timeoutMs?: number,
+    dryRun = false,
+  ): Promise<string | BackupDiff> {
     await this.connect();
     try {
       const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
@@ -911,18 +1210,65 @@ export class RemoteKijukuDB {
       const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes) * 2;
       const response = await this.executeRemoteCommand({
         operation: 'restore',
-        params: { selector },
+        params: { selector, dryRun },
       }, resolvedTimeoutMs);
       const data = this.checkResponse(response);
-      return data.path;
+      if (dryRun) {
+        return data.diff as BackupDiff;
+      }
+      return data.path as string;
     } finally {
       await this.disconnect();
     }
   }
 
   /**
-   * バックアップと現在DBの差分を取得
+   * prod→stg コピー操作の共通基盤（sync/discard・設計 §4.2/§4.6）。`operation` に 'sync'/'discard'
+   * を渡す。リモートホスト上で CLI の当該操作を起動し、NAS 上で prod→stg コピーを完結させる
+   * （リモート↔ローカル間のファイル転送は発生しない）。stg 排他（接続中プロセスがないこと）は
+   * 呼出側の責任（設計 §15-11 P1）。prod/stg パスは config から解決して `from`/`to` で明示渡し、
+   * リモート側の環境変数に依存しない。
    */
+  private async runProdToStg(
+    operation: 'sync' | 'discard',
+    timeoutMs?: number,
+  ): Promise<{ prodPath: string; stgPath: string }> {
+    const prodPath = this.config.dbPath ?? DEFAULT_REMOTE_PROD_DB;
+    const stgPath =
+      this.config.stgDbPath ??
+      (this.config.dbPath !== undefined ? deriveStgDbPath(this.config.dbPath) : undefined) ??
+      DEFAULT_REMOTE_STG_DB;
+    await this.connect();
+    try {
+      const dbSizeBytes = await this.getRemoteFileSize(prodPath);
+      // prod→stg の単一コピー（ Online Backup 1パス）。calcBackupTimeoutMs は MARGIN=2 含む。
+      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
+      const response = await this.executeRemoteCommand(
+        { operation, params: { from: prodPath, to: stgPath } },
+        resolvedTimeoutMs,
+      );
+      const data = this.checkResponse(response);
+      return { prodPath: data.prodPath, stgPath: data.stgPath };
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  /**
+   * prod(RO) → stg(RW) のフル複製（sync・設計 §4.2）。書込セッション開始時の初期同期。
+   */
+  async sync(timeoutMs?: number): Promise<{ prodPath: string; stgPath: string }> {
+    return this.runProdToStg('sync', timeoutMs);
+  }
+
+  /**
+   * stg 破棄・再 sync（discard・設計 §4.6）。書込セッション中断・observe gate 不合格時に stg を
+   * 捨てて prod から再構築する。処理は `sync` と同一（prod→stg の Online Backup コピー・既存 stg は
+   * 上書き破棄・prod は一切触らない）。操作名のみ監査ログ（§10）で区別するため独立メソッド。
+   */
+  async discard(timeoutMs?: number): Promise<{ prodPath: string; stgPath: string }> {
+    return this.runProdToStg('discard', timeoutMs);
+  }
   async diffWithBackup(
     params: { selector?: RemoteBackupSelector; options?: { detail?: DiffDetail } } = {},
     timeoutMs?: number,
@@ -936,6 +1282,83 @@ export class RemoteKijukuDB {
         params: { selector: params.selector, options: params.options },
       }, resolvedTimeoutMs);
       return this.checkResponse(response) as BackupDiff;
+    } finally {
+      await this.disconnect();
+    }
+  }
+  /**
+   * prod(RO) と現在DB(stg) の差分を取得（promote 判断用・設計 §4.4・TASK-53）。
+   * リモート CLI は self=stg 起動を想定し、`prodDbPath` で prod を別途指定する
+   * （build_remote_command は --db を1つしか渡せないため・設計 §4.2/§4.4）。
+   * `prodDbPath` 省略時は CLI 側で prod target のデフォルトパスを解決する。
+   */
+  async diffWithProd(
+    params: { prodDbPath?: string; options?: { detail?: DiffDetail } } = {},
+    timeoutMs?: number,
+  ): Promise<BackupDiff> {
+    await this.connect();
+    try {
+      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
+      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
+      const response = await this.executeRemoteCommand({
+        operation: 'diffProdStg',
+        params: { prodDbPath: params.prodDbPath, options: params.options },
+      }, resolvedTimeoutMs);
+      return this.checkResponse(response) as BackupDiff;
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  /**
+   * stg と prod を比較し機械的 promote gate を評価（promote 可否・設計 §3.4/§4.4・TASK-54）。
+   * リモート CLI の `observe` operation を呼び、`ObserveResult` を受け取る。
+   */
+  async observe(
+    params: { prodDbPath?: string; options?: ObserveOptions } = {},
+    timeoutMs?: number,
+  ): Promise<ObserveResult> {
+    await this.connect();
+    try {
+      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
+      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
+      const response = await this.executeRemoteCommand(
+        {
+          operation: 'observe',
+          params: { prodDbPath: params.prodDbPath, options: params.options },
+        },
+        resolvedTimeoutMs,
+      );
+      return this.checkResponse(response) as ObserveResult;
+    } finally {
+      await this.disconnect();
+    }
+  }
+
+  /**
+   * stg→prod へ反映（promote・設計 §4.5・TASK-58/62）。
+   * リモート CLI の `promote` operation を呼び、`PromoteOutcome` を受け取る。
+   * gate 不合格時はリモートから error 文字列が返り `checkResponse` が素の Error を throw する
+   * （Local の `PromoteGateFailedError` とは型が異なる・observe と同じ既存制約）。
+   *
+   * `backupOpts` はそのままリモート CLI の `backupOpts` に受け渡し（pre-stash 先カスタマイズ・§7.2）。
+   */
+  async promote(
+    params: { prodDbPath?: string; options?: ObserveOptions; backupOpts?: BackupOptions } = {},
+    timeoutMs?: number,
+  ): Promise<PromoteOutcome> {
+    await this.connect();
+    try {
+      const dbSizeBytes = await this.getRemoteFileSize(this.getRemoteDbPath());
+      const resolvedTimeoutMs = timeoutMs ?? this.calcBackupTimeoutMs(dbSizeBytes);
+      const response = await this.executeRemoteCommand(
+        {
+          operation: 'promote',
+          params: { prodDbPath: params.prodDbPath, options: params.options, backupOpts: params.backupOpts },
+        },
+        resolvedTimeoutMs,
+      );
+      return this.checkResponse(response) as PromoteOutcome;
     } finally {
       await this.disconnect();
     }

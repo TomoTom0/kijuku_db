@@ -91,9 +91,10 @@ function applyMigration(db: Database.Database, version: number): void {
       updateMany(ids);
 
       // 3. テーブルを再作成してNOT NULL制約を付与（SQLiteではALTER TABLEでNOT NULL追加不可）
-      db.exec(`
-        PRAGMA foreign_keys = OFF;
-
+      // PRAGMA foreign_keys は transaction 外で設定（tx 内では変更不可・Rust migration.rs と同じ境界・設計 §7.3）
+      db.exec('PRAGMA foreign_keys = OFF;');
+      db.transaction(() => {
+        db.exec(`
         CREATE TABLE media_new (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           uuid TEXT NOT NULL UNIQUE,
@@ -154,18 +155,17 @@ function applyMigration(db: Database.Database, version: number): void {
         BEGIN
           UPDATE media SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
         END;
-
-        PRAGMA foreign_keys = ON;
       `);
-
-      db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (4);');
+        db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (4);');
+      })();
+      db.exec('PRAGMA foreign_keys = ON;');
       break;
     }
     case 5: {
       // media_tags と media_attributes の外部キーに ON DELETE CASCADE を追加するためテーブルを再作成
-      db.exec(`
-        PRAGMA foreign_keys = OFF;
-
+      db.exec('PRAGMA foreign_keys = OFF;');
+      db.transaction(() => {
+        db.exec(`
         -- media_tags を再作成（ON DELETE CASCADE 追加）
         CREATE TABLE media_tags_new (
           media_id INTEGER NOT NULL,
@@ -192,10 +192,10 @@ function applyMigration(db: Database.Database, version: number): void {
         INSERT INTO media_attributes_new SELECT media_id, key, value, value_type FROM media_attributes;
         DROP TABLE media_attributes;
         ALTER TABLE media_attributes_new RENAME TO media_attributes;
-
-        PRAGMA foreign_keys = ON;
       `);
-      db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (5);');
+        db.exec('INSERT OR IGNORE INTO schema_version (version) VALUES (5);');
+      })();
+      db.exec('PRAGMA foreign_keys = ON;');
       break;
     }
     case 6: {
@@ -277,4 +277,30 @@ export function getTables(db: Database.Database): string[] {
 export function isForeignKeysEnabled(db: Database.Database): boolean {
   const row = db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number };
   return row.foreign_keys === 1;
+}
+
+/**
+ * `PRAGMA integrity_check` の結果（observe gate 用・設計 §3.4・TASK-54）。
+ * 正常時は "ok" 1行、異常時はエラー行が複数返る。全行を `; ` 区切りで結合して返す。
+ */
+export function integrityCheck(db: Database.Database): string {
+  const rows = db.prepare('PRAGMA integrity_check').all() as {
+    integrity_check: string;
+  }[];
+  return rows.map((r) => r.integrity_check).join('; ');
+}
+
+/** 外部キー制約違反（`PRAGMA foreign_key_check`・observe gate 用・設計 §3.4・TASK-54）。空 = 違反なし。 */
+export interface FkViolation {
+  table: string;
+  rowid: number;
+  parent: string | null;
+  fkid: number;
+}
+
+/**
+ * `PRAGMA foreign_key_check` の違反リスト（observe gate 用・設計 §3.4・TASK-54）。空 = 違反なし。
+ */
+export function foreignKeyCheck(db: Database.Database): FkViolation[] {
+  return db.prepare('PRAGMA foreign_key_check').all() as FkViolation[];
 }

@@ -1,13 +1,10 @@
 {
   "name": "kijuku-db",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "bin": {
-    "kijuku-cli": "./dist/cli.js"
-  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -20,18 +17,16 @@
     "examples/"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/cli.ts --format esm --target node18 --external better-sqlite3 --dts && cp -r src/server/static dist/server/ && mkdir -p dist/docs/usage && cp -r ../docs/usage/sdk dist/docs/usage/ && cp ../docs/api.md dist/docs/",
+    "build": "tsup src/index.ts --format esm --target node18 --external better-sqlite3 --dts && cp -r src/server/static dist/server/ && mkdir -p dist/docs/usage && cp -r ../docs/usage/sdk dist/docs/usage/ && cp ../docs/api.md dist/docs/",
     "deploy:local": "../scripts/dev/deploy-local.sh",
     "build:all": "pnpm run build && pnpm run deploy:local",
     "test": "vitest run",
     "test:unit": "vitest run test/unit",
     "test:integration": "vitest run test/integration",
-    "test:e2e": "vitest run test/e2e/cli-local.test.ts",
-    "test:e2e:remote": "vitest run test/e2e/cli-remote.test.ts test/e2e/sdk-remote.test.ts",
-    "test:all": "vitest run test/unit test/integration test/e2e/cli-local.test.ts",
+    "test:e2e": "vitest run test/e2e/sdk-remote.test.ts",
+    "test:all": "vitest run test/unit test/integration",
     "test:watch": "vitest",
     "dev": "tsx src/index.ts",
-    "cli": "tsx src/cli.ts",
     "example:crud": "cd .. && tsx examples/01-basic-crud.ts",
     "example:search": "cd .. && tsx examples/02-search-filter.ts",
     "example:bulk": "cd .. && tsx examples/03-bulk-operations.ts",
@@ -40,7 +35,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.19.7",
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^11.1.0",
     "csv-parse": "^6.1.0",
     "csv-stringify": "^6.6.0",
     "hono": "^4.11.1",
