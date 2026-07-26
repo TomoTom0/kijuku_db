@@ -1,6 +1,6 @@
 [package]
 name = "kijuku-db"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 authors = ["Kijuku DB Team"]
 description = "きじゅくDB - Rust SDK for media database management"
