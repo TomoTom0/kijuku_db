@@ -37,6 +37,10 @@ describeRemote('RemoteKijukuDB 統合テスト', () => {
   });
 
   afterAll(async () => {
+    // プールされた SSH 接続を閉じる（TASK-77）。
+    // 未呼び出しだと TCP ソケットがイベントループを保持しプロセスが終了しないため。
+    await remoteDb.disconnect();
+
     // テスト用DBを削除（クリーンアップ）
     if (SSH_HOST) {
       const { Client } = await import('ssh2');
