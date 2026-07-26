@@ -6,7 +6,7 @@
 #
 # Usage:
 #   mise run push             # patch +1 → commit → push
-#   mise run push --dry-run   # 5箇所を更新して commit/push せず終了（git diff で確認）
+#   mise run push --dry-run   # 6箇所を更新して commit/push せず終了（git diff で確認）
 #
 # 注意:
 # - dev / main ブランチでは実行不可（origin/dev, origin/main は PR のみ）。
@@ -39,11 +39,12 @@ fi
 CARGO_TOML="$PROJECT_ROOT/rust-sdk/Cargo.toml"
 PACKAGE_JSON="$PROJECT_ROOT/ts-sdk/package.json"
 README="$PROJECT_ROOT/rust-sdk/README.md"
-CLI_RS="$PROJECT_ROOT/rust-sdk/src/bin/cli.rs"
+CLI_RS="$PROJECT_ROOT/rust-sdk/src/bin/cli/main.rs"
+VERSION_TS="$PROJECT_ROOT/ts-sdk/src/version.ts"
 # Cargo.lock はプロジェクトルート（ワークスペースルート）にあるものを cargo check で更新するため、
 # ここでは明示的なパスを持たない（rust-sdk/Cargo.lock は stale な未使用ファイルとして削除済み）。
 
-for f in "$CARGO_TOML" "$PACKAGE_JSON" "$README" "$CLI_RS"; do
+for f in "$CARGO_TOML" "$PACKAGE_JSON" "$README" "$CLI_RS" "$VERSION_TS"; do
   if [ ! -f "$f" ]; then
     echo "Error: $f が見つかりません" >&2
     exit 1
@@ -93,11 +94,14 @@ perl -pi -e "s/(\"version\"[[:space:]]*:[[:space:]]*)\"[^\"]*\"/\${1}\"$NEW_VERS
 # 3. rust-sdk/README.md (kijuku-db = "x" の依存関係例)
 perl -pi -e "s/(kijuku-db[[:space:]]*=[[:space:]]*\")[^\"]*\"/\${1}$NEW_VERSION\"/" "$README"
 
-# 4. rust-sdk/src/bin/cli.rs (//! Version: x の docコメント)
+# 4. rust-sdk/src/bin/cli/main.rs (//! Version: x の docコメント)
 # perl の s{}{} だと // がデリミタと衝突するため awk を使用
 awk -v new="$NEW_VERSION" '/^\/\/![[:space:]]*Version:[[:space:]]*[0-9]/ { sub(/[0-9]+\.[0-9]+\.[0-9]+/, new) } { print }' "$CLI_RS" > "$CLI_RS.tmp" && mv "$CLI_RS.tmp" "$CLI_RS"
 
-# 5. ワークスペースルートの Cargo.lock を cargo check で更新
+# 5. ts-sdk/src/version.ts (SDK_VERSION = 'x'・リモート自動デプロイのバージョン比較用・TASK-69)
+perl -pi -e "s/(SDK_VERSION[[:space:]]*=[[:space:]]*)'[^']*'/\${1}'$NEW_VERSION'/" "$VERSION_TS"
+
+# 6. ワークスペースルートの Cargo.lock を cargo check で更新
 #    perl 等での直接書き換えは改行コード（CRLF 等）やフォーマット変更に脆弱なため、cargo に解決させる。
 #    rust-sdk/Cargo.toml の [package] version を上記で更新済みなので、cargo check が Cargo.lock の
 #    kijuku-db エントリを NEW_VERSION に同期する（ワークスペース構成のため lock はルートに1つ）。
@@ -111,20 +115,21 @@ echo "更新ファイル:"
 echo "  - rust-sdk/Cargo.toml"
 echo "  - ts-sdk/package.json"
 echo "  - rust-sdk/README.md"
-echo "  - rust-sdk/src/bin/cli.rs"
+echo "  - rust-sdk/src/bin/cli/main.rs"
+echo "  - ts-sdk/src/version.ts"
 echo "  - Cargo.lock (cargo check が更新)"
 
 if [ "$DRY_RUN" = "1" ]; then
   echo ""
   echo "[dry-run] commit / push をスキップしました。git diff で確認してください。"
-  echo "戻す場合: git restore rust-sdk/Cargo.toml ts-sdk/package.json rust-sdk/README.md rust-sdk/src/bin/cli.rs Cargo.lock"
+  echo "戻す場合: git restore rust-sdk/Cargo.toml ts-sdk/package.json rust-sdk/README.md rust-sdk/src/bin/cli/main.rs ts-sdk/src/version.ts Cargo.lock"
   exit 0
 fi
 
 # commit & push
-# 更新した4ファイル + cargo check で更新されたルート Cargo.lock のみを明示的に add する。
+# 更新した5ファイル + cargo check で更新されたルート Cargo.lock のみを明示的に add する。
 # git add -A は作業中のファイルや未追跡ファイル（一時ファイル・機密情報等）を意図せず巻き込む危険があるため使用しない。
-git add "$CARGO_TOML" "$PACKAGE_JSON" "$README" "$CLI_RS" "$PROJECT_ROOT/Cargo.lock"
+git add "$CARGO_TOML" "$PACKAGE_JSON" "$README" "$CLI_RS" "$VERSION_TS" "$PROJECT_ROOT/Cargo.lock"
 git commit -m "chore: bump version to $NEW_VERSION"
 
 echo "push 中..."
