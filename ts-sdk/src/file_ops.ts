@@ -18,8 +18,8 @@ import path from 'node:path';
 import { ValidationError } from './errors.js';
 import {
   isProtected,
+  resolveDestinationWithinRoot,
   resolveExistingWithinRoot,
-  resolveWithinRoot,
   trashDir,
 } from './media_path.js';
 import { moveToTrash } from './trash.js';
@@ -86,7 +86,7 @@ function resolvePair(
   dstRel: string
 ): { src: string; dst: string } {
   const src = resolveExistingWithinRoot(root, srcRel);
-  const dst = resolveWithinRoot(root, dstRel);
+  const dst = resolveDestinationWithinRoot(root, dstRel);
   const trash = trashDir(canonicalizeRoot(root));
   if (isProtected(src, [trash]) || isProtected(dst, [trash])) {
     throw new ValidationError(

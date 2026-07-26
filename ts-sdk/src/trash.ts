@@ -61,6 +61,28 @@ function canonicalizeRoot(root: string): string {
   }
 }
 
+/**
+ * trash エントリ ID が生成された単一エントリ名（`.trash/<id>` の direct child）として安全か検査する。
+ *
+ * `id` は単一の名前（`..`・`.`・パス区切り・絶対パスを含まない）でなければならず、
+ * かつ `path.join(trash, id)` の親が `trash` 自身と一致することを確認する。
+ * `purgeTrash` の呼出し側提供 ID 検証に使用し、trash 外への脱出削除を防ぐ。
+ */
+function ensureSafeTrashId(id: string, trash: string): void {
+  const isSingleName =
+    id.length > 0 &&
+    !id.includes('/') &&
+    !id.includes('\\') &&
+    id !== '.' &&
+    id !== '..';
+  const directlyBeneath = path.posix.dirname(path.posix.join(trash, id)) === trash;
+  if (!isSingleName || !directlyBeneath) {
+    throw new ValidationError(
+      `invalid trash id (must be a single entry name beneath .trash): ${id}`
+    );
+  }
+}
+
 /** JSON を一時ファイル経由でアトミックに書き込む（backup.ts のパターン踏襲）。 */
 function atomicWriteJson(filePath: string, value: TrashMeta): void {
   const tmp = `${filePath}.tmp`;
@@ -206,7 +228,14 @@ export function purgeTrash(root: string, ids?: string[], dryRun = false): string
   const trash = trashDir(rootC);
 
   const toPurge: string[] = ids
-    ? [...ids]
+    ? (() => {
+        // 呼出し側提供 ID を検証: 生成エントリ名（単一コンポーネント）のみ許可。
+        // `..`・絶対パス・区切り込みの ID で trash 外へ脱出して rmSync する攻撃を防ぐ。
+        for (const id of ids) {
+          ensureSafeTrashId(id, trash);
+        }
+        return [...ids];
+      })()
     : existsSync(trash)
       ? readdirSync(trash)
       : [];

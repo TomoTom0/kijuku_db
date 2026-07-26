@@ -84,6 +84,51 @@ export function resolveExistingWithinRoot(root: string, rel: string): string {
 }
 
 /**
+ * 書込先（cp/mv/sync の dst など、存在しない新規パス）を `root` 配下に解決し、
+ * 既存のシンボリックリンク祖先を実体まで解決して再検査する。
+ *
+ * `resolveWithinRoot` は lexical 正規化のみのため、`root/link -> /outside` のような
+ * 既存 symlink 配下の新規パス（例: `link/new.db`）を通るとファイル操作が symlink を辿って
+ * root 外へ書き込んでしまう。これを防ぐため、dst が存在すれば resolveExistingWithinRoot と
+ * 同等に canonicalize し、存在しなければ**最近傍の既存祖先**を canonicalize して `root` 配下か
+ * 再検査する。非存在の `root`（作成前）は lexical 結果を返す。
+ */
+export function resolveDestinationWithinRoot(root: string, rel: string): string {
+  const lexical = resolveWithinRoot(root, rel);
+  let rootCanonical: string;
+  try {
+    rootCanonical = realpathSync(root);
+  } catch {
+    return lexical;
+  }
+  if (existsSync(lexical)) {
+    const canonical = realpathSync(lexical);
+    if (!isWithin(canonical, rootCanonical)) {
+      throw new ValidationError(
+        `path escapes media root via symlink: ${canonical} (root: ${rootCanonical})`
+      );
+    }
+    return canonical;
+  }
+  // 非存在の dst: 最近傍の既存祖先まで遡り canonicalize して root 配下を再検査する。
+  let ancestor = lexical;
+  while (!existsSync(ancestor)) {
+    const parent = path.posix.dirname(ancestor);
+    if (parent === ancestor) break;
+    ancestor = parent;
+  }
+  if (existsSync(ancestor)) {
+    const canonicalAncestor = realpathSync(ancestor);
+    if (!isWithin(canonicalAncestor, rootCanonical)) {
+      throw new ValidationError(
+        `path escapes media root via symlink: ${canonicalAncestor} (root: ${rootCanonical})`
+      );
+    }
+  }
+  return lexical;
+}
+
+/**
  * `target` が保護パス（操作禁止領域）に含まれるか判定する。
  *
  * `protectedPaths` には正規化済みのパス（`.trash/`、DB ファイル、backupDir など）を渡す。

@@ -66,6 +66,32 @@ describe('trash', () => {
     expect(existsSync(trashPath)).toBe(false);
   });
 
+  it('purge rejects traversal ids', () => {
+    // 呼出し側提供 ID にトラバーサル成分があれば trash 外へ脱出できない（dry-run/apply 両方）。
+    const realId = moveToTrash(root, 'top.txt', 'delete');
+    const realEntryPath = path.join(root, '.trash', realId);
+
+    const malicious = [
+      '..',
+      '../escape',
+      '../../important',
+      '/etc/passwd',
+      'a/b',
+      '.',
+      '',
+      `${realId}/sub`,
+    ];
+    for (const id of malicious) {
+      expect(() => purgeTrash(root, [id], true), `dry-run reject: ${id}`).toThrow();
+      expect(() => purgeTrash(root, [id], false), `apply reject: ${id}`).toThrow();
+    }
+    // 攻撃 ID では削除が起きず、正常エントリは残る
+    expect(existsSync(realEntryPath)).toBe(true);
+    // 正常 ID は削除できる
+    expect(purgeTrash(root, [realId], false)).toEqual([realId]);
+    expect(existsSync(realEntryPath)).toBe(false);
+  });
+
   it('rejects trash itself', () => {
     moveToTrash(root, 'top.txt', 'delete');
     expect(() => moveToTrash(root, '.trash', 'delete')).toThrow();

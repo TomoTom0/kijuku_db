@@ -1345,6 +1345,8 @@ impl KijukuDB {
     /// 1. `observe` で機械的 gate を評価（§3.4）。不合格なら **prod を触る前に拒否**
     ///    （`PromoteGateFailed`）。pre-stash も無駄に実行しない。
     /// 2. `ProdRwScope::acquire` で prod の排他ロック + pre-stash 強制（`enabled` と独立・§7.2/§7.3）。
+    /// 2b. **排他ロック下で `observe` を再評価**（authoritative）。1→2 の間に別 promoter が prod を
+    ///    更新すると 1 の gate 結果は stale となり上書き競合を生むため、prod を触る前に再観察する。
     /// 3. 既存 prod + WAL/SHM を削除（Online Backup API は空 dst を要求・§4.2）。
     ///    pre-stash 済み（手順2）のため prod 上書き前の状態は `pre_stash_path` に完全保存されている。
     /// 4. `copy_db_online(stg, prod)` でファイル全体コピー（既定・§15-1）。
@@ -1386,6 +1388,20 @@ impl KijukuDB {
         // 2. prod RW scope（排他ロック + pre-stash 強制）。
         let scope = ProdRwScope::acquire(prod_db_path, backup_opts)?;
         let pre_stash_path = scope.pre_stash_path().map(PathBuf::from);
+
+        // 2b. 排他ロック下で gate を再評価（authoritative）。手順1の observe → 手順2の acquire の間に
+        //     別 promoter が prod を更新すると、手順1の gate 結果は stale となり上書き競合を生む。
+        //     prod を触る前にロック保持状態で再観察し、不合格なら pre-stash を残して拒否する。
+        let observe = self.observe(prod_db_path, observe_options)?;
+        if !observe.passed {
+            let failed_checks = observe
+                .checks
+                .iter()
+                .filter(|c| !c.passed)
+                .map(|c| format!("{}: {}", c.name, c.detail))
+                .collect();
+            return Err(KijukuError::PromoteGateFailed { failed_checks });
+        }
 
         // 3. 既存 prod + WAL/SHM 削除（空 dst 要求・pre-stash 済みで安全・replicate_db と同パターン）。
         let prod_str = prod_db_path.to_string_lossy();

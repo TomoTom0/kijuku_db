@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{KijukuError, Result};
-use crate::media_path::{is_protected, resolve_existing_within_root, resolve_within_root};
+use crate::media_path::{is_protected, resolve_destination_within_root, resolve_existing_within_root};
 use crate::trash::{move_to_trash, TrashOperation};
 
 /// ファイル操作のオプション
@@ -89,7 +89,7 @@ fn resolve_pair(
     protected: &[PathBuf],
 ) -> Result<(PathBuf, PathBuf)> {
     let src = resolve_existing_within_root(root, src_rel)?;
-    let dst = resolve_within_root(root, dst_rel)?;
+    let dst = resolve_destination_within_root(root, dst_rel)?;
     if is_protected(&src, protected) || is_protected(&dst, protected) {
         return Err(KijukuError::Validation(format!(
             "source or destination is a protected path (src: {}, dst: {})",
@@ -419,5 +419,25 @@ mod tests {
         let opts = FileOpOptions::default();
         assert!(media_cp(root, "../escape.txt", "x", &opts).is_err());
         assert!(media_cp(root, "lonely.txt", "../escape.txt", &opts).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_dst_through_escaping_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = setup();
+        let root = dir.path();
+        // root 配下に root 外への symlink を仕掛ける: root/link -> outside
+        let outside = TempDir::new().unwrap();
+        symlink(outside.path(), root.join("link")).unwrap();
+
+        let opts = FileOpOptions::default();
+        // dst = link/x は lexical には root 配下だが symlink 先は root 外 → 拒否（dry-run/apply 両方）
+        assert!(media_cp(root, "lonely.txt", "link/x", &opts).is_err());
+        assert!(media_mv(root, "lonely.txt", "link/x", &opts).is_err());
+        let apply = FileOpOptions { apply: true, ..Default::default() };
+        assert!(media_cp(root, "lonely.txt", "link/x", &apply).is_err());
+        // 外部へ書き込まれていないことを確認
+        assert!(!outside.path().join("x").exists());
     }
 }

@@ -82,6 +82,42 @@ pub fn resolve_existing_within_root(root: &Path, rel: &str) -> Result<PathBuf> {
     }
 }
 
+/// 書込先（cp/mv/sync の dst など、存在しない新規パス）を `root` 配下に解決し、
+/// 既存のシンボリックリンク祖先を実体まで解決して再検査する。
+///
+/// `resolve_within_root` は lexical 正規化のみのため、`root/link -> /outside` のような
+/// 既存 symlink 配下の新規パス（例: `link/new.db`）を通るとファイル操作が symlink を辿って
+/// root 外へ書き込んでしまう。これを防ぐため、dst が存在すれば [`resolve_existing_within_root`]
+/// と同等に canonicalize し、存在しなければ**最近傍の既存祖先**を canonicalize して `root` 配下か
+/// 再検査する（中間の symlink が root 外へ脱出する場合、その symlink を含む最深既存コンポーネントが
+/// canonicalize されて検査で弾かれる）。非存在の `root`（作成前）は lexical 結果を返す。
+pub fn resolve_destination_within_root(root: &Path, rel: &str) -> Result<PathBuf> {
+    let lexical = resolve_within_root(root, rel)?;
+    let root_canonical = match root.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return Ok(lexical),
+    };
+    if lexical.exists() {
+        let canonical = lexical.canonicalize()?;
+        ensure_within(&canonical, &root_canonical)?;
+        return Ok(canonical);
+    }
+    // 非存在の dst: 最近傍の既存祖先まで遡り canonicalize して root 配下を再検査する。
+    // lexical は root 配下（lexical 正規化済み）なので、遡れば必ず root（既存）に到達する。
+    let mut ancestor = lexical.as_path();
+    while !ancestor.exists() {
+        match ancestor.parent() {
+            Some(p) if p != ancestor => ancestor = p,
+            _ => break,
+        }
+    }
+    if ancestor.exists() {
+        let canonical_ancestor = ancestor.canonicalize()?;
+        ensure_within(&canonical_ancestor, &root_canonical)?;
+    }
+    Ok(lexical)
+}
+
 /// `target` が保護パス（操作禁止領域）に含まれるか判定する。
 ///
 /// `protected` には正規化済みのパス（`.trash/`、DB ファイル、`backup_dir` など）を渡す。
@@ -175,5 +211,42 @@ mod tests {
             require_media_root(&Some("/media".to_string())).unwrap(),
             PathBuf::from("/media")
         );
+    }
+
+    #[test]
+    fn resolve_destination_accepts_new_descendant() {
+        // 非存在の新規パスは lexical 結果を返す（root が非存在でも同様）。
+        let root = Path::new("/media");
+        assert_eq!(
+            resolve_destination_within_root(root, "new/sub/x.jpg").unwrap(),
+            PathBuf::from("/media/new/sub/x.jpg")
+        );
+        // トラバーサルは従来通り拒否
+        assert!(resolve_destination_within_root(root, "../escape").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_destination_rejects_symlink_escape() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use tempfile::TempDir;
+
+        let media = TempDir::new().unwrap();
+        let root = media.path();
+        // root 配下に root 外への symlink を仕掛ける: root/link -> outside
+        let outside = TempDir::new().unwrap();
+        symlink(outside.path(), root.join("link")).unwrap();
+
+        // dst = link/new.db は lexical には root 配下だが、symlink 先は root 外。
+        // 最近傍既存祖先（root/link）を canonicalize すると outside になり拒否される。
+        assert!(resolve_destination_within_root(root, "link/new.db").is_err());
+        // 多段でも: root/a/b/b-link -> outside の dst a/b-link/x も拒否される。
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        symlink(outside.path(), root.join("a/b/b-link")).unwrap();
+        assert!(resolve_destination_within_root(root, "a/b/b-link/x").is_err());
+
+        // 正常な（root 内を指す）新規パスは受理される
+        assert!(resolve_destination_within_root(root, "plain/new.db").is_ok());
     }
 }

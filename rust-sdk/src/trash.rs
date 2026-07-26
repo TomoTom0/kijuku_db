@@ -5,7 +5,7 @@
 //! 通常の削除・上書きはすべて trash への移動となり、[`restore_from_trash`] で復元できる。
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::Utc;
@@ -86,6 +86,25 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 
 fn canonicalize_root(root: &Path) -> PathBuf {
     root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
+}
+
+/// trash エントリ ID が生成された単一エントリ名（`.trash/<id>` の direct child）として安全か検査する。
+///
+/// `id` は単一の Normal コンポーネント（`..`・`.`・パス区切り・絶対パスを含まない）でなければならず、
+/// かつ `trash.join(id)` の親が `trash` 自身と一致することを確認する（`Path::join` が絶対パスで
+/// ベースを置き換える挙動に対する defense in depth）。`purge_trash` の呼出し側提供 ID 検証に使用。
+fn ensure_safe_trash_id(id: &str, trash: &Path) -> Result<()> {
+    let mut components = Path::new(id).components();
+    let is_single_normal = matches!(components.next(), Some(Component::Normal(_)))
+        && components.next().is_none();
+    let directly_beneath = trash.join(id).parent() == Some(trash);
+    if is_single_normal && directly_beneath {
+        Ok(())
+    } else {
+        Err(KijukuError::Validation(format!(
+            "invalid trash id (must be a single entry name beneath .trash): {id}"
+        )))
+    }
 }
 
 /// `target_rel` を trash へ移動し、trash ID を返す。
@@ -223,7 +242,14 @@ pub fn purge_trash(
     let trash = trash_dir(&root_c);
 
     let to_purge: Vec<String> = match ids {
-        Some(ids) => ids.to_vec(),
+        Some(ids) => {
+            // 呼出し側提供 ID を検証: 生成されたエントリ名（単一コンポーネント）のみ許可。
+            // `..`・絶対パス・区切り込みの ID で trash 外へ脱出して remove_dir_all する攻撃を防ぐ。
+            for id in ids {
+                ensure_safe_trash_id(id, &trash)?;
+            }
+            ids.to_vec()
+        }
         None => {
             if !trash.exists() {
                 return Ok(vec![]);
@@ -301,6 +327,38 @@ mod tests {
         let applied = purge_trash(root, None, false).unwrap();
         assert_eq!(applied, vec![id.clone()]);
         assert!(!trash_dir(root).join(&id).exists());
+    }
+
+    #[test]
+    fn purge_rejects_traversal_ids() {
+        // 呼出し側提供 ID にトラバーサル成分があれば trash 外へ脱出できない（dry-run/apply 両方）。
+        let dir = setup_root();
+        let root = dir.path();
+        let real_id = move_to_trash(root, "top.txt", TrashOperation::Delete, None).unwrap();
+
+        for malicious in [
+            "..",
+            "../escape",
+            "../../important",
+            "/etc/passwd",
+            "a/b",
+            ".",
+            "",
+            format!("{real_id}/sub").as_str(),
+        ] {
+            assert!(
+                purge_trash(root, Some(&[malicious.to_string()]), true).is_err(),
+                "dry-run で拒否されるべき: {malicious}"
+            );
+            assert!(
+                purge_trash(root, Some(&[malicious.to_string()]), false).is_err(),
+                "apply で拒否されるべき: {malicious}"
+            );
+        }
+        // 正常 ID は拒否されず、top.txt 由来のエントリは trash 内に残り続ける（削除未発生）
+        assert!(trash_dir(root).join(&real_id).exists());
+        assert!(purge_trash(root, Some(&[real_id.clone()]), false).is_ok());
+        assert!(!trash_dir(root).join(&real_id).exists());
     }
 
     #[test]

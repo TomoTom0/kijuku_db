@@ -8,6 +8,17 @@
 - 影響: これらの操作は stg では実行できなくなった。prod 直接 `--target prod` で dry-run+trash+pre-stash gate 付きで実行するか、stg のリセットは `sync`（prod→stg 再複製）を使用すること
 - `deleteMedia` は DB-only のまま (a)（FS 物理削除は `moveToTrash`(a) → `purgeTrash`(b) の trash 流で扱い・新規 FS 削除ロジックなし）
 
+## Fixed
+
+### PR#56 レビュー指摘のパストラバーサル・TOCTOU・競合を修正（TASK-73/74/75/76）
+
+- **TASK-73**: `purgeTrash` が呼出し側提供 ID（`../../important` や絶対パス）で `.trash` 外へ脱出して任意ディレクトリを削除できた脆弱性を修正。ID を生成エントリ名（単一コンポーネント・`.trash` の direct child）に検証（Rust `ensure_safe_trash_id` / TS `ensureSafeTrashId`）
+- **TASK-74**: cp/mv/sync の dst 解決が lexical のみで、`media_root/link -> /outside` のような既存 symlink 配下の新規パスを通って root 外へ書き込めた脆弱性を修正。dst 用に `resolve_destination_within_root`（最近傍既存祖先の canonicalize + root 配下再検査）を追加して file_ops の dst 解決に適用（Rust/TS 両方）
+- **TASK-75**: TS `replicateDb` が copy **後**に prod revision を算出していたため copy 中の prod 更新で記録 revision と実際の snapshot が乖離し、observe が drift を見逃して stale な promote を許す TOCTOU を修正。Rust `replicate_db` と同順序（copy 前算出）に統一
+- **TASK-76**: `promote` が observe（gate 評価）→ ロック取得の順で、間に別 promoter が prod を更新すると stale な gate 結果で prod を上書きする競合を修正。prod 排他ロック取得後に gate を再評価し、不合格なら prod を触らず拒否（Rust/TS 両方）
+
+**ファイル:** `rust-sdk/src/{trash,media_path,file_ops,lib}.rs`, `ts-sdk/src/{trash,media_path,file_ops,index}.ts`, 各 unit テスト
+
 ## Added
 
 ### 操作階層化 (a)/(b) と (b) 操作の prod 直接 gate（TASK-59 P2-C4）

@@ -9,6 +9,7 @@ import {
   readFileSync,
   rmSync,
   existsSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -91,5 +92,20 @@ describe('file_ops', () => {
   it('rejects outside root', () => {
     expect(() => mediaCp(root, '../escape.txt', 'x')).toThrow();
     expect(() => mediaCp(root, 'lonely.txt', '../escape.txt')).toThrow();
+  });
+
+  it('rejects dst through escaping symlink', () => {
+    // root/link -> outside（root 外）。dst = link/x は lexical には root 配下だが脱出する。
+    const outside = mkdtempSync(path.join(tmpdir(), 'kijuku-out-'));
+    try {
+      symlinkSync(outside, path.join(root, 'link'));
+      expect(() => mediaCp(root, 'lonely.txt', 'link/x')).toThrow();
+      expect(() => mediaMv(root, 'lonely.txt', 'link/x')).toThrow();
+      expect(() => mediaCp(root, 'lonely.txt', 'link/x', { apply: true, updateDb: false })).toThrow();
+      // 外部へ書き込まれていない
+      expect(existsSync(path.join(outside, 'x'))).toBe(false);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });

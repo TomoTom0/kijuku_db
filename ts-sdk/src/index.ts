@@ -281,6 +281,18 @@ export class KijukuDB {
     }
     const lock = acquireStgLock(dst);
     try {
+      // sync 元 prod revision を copy **前**に src から算出する（Rust replicate_db と同順序）。
+      // copy 後に算出すると copy 中の prod 更定で「記録 revision」と「実際に copy された snapshot」が
+      // 乖離し、observe が drift を見逃して stale な promote を許す TOCTOU になる（設計 §15-11）。
+      const revision = (() => {
+        const srcDb = new KijukuDB(src, { readonly: true });
+        try {
+          return computeProdRevision(srcDb.db);
+        } finally {
+          srcDb.close();
+        }
+      })();
+
       for (const suffix of ['', '-wal', '-shm']) {
         const candidate = `${dst}${suffix}`;
         if (fs.existsSync(candidate)) {
@@ -288,16 +300,9 @@ export class KijukuDB {
         }
       }
       await BackupManager.copyDbOnline(src, dst);
-      // sync 元 prod revision を src から算出し meta に記録（設計 §15-11）
-      const srcDb = new KijukuDB(src, { readonly: true });
-      try {
-        const revision = computeProdRevision(srcDb.db);
-        writeStgMeta(dst, {
-          syncedFrom: { prodPath: src, revision, syncedAt: new Date().toISOString() },
-        });
-      } finally {
-        srcDb.close();
-      }
+      writeStgMeta(dst, {
+        syncedFrom: { prodPath: src, revision, syncedAt: new Date().toISOString() },
+      });
     } finally {
       lock.release();
     }
@@ -1051,6 +1056,17 @@ export class KijukuDB {
         preStashPath = bm.createPrePromoteSnapshot();
       } finally {
         prodDb.close();
+      }
+
+      // 3b. 排他ロック下で gate を再評価（authoritative）。手順1の observe → ロック取得の間に別 promoter
+      //     が prod を更新すると手順1の gate 結果は stale となり上書き競合を生むため、prod を触る前に
+      //     ロック保持状態で再観察する。
+      const observe = this.observe(prodDbPath, options);
+      if (!observe.passed) {
+        const failedChecks = observe.checks
+          .filter((c) => !c.passed)
+          .map((c) => `${c.name}: ${c.detail}`);
+        throw new PromoteGateFailedError(failedChecks);
       }
 
       // 4. 既存 prod + WAL/SHM 削除（空 dst 要求・pre-stash 済みで安全・replicateDb と同パターン）。
