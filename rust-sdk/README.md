@@ -31,7 +31,7 @@
 
 ```toml
 [dependencies]
-kijuku-db = "0.2.3"
+kijuku-db = "0.2.4"
 ```
 
 ## 実装状況
