@@ -1,7 +1,7 @@
 //! Kijuku DB CLI
 //!
 //! JSON形式の入出力でリモート操作を可能にするCLIツール
-//! Version: 0.2.3
+//! Version: 0.2.4
 //!
 //! NOTE: CLI のハンドラ群は Phase 3 で async 化（KijukuBackend 経由）する予定。
 //! それまで KijukuDB の deprecated 同期メソッドを使用するため、移行完了まで一時的に許容する。

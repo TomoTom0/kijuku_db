@@ -573,6 +573,10 @@ const restoredPath = await remoteDb.restore();
 const restoredPath2 = await remoteDb.restore({ type: 'nth', n: 1 });
 // タイムアウトを明示的に指定
 const restoredPath3 = await remoteDb.restore({ type: 'latest' }, 30 * 60_000);
+
+// プールされた SSH 接続を閉じる（未呼び出しだと TCP ソケットがイベントループを
+// 保持し one-shot プロセスが終了しないため、スクリプト等では必須）
+await remoteDb.disconnect();
 ```
 
 **注意:**
@@ -581,7 +585,7 @@ const restoredPath3 = await remoteDb.restore({ type: 'latest' }, 30 * 60_000);
 
 #### リモートDBでのバルク操作（重要）
 
-リモートDBでは、**1操作ごとにSSHコマンドが1回実行されます**。個別操作をループで繰り返すと接続回数が爆発的に増加し、接続がbanされる可能性があります。
+リモートDBでは、**1操作ごとにリモート CLI プロセスが1回起動されます**（SSH 接続自体は接続プールで再利用されるため接続回数は増えません・後述）。個別操作をループで繰り返すと RPC 往復とリモートプロセス起動が繰り返されて大幅に遅くなるため、バルク操作の利用を推奨します。
 
 ```typescript
 // ❌ 危険: 1000件 = 1000回のSSH呼び出し
@@ -627,6 +631,8 @@ RemoteKijukuDBはKijukuDBと同等の全メソッドを`Promise`で提供しま�
 - `getSchemaVersion()` / `getServerVersion()` / `getTables()` / `getTableInfo()`
 
 **リモート CLI の自動デプロイ（TASK-69）:** 全ての RPC の先頭でリモート `kijuku-cli` のバージョン（`getServerVersion`）を取得し、ローカル（クライアント）より古い場合に自動デプロイします（`local > remote` の厳密大なり・ダウングレード保護・同等なら skip）。デプロイ先は `deploy-local.sh` と同じ実体 `~/.local/kijuku-db/bin/kijuku-cli` + symlink `~/.local/bin/kijuku-cli` 構成。リモートが未存在・または TASK-69 前の古いバイナリ（`getServerVersion` 未対応）でも自動デプロイで回復します。
+
+**SSH Session の接続プール（TASK-71）:** RPC ごとに新規 SSH 接続を張るのではなく、初回 RPC で確立した接続をキャッシュして再利用します（連続 RPC のレイテンシ改善・再 handshake 省略・Rust SDK と parity）。セッション系エラー（`SshSessionError`）時は自動的に slot を無効化して次回 RPC で再接続します。使い終わったら `await remoteDb.disconnect()` を呼んで接続を閉じてください。未呼び出しの場合、プールされた TCP ソケットが Node.js のイベントループを保持しプロセスが終了しなくなるため、スクリプト等の one-shot プロセスでは必須です（長期稼働サーバー等で接続を維持したい場合を除く）。`remoteDb.connectCount` で新規接続回数を確認できます（診断用・連続 RPC で `1` のままなら再利用を示す）。
 
 ### TOML設定ファイル（config）
 

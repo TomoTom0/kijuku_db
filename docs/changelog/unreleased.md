@@ -187,3 +187,14 @@
 **ファイル:** `ts-sdk/src/backup.ts`, `rust-sdk/src/backup.rs`, `ts-sdk/test/integration/backup.test.ts`
 
 ## Changed
+
+### RemoteKijukuDB（TS SDK）の SSH セッションを接続プールで再利用（TASK-71）
+
+Rust SDK（TASK-70）の SSH Session 接続プールを TS SDK に parity 移植。従来 TS `RemoteKijukuDB` は各公開メソッドの `finally` で毎回 SSH 接続を切断（実質作り捨て）していたのを、初回 RPC で確立した接続をキャッシュして再利用する方式に変更。連続 RPC のレイテンシを改善。
+
+- **Session キャッシュ（`withSession`）**: 単一 slot + Promise chain で RPC 全体を直列化。未接続時のみ接続確立（`connectCount++`）。`SshSessionError`（exec 失敗・読み取りタイムアウト・SFTP サブシステム確立失敗）で slot を無効化し次回再接続（フェイルセーフ）。アプリケーションエラー（exit≠0・JSON パース失敗・ファイル作成/転送失敗・転送タイムアウト）では Session を保持（Rust `Ssh`/`Io`/`Other` に対応）
+- **`binaryEnsured` キャッシュ**: `getServerVersion` + デプロイ確認を初回のみにガードし連続 RPC のオーバーヘッドを削減（Rust `binary_ensured` parity）
+- **適応的タイムアウト中央集約**: `executeRemoteCommand` が `longOpTarget` で長操作8種のタイムアウトを DB サイズから算出（restore は ×2・sync/discard は prod パス）。各メソッドに分散していたタイムアウト算出を Rust `execute_on_session` と同じ構造へ統一
+- **公開 API 追加**: `disconnect()`（明示切断・実行中 RPC の完了を待つ）と `connectCount`（接続回数・診断用）。Rust `disconnect()`/`connect_count()` と parity
+
+**ファイル:** `ts-sdk/src/remote.ts`, `ts-sdk/test/unit/remote-session-pool.test.ts`, `ts-sdk/test/e2e/sdk-remote.test.ts`, `docs/usage/sdk/ts/README.md`, `docs/examples/ts-sdk/05-bulk-operations.md`

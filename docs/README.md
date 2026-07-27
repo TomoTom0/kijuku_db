@@ -18,6 +18,8 @@ docs/
 │   ├── decisions.md           # 設計上の意思決定記録
 │   ├── path-design.md         # path設計（決定論path + root管理）の設計・実装計画
 │   ├── db-protection.md       # 本番DB保護（LLM破壊的操作対策）の設計・実装計画
+│   ├── backup.md              # バックアップ設計（scope/kind/差分復元/事後メタ）
+│   ├── content-hash.md        # content hash（ファイル内容ベース同定）設計
 │   ├── init/                  # 初期設計ドキュメント
 │   └── update-exist*.md       # update-exist機能の設計
 ├── dev/
