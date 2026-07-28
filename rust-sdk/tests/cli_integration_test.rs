@@ -600,6 +600,20 @@ fn test_cli_prod_b_restore_dry_run() {
         &[("KIJUKU_TARGET", "prod")],
     );
     assert_eq!(after["success"], true, "dryRun 後も prod は変更なしのべき: {:?}", after);
+
+    // (b) restore dryRun が監査ログに記録される（operation=b-restore, result=dryRun・設計 §10）。
+    let audit_resp = execute_cli_command_with_env(
+        db_path,
+        json!({"operation": "listAuditLogs", "params": {"operation": "b-restore"}}),
+        &[("KIJUKU_TARGET", "prod")],
+    );
+    assert_eq!(audit_resp["success"], true, "listAuditLogs: {:?}", audit_resp);
+    let logs = audit_resp["data"].as_array().expect("audit logs array");
+    assert!(
+        logs.iter().any(|r| r["result"] == "dryRun"),
+        "b-restore dryRun audit record: {:?}",
+        audit_resp
+    );
 }
 
 /// prod 直接経路で (b) FS層操作（purgeTrash）の dry-run が受理され prod 不変（設計 §9.2/§15-13）。

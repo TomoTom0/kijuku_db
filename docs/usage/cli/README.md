@@ -514,6 +514,51 @@ kijuku-cli docs rust
 kijuku-cli docs api
 ```
 
+### audit
+
+監査ログを表示・検索します。本番DB保護操作（sync/discard/observe/diffProdStg/promote/restore/mediaMv/purgeTrash）の事後追跡用レコードを取得します。詳細は[設計§10](../../design/db-protection.md)を参照してください。
+
+```bash
+# 全監査ログを表示（新しい順・デフォルト上限1000件）
+kijuku-cli --db ./data/kijuku.db audit list
+
+# 特定操作でフィルタ
+kijuku-cli --db ./data/kijuku.db audit list --operation promote
+
+# 日時範囲でフィルタ
+kijuku-cli --db ./data/kijuku.db audit list \
+  --from "2026-07-01T00:00:00.000Z" \
+  --to "2026-07-31T23:59:59.999Z"
+
+# 上限件数を指定
+kijuku-cli --db ./data/kijuku.db audit list --limit 500
+
+# 組み合わせ
+kijuku-cli --db ./data/kijuku.db audit list \
+  --operation sync \
+  --from "2026-07-01T00:00:00.000Z" \
+  --limit 100
+```
+
+**監査される操作:**
+
+| 操作 | 説明 | 記録される情報 |
+|------|------|--------------|
+| `sync` | prod→stg複製 | stgPath, revision |
+| `discard` | stg破棄・再sync | stgPath, revision |
+| `observe` | prod-stg差分チェック・gate評価 | passed, diffTotals, failedChecks |
+| `diffProdStg` | prod-stg差分表示 | diffTotals |
+| `promote` | stg→prod反映 | observe結果, preStashPath |
+| `b-restore` | バックアップ復元 | backupPath, preRestorePath |
+| `b-mediaMv` | メディアファイル移動 | affectedPaths |
+| `b-purgeTrash` | trash完全削除 | affectedPaths |
+
+**監査ログの場所:** `backup/meta/audit.log`（JSONL形式）
+
+**重要:** 監査ログはprod DB外に記録されるため、promote後もprod側の監査ログは残ります（破壊的上書きで消えません）。
+
+---
+
 ## 関連ドキュメント
 
 - [SDK選択ガイド](../sdk/README.md)

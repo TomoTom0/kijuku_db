@@ -45,7 +45,7 @@ fn promote_gate_pass_reflects_stg_and_pre_stashes_prod() {
     let dir = TempDir::new().unwrap();
     let prod = setup_prod(&dir, 2);
     let stg = dir.path().join("kijuku.stg.db");
-    KijukuDB::replicate_db(&prod, &stg).expect("replicate prod->stg");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("replicate prod->stg");
 
     let stg_db = KijukuDB::open(&stg).expect("open stg");
     stg_db.create_media(&make_input("new")).expect("add stg media");
@@ -79,7 +79,7 @@ fn promote_gate_fail_leaves_prod_untouched() {
     let dir = TempDir::new().unwrap();
     let prod = setup_prod(&dir, 1);
     let stg = dir.path().join("kijuku.stg.db");
-    KijukuDB::replicate_db(&prod, &stg).expect("replicate prod->stg");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("replicate prod->stg");
     let stg_db = KijukuDB::open(&stg).expect("open stg");
     stg_db.create_media(&make_input("new")).expect("add stg media");
 
@@ -125,7 +125,7 @@ fn promote_with_backup_opts_routes_pre_stash_to_custom_dir() {
     let dir = TempDir::new().unwrap();
     let prod = setup_prod(&dir, 2);
     let stg = dir.path().join("kijuku.stg.db");
-    KijukuDB::replicate_db(&prod, &stg).expect("replicate prod->stg");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("replicate prod->stg");
 
     let stg_db = KijukuDB::open(&stg).expect("open stg");
     stg_db.create_media(&make_input("new")).expect("add stg media");
@@ -161,7 +161,7 @@ fn list_pre_stashes_discovers_promote_pre_stash() {
     let dir = TempDir::new().unwrap();
     let prod = setup_prod(&dir, 2);
     let stg = dir.path().join("kijuku.stg.db");
-    KijukuDB::replicate_db(&prod, &stg).expect("replicate prod->stg");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("replicate prod->stg");
     let stg_db = KijukuDB::open(&stg).expect("open stg");
     stg_db.create_media(&make_input("new")).expect("add stg media");
 

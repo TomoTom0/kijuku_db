@@ -33,6 +33,7 @@
 //! # }
 //! ```
 
+pub mod audit;
 pub mod attribute;
 pub mod backend;
 pub mod backup;
@@ -63,6 +64,7 @@ pub mod thumbnail;
 pub mod types;
 pub mod update_exist;
 
+pub use audit::{AuditLogFilter, AuditRecord, AuditResult, AuditTarget, SyncOp};
 pub use backup::{
     AutoRecord, AutoRecordStatus, BackupInfo, BackupKind, BackupManager, BackupOptions,
     BackupScope, BackupSelector, RetentionPolicy, RetentionTier,
@@ -234,6 +236,37 @@ impl KijukuDB {
         &self.db_path
     }
 
+    /// prod 側 `backup/meta/audit.log` へ監査レコードを追記（設計 §10・best-effort・失敗は無視）。
+    ///
+    /// 監査ログは prod DB 本体でなく prod 外サイドカー（promote 上書きの影響なし・§15-2 と同じ）。
+    /// `enabled:false` の `BackupManager` を一時生成して `meta/` のみ作り書く
+    /// （pre-stash appender と同パターン・`append_audit_record` 内で `create_dir_all`）。
+    pub fn append_audit_to_prod(
+        prod_db_path: &Path,
+        operation: &str,
+        target: AuditTarget,
+        result: AuditResult,
+        error: Option<&str>,
+        summary: serde_json::Value,
+    ) {
+        let bm_opts = BackupOptions {
+            enabled: Some(false),
+            ..Default::default()
+        };
+        if let Ok(bm) = BackupManager::new(prod_db_path, bm_opts) {
+            let _ = bm.append_audit_record(&AuditRecord {
+                timestamp: AuditRecord::now_timestamp(),
+                operation: operation.to_string(),
+                target,
+                actor: AuditRecord::actor_from_env(),
+                prod_db_path: prod_db_path.display().to_string(),
+                result,
+                error: error.map(|s| s.to_string()),
+                summary,
+            });
+        }
+    }
+
     /// prod(RO) → stg(RW) のフル複製（sync・設計 §4.2/§4.5）。
     ///
     /// `copy_db_online`（Online Backup API）で src を読み取り専用コピーし dst を新規生成する。
@@ -244,7 +277,8 @@ impl KijukuDB {
     /// 別セッションが stg を編集中（ロック保持中）なら `StgBusy`。コピー後に sync 元 prod の
     /// revision 指紋を `<dst>.meta.json` に記録し、observe が drift を検出できるようにする。
     /// `src == dst` は誤設定としてエラー。
-    pub fn replicate_db(src: &Path, dst: &Path) -> Result<()> {
+    /// `op` は sync/discard の区別（監査ログ §10 の operation 文字列に反映）。
+    pub fn replicate_db(src: &Path, dst: &Path, op: SyncOp) -> Result<()> {
         if src == dst {
             return Err(KijukuError::Other(format!(
                 "sync source and destination are the same path: {}",
@@ -287,6 +321,22 @@ impl KijukuDB {
             },
         };
         stg_session::write_stg_meta(dst, &meta)?;
+
+        // 監査: prod(src) 側 backup/meta/audit.log へ追記（設計 §10・best-effort）。
+        // sync/discard を operation で区別し、revision 指紋を対象範囲として記録。
+        Self::append_audit_to_prod(
+            src,
+            op.as_str(),
+            AuditTarget::Stg,
+            AuditResult::Success,
+            None,
+            serde_json::json!({
+                "stgPath": dst.display().to_string(),
+                "revision": serde_json::to_value(&meta.synced_from.revision)
+                    .unwrap_or(serde_json::Value::Null),
+            }),
+        );
+
         Ok(())
     }
 
@@ -1245,7 +1295,20 @@ impl KijukuDB {
         };
         let stg_snap = self.collect_snapshot()?;
         // セマンティクス反転: current=prod, backup=stg（diff_with_backup と逆）
-        Ok(diff::compute_diff(&prod_snap, &stg_snap, options))
+        let diff = diff::compute_diff(&prod_snap, &stg_snap, options);
+        // 監査: prod 側 backup/meta/audit.log（設計 §10・best-effort）。diff 件数サマリを記録。
+        let totals = diff::summarize_diff(&diff).totals;
+        Self::append_audit_to_prod(
+            prod_db_path,
+            "diffProdStg",
+            AuditTarget::Stg,
+            AuditResult::Success,
+            None,
+            serde_json::json!({
+                "diffTotals": serde_json::to_value(&totals).unwrap_or(serde_json::Value::Null),
+            }),
+        );
+        Ok(diff)
     }
 
     /// stg（self）と prod を比較し、機械的 promote gate を評価（設計 §3.4/§4.4）。
@@ -1262,6 +1325,44 @@ impl KijukuDB {
     /// `passed` が全 gate 合格を表す（promote 可否の客観判定・人間 gate でない・設計 §3/§6.4）。
     #[allow(deprecated)]
     pub fn observe(
+        &self,
+        prod_db_path: &Path,
+        options: &diff::ObserveOptions,
+    ) -> Result<diff::ObserveResult> {
+        let result = self.evaluate_observe(prod_db_path, options)?;
+        // 監査: prod 側 backup/meta/audit.log（設計 §10・best-effort）。observe 操作としての
+        // 成否は Success・gate の合否は summary.passed で表現（promote 拒否とは別）。
+        let failed_checks: Vec<serde_json::Value> = result
+            .checks
+            .iter()
+            .filter(|c| !c.passed)
+            .map(|c| serde_json::json!({ "name": c.name, "detail": c.detail }))
+            .collect();
+        Self::append_audit_to_prod(
+            prod_db_path,
+            "observe",
+            AuditTarget::Stg,
+            AuditResult::Success,
+            None,
+            serde_json::json!({
+                "passed": result.passed,
+                "prodSchemaVersion": result.prod_schema_version,
+                "stgSchemaVersion": result.stg_schema_version,
+                "diffTotals": serde_json::to_value(&result.summary.totals)
+                    .unwrap_or(serde_json::Value::Null),
+                "failedChecks": failed_checks,
+            }),
+        );
+        Ok(result)
+    }
+
+    /// observe の gate 評価 core（監査なし・設計 §3.4/§4.4）。
+    ///
+    /// `observe` は本 core の呼出 + 監査記録のラッパ。promote が内部で2回 observe を
+    /// 再評価する際は本 core を直接呼び、監査レコードの重複を回避する（promote が
+    /// observe 結果を内包した1件の監査を残す）。
+    #[allow(deprecated)]
+    fn evaluate_observe(
         &self,
         prod_db_path: &Path,
         options: &diff::ObserveOptions,
@@ -1374,7 +1475,7 @@ impl KijukuDB {
         }
 
         // 1. gate 評価 → 不合格なら prod を触る前に拒否（pre-stash も無駄にしない）。
-        let observe = self.observe(prod_db_path, observe_options)?;
+        let observe = self.evaluate_observe(prod_db_path, observe_options)?;
         if !observe.passed {
             let failed_checks = observe
                 .checks
@@ -1382,7 +1483,20 @@ impl KijukuDB {
                 .filter(|c| !c.passed)
                 .map(|c| format!("{}: {}", c.name, c.detail))
                 .collect();
-            return Err(KijukuError::PromoteGateFailed { failed_checks });
+            let err = KijukuError::PromoteGateFailed { failed_checks };
+            // 監査: gate 不合格（pre-stash 前・設計 §10）。promote を試みて弾かれた事実を記録。
+            Self::append_audit_to_prod(
+                prod_db_path,
+                "promote",
+                AuditTarget::Prod,
+                AuditResult::Failure,
+                Some(&err.to_string()),
+                serde_json::json!({
+                    "observe": serde_json::to_value(&observe).unwrap_or(serde_json::Value::Null),
+                    "preStashPath": serde_json::Value::Null,
+                }),
+            );
+            return Err(err);
         }
 
         // 2. prod RW scope（排他ロック + pre-stash 強制）。
@@ -1392,7 +1506,7 @@ impl KijukuDB {
         // 2b. 排他ロック下で gate を再評価（authoritative）。手順1の observe → 手順2の acquire の間に
         //     別 promoter が prod を更新すると、手順1の gate 結果は stale となり上書き競合を生む。
         //     prod を触る前にロック保持状態で再観察し、不合格なら pre-stash を残して拒否する。
-        let observe = self.observe(prod_db_path, observe_options)?;
+        let observe = self.evaluate_observe(prod_db_path, observe_options)?;
         if !observe.passed {
             let failed_checks = observe
                 .checks
@@ -1400,7 +1514,20 @@ impl KijukuDB {
                 .filter(|c| !c.passed)
                 .map(|c| format!("{}: {}", c.name, c.detail))
                 .collect();
-            return Err(KijukuError::PromoteGateFailed { failed_checks });
+            let err = KijukuError::PromoteGateFailed { failed_checks };
+            // 監査: gate 不合格（排他ロック + pre-stash 後・設計 §10）。pre-stash path も記録。
+            Self::append_audit_to_prod(
+                prod_db_path,
+                "promote",
+                AuditTarget::Prod,
+                AuditResult::Failure,
+                Some(&err.to_string()),
+                serde_json::json!({
+                    "observe": serde_json::to_value(&observe).unwrap_or(serde_json::Value::Null),
+                    "preStashPath": scope.pre_stash_path().map(|p| p.display().to_string()),
+                }),
+            );
+            return Err(err);
         }
 
         // 3. 既存 prod + WAL/SHM 削除（空 dst 要求・pre-stash 済みで安全・replicate_db と同パターン）。
@@ -1416,6 +1543,19 @@ impl KijukuDB {
         // 4. stg → prod コピー（ファイル全体・§15-1）。
         // 5. scope の Drop で排他ロック解放。
         BackupManager::copy_db_online(&self.db_path, scope.prod_path())?;
+
+        // 監査: promote 成功（prod 上書き後・設計 §10）。observe 結果 + pre-stash path を記録。
+        Self::append_audit_to_prod(
+            prod_db_path,
+            "promote",
+            AuditTarget::Prod,
+            AuditResult::Success,
+            None,
+            serde_json::json!({
+                "observe": serde_json::to_value(&observe).unwrap_or(serde_json::Value::Null),
+                "preStashPath": pre_stash_path.as_ref().map(|p| p.display().to_string()),
+            }),
+        );
 
         Ok(PromoteOutcome {
             observe,
@@ -1445,6 +1585,18 @@ impl KijukuDB {
             .as_ref()
             .ok_or_else(|| KijukuError::Other("Backup manager not configured".to_string()))?
             .get_backup_meta(id)
+    }
+
+    /// 監査ログを取得（設計 §10・TASK-46）。self の db_path の `backup/meta/audit.log` を読む。
+    ///
+    /// 監査ログは prod に集約されるため、通常は prod を open して呼ぶ
+    /// （`list_pre_stashes` と同方針・stg からは空配列）。backup_manager なし・
+    /// audit.log 未存在は空配列。フィルタで操作種別・期間・上限件数を指定可。
+    pub fn list_audit_logs(&self, filter: &AuditLogFilter) -> Result<Vec<AuditRecord>> {
+        match &self.backup_manager {
+            Some(bm) => bm.read_audit_logs(filter),
+            None => Ok(Vec::new()),
+        }
     }
 }
 

@@ -45,7 +45,7 @@ fn test_diff_with_prod_semantics_inverted() {
     let (prod, stg, m1_id, m2_id) = setup_prod(&dir);
 
     // prod → stg sync
-    KijukuDB::replicate_db(&prod, &stg).expect("sync");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("sync");
 
     // stg で編集: m1 変更 / m2 削除 / m3 新規
     let stg_db = KijukuDB::open(&stg).expect("open stg");
@@ -98,7 +98,7 @@ fn test_diff_with_prod_no_changes_after_sync() {
     let dir = TempDir::new().unwrap();
     let (prod, stg, _m1_id, _m2_id) = setup_prod(&dir);
 
-    KijukuDB::replicate_db(&prod, &stg).expect("sync");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("sync");
 
     let stg_db = KijukuDB::open(&stg).expect("open stg");
     let diff = stg_db
@@ -116,7 +116,7 @@ fn test_diff_with_prod_no_changes_after_sync() {
 fn test_diff_with_prod_does_not_modify_prod() {
     let dir = TempDir::new().unwrap();
     let (prod, stg, _m1_id, _m2_id) = setup_prod(&dir);
-    KijukuDB::replicate_db(&prod, &stg).expect("sync");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("sync");
 
     let prod_bytes_before = std::fs::read(&prod).expect("read prod before");
 

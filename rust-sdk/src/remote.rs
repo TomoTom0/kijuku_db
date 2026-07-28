@@ -1,4 +1,4 @@
-use crate::{AttributeValueType, BackupInfo, BulkUpdateItem, CheckThumbnailResult, KijukuBackend, KijukuError, Media, MediaAttribute, MediaFilter, MediaHash, MediaHashInput, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats, ThumbnailOptions, UpdateExistOptions, UpdateExistResult, UpdateThumbnailResult};
+use crate::{AttributeValueType, AuditLogFilter, AuditRecord, BackupInfo, BulkUpdateItem, CheckThumbnailResult, KijukuBackend, KijukuError, Media, MediaAttribute, MediaFilter, MediaHash, MediaHashInput, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats, ThumbnailOptions, UpdateExistOptions, UpdateExistResult, UpdateThumbnailResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
@@ -1278,6 +1278,16 @@ impl RemoteKijukuDB {
             params: serde_json::json!({}),
         })?;
         self.backup_info_list_from_response(response)
+    }
+
+    /// 監査ログを取得（設計 §10・TASK-46）。サーバ側（prod の `backup/meta/audit.log`）を読む。
+    pub fn list_audit_logs(&self, filter: &AuditLogFilter) -> Result<Vec<AuditRecord>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "listAuditLogs".to_string(),
+            params: serde_json::to_value(filter).unwrap_or_default(),
+        })?;
+        let logs: Vec<AuditRecord> = self.check_response(response)?;
+        Ok(logs)
     }
 
     /// listBackups / listPreStashes 共通: BackupInfo 配列レスポンスを `BackupInfo` へ変換。

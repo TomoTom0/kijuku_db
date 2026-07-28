@@ -24,6 +24,10 @@ import type {
   PromoteOutcome,
   GateConfig,
   GoldenResult,
+  AuditTarget,
+  AuditResult,
+  AuditRecord,
+  AuditLogFilter,
 } from './types.js';
 import {
   computeBackupDiff,
@@ -264,6 +268,40 @@ export class KijukuDB {
   }
 
   /**
+   * prod 側 `backup/meta/audit.log` へ監査レコードを追記（設計 §10・best-effort・失敗は無視）。
+   *  監査ログは prod DB 本体でなく prod 外サイドカー（promote 上書きの影響なし・§15-2）。
+   *  `enabled:false` BackupManager で meta/ のみ生成して書く（pre-stash appender と同）。
+   */
+  private static appendAuditToProd(
+    prodDbPath: string,
+    operation: string,
+    target: AuditTarget,
+    result: AuditResult,
+    error: string | null,
+    summary: Record<string, unknown>,
+  ): void {
+    let prodDb: Database.Database | undefined;
+    try {
+      prodDb = new Database(prodDbPath, { readonly: true, fileMustExist: true });
+      const bm = new BackupManager(prodDb, prodDbPath, { enabled: false });
+      bm.appendAuditRecord({
+        timestamp: new Date().toISOString(),
+        operation,
+        target,
+        actor: process.env.USER ?? null,
+        prodDbPath,
+        result,
+        error,
+        summary,
+      });
+    } catch {
+      // best-effort（監査書込失敗は操作結果に影響させない）
+    } finally {
+      prodDb?.close();
+    }
+  }
+
+  /**
    * prod(RO) → stg(RW) のフル複製（sync・設計 §4.2/§4.5）。
    *
    * `BackupManager.copyDbOnline`（Online Backup API）で src を読み取り専用コピーし dst を
@@ -275,7 +313,11 @@ export class KijukuDB {
    * `<dst>.meta.json` に記録し、observe が drift を検出できるようにする。
    * `src === dst` は誤設定としてエラー。
    */
-  static async replicateDb(src: string, dst: string): Promise<void> {
+  static async replicateDb(
+    src: string,
+    dst: string,
+    operation: 'sync' | 'discard' = 'sync',
+  ): Promise<void> {
     if (src === dst) {
       throw new Error(`sync source and destination are the same path: ${src}`);
     }
@@ -302,6 +344,11 @@ export class KijukuDB {
       await BackupManager.copyDbOnline(src, dst);
       writeStgMeta(dst, {
         syncedFrom: { prodPath: src, revision, syncedAt: new Date().toISOString() },
+      });
+      // 監査: prod(src) 側 backup/meta/audit.log（設計 §10・best-effort）。
+      KijukuDB.appendAuditToProd(src, operation, 'stg', 'success', null, {
+        stgPath: dst,
+        revision,
       });
     } finally {
       lock.release();
@@ -650,6 +697,12 @@ export class KijukuDB {
     return this.backupManager?.listPreStashes() ?? [];
   }
 
+  /** 監査ログを取得（設計 §10・TASK-46）。prod保護操作（sync/discard/observe/promote/(b)操作）の事後追跡用。
+   *  新しい順（timestamp降順）で返す。 */
+  listAuditLogs(filter: AuditLogFilter = {}): AuditRecord[] {
+    return this.backupManager?.readAuditLogs(filter) ?? [];
+  }
+
   /** バックアップマネージャーを取得 */
   getBackupManager(): BackupManager | undefined {
     return this.backupManager;
@@ -933,7 +986,12 @@ export class KijukuDB {
     const prodSnap = new KijukuDB(prodDbPath, { readonly: true }).collectSnapshot();
     const stgSnap = this.collectSnapshot();
     // セマンティクス反転: current=prod, backup=stg（diffWithBackup と逆）
-    return computeBackupDiff(prodSnap, stgSnap, options);
+    const diff = computeBackupDiff(prodSnap, stgSnap, options);
+    // 監査: prod 側 backup/meta/audit.log（設計 §10・best-effort）。diff 件数サマリを記録。
+    KijukuDB.appendAuditToProd(prodDbPath, 'diffProdStg', 'stg', 'success', null, {
+      diffTotals: summarizeDiff(diff).totals,
+    });
+    return diff;
   }
 
   /**
