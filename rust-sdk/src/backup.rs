@@ -18,6 +18,7 @@
 ///
 /// timestamp = `YYYYMMDDHHMMSS-mmm` (18文字固定)
 use crate::{KijukuError, Result};
+use crate::audit::{AuditLogFilter, AuditRecord};
 use chrono::{Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1260,6 +1261,90 @@ impl BackupManager {
 
     fn records_path(&self) -> PathBuf {
         self.backup_dir.join("meta").join("auto-records.csv")
+    }
+
+    fn audit_log_path(&self) -> PathBuf {
+        self.backup_dir.join("meta").join("audit.log")
+    }
+
+    /// 監査レコードを `backup/meta/audit.log`（JSONL）へ追記（設計 §10・TASK-46）。
+    ///
+    /// append-only・ヘッダなし（JSONL）。1行1JSON。`enabled:false` BackupManager でも
+    /// `create_dir_all(meta)` で書ける（pre-stash appender と同パターン）。
+    pub fn append_audit_record(&self, record: &AuditRecord) -> Result<()> {
+        let path = self.audit_log_path();
+        fs::create_dir_all(path.parent().unwrap())?;
+        let line = serde_json::to_string(record)
+            .map_err(|e| KijukuError::Parse(format!("audit record serialize error: {e}")))?;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        writeln!(file, "{}", line)?;
+        Ok(())
+    }
+
+    /// 監査ログを読む（フィルタ適用済み・新しい順・limit 上限）。未存在は空。
+    ///
+    /// 不正行（パース失敗）はスキップ（前方互換・将来スキーマ拡張時の耐性）。
+    /// `from`/`to` は ISO 8601 文字列をパースして DateTime 同士で比較（タイムゾーン異なる表現も正しく比較）。
+    pub fn read_audit_logs(&self, filter: &AuditLogFilter) -> Result<Vec<AuditRecord>> {
+        let path = self.audit_log_path();
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let content = fs::read_to_string(&path)?;
+
+        // ISO 8601文字列をパースしてDateTime同士で比較するヘルパー
+        let parse_timestamp = |s: &str| -> Option<chrono::DateTime<chrono::Utc>> {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .ok()
+        };
+
+        let mut records: Vec<AuditRecord> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str::<AuditRecord>(l).ok())
+            .filter(|r| match &filter.operation {
+                Some(op) => &r.operation == op,
+                None => true,
+            })
+            .filter(|r| match &filter.from {
+                Some(from) => {
+                    if let (Some(record_time), Some(from_time)) =
+                        (parse_timestamp(&r.timestamp), parse_timestamp(from))
+                    {
+                        record_time >= from_time
+                    } else {
+                        // パース失敗時はスキップ
+                        false
+                    }
+                }
+                None => true,
+            })
+            .filter(|r| match &filter.to {
+                Some(to) => {
+                    if let (Some(record_time), Some(to_time)) =
+                        (parse_timestamp(&r.timestamp), parse_timestamp(to))
+                    {
+                        record_time <= to_time
+                    } else {
+                        // パース失敗時はスキップ
+                        false
+                    }
+                }
+                None => true,
+            })
+            .collect();
+        // 新しい順（timestamp 降順・ISO 8601 辞書順 = 時系列順序）
+        records.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        let limit = filter
+            .limit
+            .unwrap_or(AuditLogFilter::DEFAULT_LIMIT)
+            .min(AuditLogFilter::MAX_LIMIT);
+        records.truncate(limit);
+        Ok(records)
     }
 
     fn read_auto_records(&self) -> Result<Vec<AutoRecord>> {

@@ -533,3 +533,60 @@ export interface PromoteOutcome {
    *  prod がファイル実体を持たない（`:memory:` 等）場合は undefined。 */
   preStashPath?: string;
 }
+
+// ---- 監査ログ（設計 §10・TASK-46）----
+
+/** 監査対象 DB。Rust `AuditTarget` と parity。 */
+export type AuditTarget = 'prod' | 'stg';
+
+/** 操作結果（監査ログ）。Rust `AuditResult` と parity。 */
+export type AuditResult = 'success' | 'failure' | 'dryRun';
+
+/** 監査レコード（audit.log の1行・JSONL）。Rust `AuditRecord` と parity。
+ *  `summary` は操作ごとに構造が異なる（sync: revision / observe: passed+diffTotals /
+ *  promote: observe+preStashPath / (b)操作: preStashPath+dryRun+detail）。 */
+export interface AuditRecord {
+  /** ISO 8601 UTC（ミリ秒） */
+  timestamp: string;
+  /** sync|discard|observe|diffProdStg|promote|b-restore|b-mediaMv|b-purgeTrash */
+  operation: string;
+  target: AuditTarget;
+  /** 実行者（USER env・best-effort・取れなければ null）。LLM vs 人間の区別はしない。 */
+  actor: string | null;
+  prodDbPath: string;
+  result: AuditResult;
+  /** failure 時のエラー文字列・それ以外は null。 */
+  error: string | null;
+  /** 操作ごとの構造的サマリ（diff/gate 結果・revision・preStashPath 等）。 */
+  summary: Record<string, unknown>;
+}
+
+/** `listAuditLogs` のフィルタ（設計 §10・TASK-46）。Rust `AuditLogFilter` と parity。 */
+export interface AuditLogFilter {
+  operation?: string;
+  /** 開始日時 ISO 8601（包含・timestamp 辞書順比較） */
+  from?: string;
+  /** 終了日時 ISO 8601（包含） */
+  to?: string;
+  /** 上限件数（既定 1000・上限 10000） */
+  limit?: number;
+}
+
+/** `unknown` を `Record<string, unknown>` に絞る型ガード（`as` キャスト禁止のための内部ヘルパー）。 */
+function isStringRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/** `AuditRecord` の型ガード（audit.log の不正行スキップ用・`as` キャスト禁止）。
+ *  必須の discriminator（operation/target/result/prodDbPath/timestamp）を検査する。
+ *  actor/error/summary は緩く（null・任意オブジェクトを許容）。 */
+export function isAuditRecord(value: unknown): value is AuditRecord {
+  if (!isStringRecord(value)) return false;
+  return (
+    typeof value.timestamp === 'string' &&
+    typeof value.operation === 'string' &&
+    (value.target === 'prod' || value.target === 'stg') &&
+    typeof value.prodDbPath === 'string' &&
+    (value.result === 'success' || value.result === 'failure' || value.result === 'dryRun')
+  );
+}

@@ -207,7 +207,7 @@ fn setup_prod(dir: &TempDir, n: usize) -> (PathBuf, PathBuf) {
 fn test_observe_pass_after_small_change() {
     let dir = TempDir::new().unwrap();
     let (prod, stg) = setup_prod(&dir, 2);
-    KijukuDB::replicate_db(&prod, &stg).expect("sync");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("sync");
 
     let stg_db = KijukuDB::open(&stg).expect("open stg");
     // 小変更: 1件追加（added=1・閾値以内）
@@ -235,7 +235,7 @@ fn test_observe_pass_after_small_change() {
 fn test_observe_fail_on_bulk_delete() {
     let dir = TempDir::new().unwrap();
     let (prod, stg) = setup_prod(&dir, 5);
-    KijukuDB::replicate_db(&prod, &stg).expect("sync");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("sync");
 
     let stg_db = KijukuDB::open(&stg).expect("open stg");
     // stg で3件削除（閾値 max_removed=1 を超過）
@@ -261,7 +261,7 @@ fn test_observe_fail_on_bulk_delete() {
 fn test_observe_with_golden_assertion() {
     let dir = TempDir::new().unwrap();
     let (prod, stg) = setup_prod(&dir, 3);
-    KijukuDB::replicate_db(&prod, &stg).expect("sync");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("sync");
 
     let stg_db = KijukuDB::open(&stg).expect("open stg");
     let options = ObserveOptions {
@@ -292,7 +292,7 @@ fn test_observe_with_golden_assertion() {
 fn test_observe_does_not_modify_prod() {
     let dir = TempDir::new().unwrap();
     let (prod, stg) = setup_prod(&dir, 2);
-    KijukuDB::replicate_db(&prod, &stg).expect("sync");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("sync");
     let prod_bytes_before = std::fs::read(&prod).expect("read prod before");
 
     let stg_db = KijukuDB::open(&stg).expect("open stg");

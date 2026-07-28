@@ -777,6 +777,24 @@ enum Commands {
     ListBackups,
     /// pre-stash（即時復旧用ロールバックファイル）一覧を表示（設計 §8）
     ListPreStashes,
+    /// 監査ログ（prod 保護操作の事後追跡・設計 §10）を表示・フィルタ
+    AuditLogs {
+        /// 操作種別でフィルタ（sync/discard/observe/diffProdStg/promote/b-restore/b-mediaMv/b-purgeTrash）
+        #[arg(long)]
+        operation: Option<String>,
+        /// 開始日時（ISO 8601・包含）・例: 2026-07-01T00:00:00.000Z
+        #[arg(long)]
+        from: Option<String>,
+        /// 終了日時（ISO 8601・包含）
+        #[arg(long)]
+        to: Option<String>,
+        /// 上限件数（既定 1000・最大 10000）
+        #[arg(long, default_value = "1000")]
+        limit: usize,
+        /// 機械可読 JSON で出力
+        #[arg(long)]
+        json: bool,
+    },
     /// バックアップから復元
     Restore {
         /// N番目のバックアップから復元（0が最新、省略時は最新）
@@ -1388,6 +1406,67 @@ fn handle_list_pre_stashes_subcommand(ctx: &CliContext) {
     }
 }
 
+/// 監査ログ（prod 保護操作の事後追跡・設計 §10）を表示・フィルタ。
+fn handle_audit_logs_subcommand(
+    ctx: &CliContext,
+    operation: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    limit: usize,
+    json: bool,
+) {
+    let client = match open_db_client(ctx) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{}", e);
+            return;
+        }
+    };
+    let filter = kijuku_db::AuditLogFilter {
+        operation,
+        from,
+        to,
+        limit: Some(limit),
+    };
+    match client.list_audit_logs(&filter) {
+        Ok(logs) => {
+            if json {
+                match serde_json::to_string_pretty(&logs) {
+                    Ok(s) => println!("{}", s),
+                    Err(e) => eprintln!("シリアライズエラー: {}", e),
+                }
+                return;
+            }
+            if logs.is_empty() {
+                println!("監査レコードはありません");
+                return;
+            }
+            for (i, r) in logs.iter().enumerate() {
+                let target = match r.target {
+                    kijuku_db::AuditTarget::Prod => "prod",
+                    kijuku_db::AuditTarget::Stg => "stg",
+                };
+                let result = match r.result {
+                    kijuku_db::AuditResult::Success => "success",
+                    kijuku_db::AuditResult::Failure => "failure",
+                    kijuku_db::AuditResult::DryRun => "dryRun",
+                };
+                println!(
+                    "[{}] {} {} target={} result={} actor={} prod={}",
+                    i,
+                    r.timestamp,
+                    r.operation,
+                    target,
+                    result,
+                    r.actor.as_deref().unwrap_or(""),
+                    r.prod_db_path,
+                );
+            }
+        }
+        Err(e) => eprintln!("監査ログの取得に失敗: {}", e),
+    }
+}
+
 fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>, id: Option<String>, timeout_ms: Option<u32>) {
     let mut client = match open_db_client(ctx) {
         Ok(c) => c,
@@ -1445,7 +1524,7 @@ fn handle_sync_subcommand(ctx: &CliContext, from: Option<String>, to: Option<Str
         }
     } else {
         let (prod, stg) = resolve_sync_paths(from, to);
-        match KijukuDB::replicate_db(Path::new(&prod), Path::new(&stg)) {
+        match KijukuDB::replicate_db(Path::new(&prod), Path::new(&stg), kijuku_db::SyncOp::Sync) {
             Ok(()) => println!("sync 完了: {} -> {}", prod, stg),
             Err(e) => eprintln!("sync に失敗: {}", e),
         }
@@ -1471,7 +1550,7 @@ fn handle_discard_subcommand(ctx: &CliContext, from: Option<String>, to: Option<
         }
     } else {
         let (prod, stg) = resolve_sync_paths(from, to);
-        match KijukuDB::replicate_db(Path::new(&prod), Path::new(&stg)) {
+        match KijukuDB::replicate_db(Path::new(&prod), Path::new(&stg), kijuku_db::SyncOp::Discard) {
             Ok(()) => println!("discard 完了: {} -> {}", prod, stg),
             Err(e) => eprintln!("discard に失敗: {}", e),
         }
@@ -1968,7 +2047,7 @@ async fn handle_stdin(ctx: &CliContext) {
     // 開かずに処理する（接続中の stg 上書きによる WAL 破損を回避・設計 §4.2/§5.3）。
     // discard は stg 破棄・再 sync（§4.6）で処理は sync と同一。操作名のみ監査（§10）で区別。
     if request.operation == "sync" || request.operation == "discard" {
-        let response = handle_sync(&request.params).await;
+        let response = handle_sync(&request.params, &request.operation).await;
         output_response(&response);
         return;
     }
@@ -2114,6 +2193,22 @@ async fn main() {
         Some(Commands::ListPreStashes) => {
             handle_list_pre_stashes_subcommand(&ctx);
         }
+        Some(Commands::AuditLogs {
+            operation,
+            from,
+            to,
+            limit,
+            json,
+        }) => {
+            handle_audit_logs_subcommand(
+                &ctx,
+                operation.clone(),
+                from.clone(),
+                to.clone(),
+                *limit,
+                *json,
+            );
+        }
         Some(Commands::Restore { nth, id, timeout_ms }) => {
             handle_restore_subcommand(&ctx, *nth, id.clone(), *timeout_ms);
         }
@@ -2226,6 +2321,19 @@ async fn handle_list_pre_stashes(db: &KijukuDB) -> CommandResponse {
     }
 }
 
+/// 監査ログを取得（設計 §10・TASK-46）。params から `AuditLogFilter` を組み立てる。
+async fn handle_list_audit_logs(db: &KijukuDB, params: &serde_json::Value) -> CommandResponse {
+    let filter: kijuku_db::AuditLogFilter =
+        serde_json::from_value(params.clone()).unwrap_or_default();
+    match db.list_audit_logs(&filter) {
+        Ok(logs) => match serde_json::to_value(&logs) {
+            Ok(v) => CommandResponse::success(v),
+            Err(e) => CommandResponse::error(format!("シリアライズエラー: {}", e)),
+        },
+        Err(e) => CommandResponse::error(e.to_string()),
+    }
+}
+
 async fn handle_restore(db: &mut KijukuDB, params: &serde_json::Value) -> CommandResponse {
     let params: RestoreParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
@@ -2262,7 +2370,7 @@ async fn handle_restore(db: &mut KijukuDB, params: &serde_json::Value) -> Comman
 /// - restore（DB 層）: ProdRwScope の pre-stash が §8 即時巻き戻しを担保。dryRun で差分プレビュー。
 async fn handle_b_operation_prod(ctx: &CliContext, request: &CommandRequest) -> CommandResponse {
     // ProdRwScope: prod 排他ロック + pre-stash 強制（設計 §5.2/§7.2）。別セッションが promote 中なら ProdBusy。
-    let _scope = match kijuku_db::prod_rw::ProdRwScope::acquire(Path::new(&ctx.db_path), None) {
+    let scope = match kijuku_db::prod_rw::ProdRwScope::acquire(Path::new(&ctx.db_path), None) {
         Ok(s) => s,
         Err(e) => {
             return CommandResponse::error(format!(
@@ -2287,27 +2395,67 @@ async fn handle_b_operation_prod(ctx: &CliContext, request: &CommandRequest) -> 
         Err(e) => return CommandResponse::error(format!("prod のオープンに失敗: {}", e)),
     };
 
-    // TODO-P4(TASK-46): (b)操作の監査ログ記録（操作・対象・pre-stash path・実行者）をここに追加。
+    // 監査操作名（b-restore/b-mediaMv/b-purgeTrash・設計 §10/§9.2）と dry-run 判定。
+    let audit_op = match request.operation.as_str() {
+        "restore" => "b-restore",
+        "mediaMv" => "b-mediaMv",
+        "purgeTrash" => "b-purgeTrash",
+        other => other,
+    };
+    let dry_run = request
+        .params
+        .get("dryRun")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     // 既存ハンドラへディスパッチ（gate は各操作に内包）。
-    match request.operation.as_str() {
+    let response = match request.operation.as_str() {
         "restore" => handle_restore(&mut db, &request.params).await,
         "mediaMv" => handle_media_mv(&db, &request.params).await,
         "purgeTrash" => handle_purge_trash(&db, &request.params).await,
         other => CommandResponse::error(format!("(b)操作 '{}' は prod 直接経路で未サポート", other)),
-    }
+    };
+
+    // 監査: (b)操作の成否・dryRun を prod 側 audit.log に記録（設計 §10・best-effort）。
+    let audit_result = if !response.success {
+        kijuku_db::AuditResult::Failure
+    } else if dry_run {
+        kijuku_db::AuditResult::DryRun
+    } else {
+        kijuku_db::AuditResult::Success
+    };
+    KijukuDB::append_audit_to_prod(
+        Path::new(&ctx.db_path),
+        audit_op,
+        kijuku_db::AuditTarget::Prod,
+        audit_result,
+        response.error.as_deref(),
+        serde_json::json!({
+            "preStashPath": scope.pre_stash_path().map(|p| p.display().to_string()),
+            "dryRun": dry_run,
+            "detail": response.data.clone().unwrap_or(serde_json::Value::Null),
+        }),
+    );
+
+    response
 }
 
 /// `sync` 操作（prod→stg フル複製・設計 §4.2）。stg 接続を開かずファイルコピーする。
 ///
 /// params の `from`/`to` で prod/stg パスを明示（リモート SSH 経由で両パスを渡す）。
 /// 欠落時は環境変数/デフォルトから解決する。
-async fn handle_sync(params: &serde_json::Value) -> CommandResponse {
+async fn handle_sync(params: &serde_json::Value, operation: &str) -> CommandResponse {
     let params: SyncParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
     let (prod, stg) = resolve_sync_paths(params.from, params.to);
-    match KijukuDB::replicate_db(Path::new(&prod), Path::new(&stg)) {
+    let op = if operation == "discard" {
+        kijuku_db::SyncOp::Discard
+    } else {
+        kijuku_db::SyncOp::Sync
+    };
+    match KijukuDB::replicate_db(Path::new(&prod), Path::new(&stg), op) {
         Ok(()) => CommandResponse::success(serde_json::json!({
             "prodPath": prod,
             "stgPath": stg,
@@ -2526,6 +2674,10 @@ async fn execute_command(backend: &mut Backend, request: &CommandRequest) -> Com
         "listPreStashes" => match backend.as_local() {
             Some(local) => handle_list_pre_stashes(local).await,
             None => not_supported("listPreStashes"),
+        },
+        "listAuditLogs" => match backend.as_local() {
+            Some(local) => handle_list_audit_logs(local, &request.params).await,
+            None => not_supported("listAuditLogs"),
         },
         "restore" => match backend.as_local_mut() {
             Some(local) => handle_restore(local, &request.params).await,

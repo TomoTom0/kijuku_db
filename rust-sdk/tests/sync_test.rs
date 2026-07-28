@@ -44,7 +44,7 @@ fn test_replicate_db_copies_data_and_schema() {
     assert!(!stg.exists(), "sync 前は stg が存在しない");
 
     // sync（prod→stg）
-    KijukuDB::replicate_db(&prod, &stg).unwrap();
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).unwrap();
 
     // stg を開いて prod と一致することを検証
     let stg_db = KijukuDB::open(&stg).unwrap();
@@ -61,7 +61,7 @@ fn test_replicate_db_overwrites_existing_stg() {
     let (prod, stg) = setup_prod(&dir);
 
     // 1回目の sync
-    KijukuDB::replicate_db(&prod, &stg).unwrap();
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).unwrap();
     assert!(stg.exists());
 
     // stg 側で独自にレコードを追加（LLM 編集のシミュレート）
@@ -77,7 +77,7 @@ fn test_replicate_db_overwrites_existing_stg() {
     }
 
     // 再 sync（既存 stg + WAL/SHM 副産物が残り得る状態からの上書き）
-    KijukuDB::replicate_db(&prod, &stg).unwrap();
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).unwrap();
 
     // 再 sync 後: stg は prod と完全一致（stg 固有の追加分は削除され、prod データのみ残る）
     let stg_db = KijukuDB::open(&stg).unwrap();
@@ -94,7 +94,7 @@ fn test_replicate_db_overwrites_existing_stg() {
 fn test_replicate_db_rejects_same_path() {
     let dir = TempDir::new().unwrap();
     let same = dir.path().join("kijuku.db");
-    let result = KijukuDB::replicate_db(&same, &same);
+    let result = KijukuDB::replicate_db(&same, &same, kijuku_db::SyncOp::Sync);
     assert!(result.is_err(), "src == dst はエラー");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -113,7 +113,7 @@ fn test_discard_restores_stg_from_prod_and_leaves_prod_intact() {
     let (prod, stg) = setup_prod(&dir);
 
     // 1. sync（書込セッション開始・設計 §6.1）
-    KijukuDB::replicate_db(&prod, &stg).unwrap();
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).unwrap();
 
     // 2. stg に LLM 編集（promote せず破棄するシナリオのシミュレート）
     {
@@ -136,7 +136,7 @@ fn test_discard_restores_stg_from_prod_and_leaves_prod_intact() {
     };
 
     // 3. discard（stg を破棄して prod から再 sync・§4.6）。処理は `replicate_db(prod, stg)` と同一。
-    KijukuDB::replicate_db(&prod, &stg).unwrap();
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).unwrap();
 
     // 4. stg は prod で上書き復元（stg 固有の編集は破棄され prod データのみ残る）
     let stg_db = KijukuDB::open(&stg).unwrap();

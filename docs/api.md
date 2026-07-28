@@ -15,6 +15,7 @@ TypeScript SDKを基準に記載し、Rust SDKの相違点は[Rust SDK](#rust-sd
   - [トランザクション](#トランザクション)
   - [バックアップ操作](#バックアップ操作)
   - [バックアップ読み取り操作](#バックアップ読み取り操作)
+  - [監査ログ操作](#監査ログ操作)
   - [ファイル存在チェック](#ファイル存在チェック)
   - [サムネイル操作](#サムネイル操作)
   - [ファイル操作](#ファイル操作)
@@ -1397,6 +1398,79 @@ const media = db.findMediaFromBackup({ media_type: 'comic' });
 
 ---
 
+### 監査ログ操作
+
+本番DB保護操作（sync/discard・observe/diffProdStg・promote・restore/mediaMv/purgeTrash）の事後追跡用監査ログです。prod DB本体ではなく`backup/meta/audit.log`（JSONL）にappend-onlyで記録されます。詳細は設計§10を参照してください。
+
+#### `listAuditLogs(filter?: AuditLogFilter): AuditRecord[]`
+
+監査ログをフィルタ適用して取得します。新しい順（timestamp降順）で返します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `filter` | `AuditLogFilter` | | フィルタ条件（省略時: デフォルト） |
+
+**AuditLogFilter:**
+
+| プロパティ | 型 | デフォルト | 説明 |
+|-----------|-----|-----------|------|
+| `operation` | `string \| undefined` | `undefined` | 操作種別でフィルタ（完全一致・省略時: 全操作） |
+| `from` | `string \| undefined` | `undefined` | 開始日時（ISO 8601・包含） |
+| `to` | `string \| undefined` | `undefined` | 終了日時（ISO 8601・包含） |
+| `limit` | `number \| undefined` | `1000` | 上限件数（最大10000） |
+
+**戻り値:** `AuditRecord[]`
+
+**AuditRecord:**
+
+| プロパティ | 型 | 説明 |
+|-----------|-----|------|
+| `timestamp` | `string` | ISO 8601 UTC（ミリ秒） |
+| `operation` | `string` | 操作種別（`sync`, `discard`, `observe`, `diffProdStg`, `promote`, `b-restore`, `b-mediaMv`, `b-purgeTrash`） |
+| `target` | `AuditTarget` | 操作の対象DB（`prod` または `stg`） |
+| `actor` | `string \| null` | 実行者（`USER`環境変数・取れなければnull） |
+| `prodDbPath` | `string` | prod DBの絶対パス |
+| `result` | `AuditResult` | 操作結果（`success`, `failure`, `dryRun`） |
+| `error` | `string \| null` | failure時のエラー文字列 |
+| `summary` | `object` | 操作ごとの構造的サマリ（diff/gate結果・revision・preStashPath等） |
+
+**使用例:**
+
+```typescript
+// 全監査ログを取得（デフォルト上限1000件）
+const allLogs = db.listAuditLogs();
+
+// 特定操作でフィルタ
+const promoteLogs = db.listAuditLogs({ operation: 'promote' });
+
+// 日時範囲でフィルタ
+const recentLogs = db.listAuditLogs({
+  from: '2026-07-01T00:00:00.000Z',
+  to: '2026-07-31T23:59:59.999Z',
+  limit: 500,
+});
+
+// 失敗した操作のみ
+const failureLogs = db.listAuditLogs().filter(log => log.result === 'failure');
+```
+
+**監査される操作:**
+
+- `sync` - prod→stg複製（§4.2）
+- `discard` - stg破棄・再sync（§4.6）
+- `observe` - prod-stg差分チェック・gate評価（§5）
+- `diffProdStg` - prod-stg差分表示
+- `promote` - stg→prod反映（§6）
+- `b-restore` - バックアップ復元
+- `b-mediaMv` - メディアファイル移動
+- `b-purgeTrash` - trash完全削除
+
+**重要:** 監査ログはprod DB外の`backup/meta/audit.log`に記録されるため、promote後もprod側の監査ログは残ります（破壊的上書きで消えません）。
+
+---
+
 ### ファイル存在チェック
 
 #### `updateExist(filter: MediaFilter, options?: QueryOptions, updateOptions?: UpdateExistOptions): UpdateExistResult`
@@ -2197,6 +2271,79 @@ const db = new KijukuDB('./data/kijuku.db', {
     }
   }
 });
+```
+
+---
+
+### AuditTarget
+
+監査ログの対象DB。
+
+```typescript
+type AuditTarget = 'prod' | 'stg';
+```
+
+---
+
+### AuditResult
+
+監査ログの操作結果。
+
+```typescript
+type AuditResult = 'success' | 'failure' | 'dryRun';
+```
+
+---
+
+### AuditRecord
+
+監査ログレコード（`audit.log`の1行・JSONL）。
+
+```typescript
+interface AuditRecord {
+  timestamp: string;           // ISO 8601 UTC（ミリ秒）
+  operation: string;           // 操作種別（sync/discard/observe/diffProdStg/promote/b-restore/b-mediaMv/b-purgeTrash）
+  target: AuditTarget;         // 対象DB（prod/stg）
+  actor: string | null;        // 実行者（USER環境変数・取れなければnull）
+  prodDbPath: string;          // prod DBの絶対パス
+  result: AuditResult;         // 操作結果
+  error: string | null;        // failure時のエラー文字列
+  summary: object;             // 操作ごとの構造的サマリ（diff/gate結果・revision・preStashPath等）
+}
+```
+
+**summaryフィールドの構造例:**
+
+```typescript
+// sync/discard
+{ stgPath: string, revision: string }
+
+// observe
+{ passed: boolean, diffTotals: object, failedChecks: object }
+
+// promote
+{ observe: object, preStashPath: string }
+
+// restore
+{ backupPath: string, preRestorePath?: string }
+
+// mediaMv/purgeTrash
+{ affectedPaths: string[] }
+```
+
+---
+
+### AuditLogFilter
+
+監査ログのフィルタ条件。
+
+```typescript
+interface AuditLogFilter {
+  operation?: string;   // 操作種別（完全一致）
+  from?: string;        // 開始日時（ISO 8601・包含）
+  to?: string;          // 終了日時（ISO 8601・包含）
+  limit?: number;       // 上限件数（デフォルト: 1000・最大: 10000）
+}
 ```
 
 ---

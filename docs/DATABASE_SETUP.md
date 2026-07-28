@@ -255,6 +255,96 @@ sqlite3 db/my-media.db "VACUUM;"
 - 大量データのインポート時は `bulkCreateMedia()` を使用してください
 - インデックスが適切に作成されているか確認してください（マイグレーションで自動作成されます）
 
+---
+
+## 本番DB保護運用（prod/stg構成）
+
+kijuku-dbでは、本番DB（prod）の誤破壊を防ぐための**prod/stg構成**と**監査ログ**機能を提供しています。詳細は[設計§10-§15](design/db-protection.md)を参照してください。
+
+### 7.1. prod/stg構成の概要
+
+- **prod（本番DB）**: 読取専用で参照するメインデータベース
+- **stg（検証DB）**: 書込可能な作業用データベース
+- **基本運用**: stgで変更→gate評価→prodにpromote
+
+### 7.2. CLIのtarget/read-source指定
+
+CLIでは `--target` / `--read-source` オプションで操作対象を制御します：
+
+```bash
+# 既定: stgで書込可能（明示的--target stgと同じ）
+kijuku-cli --db ./data/kijuku.db import data.tsv
+
+# prodをreadonlyで参照（--target prod: migrateスキップ + readonly接続）
+kijuku-cli --db ./data/kijuku.db --target prod search --title "作品名"
+
+# 読込先を明示的にprodに指定（--read-source prod: readonlyセッション）
+kijuku-cli --db ./data/kijuku.db --read-source prod findMedia '{}'
+```
+
+**優先順位:** `--read-source` > `KIJUKU_READ_SOURCE`(環境変数) > `--target` > `KIJUKU_TARGET`(環境変数) > `stg`(既定)
+
+### 7.3. 環境変数による設定
+
+```bash
+# 操作対象をprodに（_READONLY_SESSION_で使用）
+export KIJUKU_TARGET=prod
+
+# 読込先をprodに（readonlyセッション）
+export KIJUKU_READ_SOURCE=prod
+```
+
+### 7.4. 監査ログの確認
+
+prod保護操作は自動的に監査ログに記録されます：
+
+```bash
+# 全監査ログを確認
+kijuku-cli --db ./data/kijuku.db audit list
+
+# promote操作のみ
+kijuku-cli --db ./data/kijuku.db audit list --operation promote
+
+# 特定期間のログ
+kijuku-cli --db ./data/kijuku.db audit list \
+  --from "2026-07-01T00:00:00.000Z" \
+  --to "2026-07-31T23:59:59.999Z"
+```
+
+**監査される操作:** sync, discard, observe, diffProdStg, promote, restore, mediaMv, purgeTrash
+
+**監査ログの場所:** `backup/meta/audit.log`（prod DB外のJSONLファイル）
+
+### 7.5. 推奨運用フロー
+
+1. **stgで作業**: `--target stg`（既定）で書込操作
+2. **gate評価**: observeでprod-stg差分チェック・gate評価
+3. **promote実行**: gate通過後にpromoteでstg→prod反映
+4. **監査確認**: audit listで操作履歴を確認
+
+```bash
+# 1. stgでデータ更新
+kijuku-cli --db ./data/kijuku.db import new-data.tsv
+
+# 2. prod-stg差分チェック・gate評価
+kijuku-cli --db ./data/kijuku.db observe
+
+# 3. gate通過後にpromote
+kijuku-cli --db ./data/kijuku.db promote
+
+# 4. 監査ログでpromote記録を確認
+kijuku-cli --db ./data/kijuku.db audit list --operation promote
+```
+
+### 7.6. 本番DB保護の詳細
+
+- **prodへの直接書込拒否**: `--target prod`時はmigrateスキップ+readonly接続
+- **promoteの事前チェック**: observeでgate評価（スキーマ不一致・外部キー違反・大量削除等を検出）
+- **監査ログの永続性**: prod DB外に記録されるため、promote後も監査ログは残る
+- **事後追跡可能**: 全操作にtimestamp・実行者・操作内容が記録される
+
+---
+
 ## 参考資料
 
 - [テストガイド](TESTING.md) - テスト実行方法

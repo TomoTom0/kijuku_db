@@ -153,6 +153,18 @@ impl DbClient {
         }
     }
 
+    /// 監査ログを取得（設計 §10・TASK-46）。監査ログは prod に集約されるため、通常は
+    /// prod を open して呼ぶ（`list_pre_stashes` と同方針）。
+    pub fn list_audit_logs(
+        &self,
+        filter: &kijuku_db::AuditLogFilter,
+    ) -> Result<Vec<kijuku_db::AuditRecord>> {
+        match self {
+            DbClient::Local(d) => d.list_audit_logs(filter),
+            DbClient::Remote(r) => r.list_audit_logs(filter),
+        }
+    }
+
     /// バックアップから復元。戻り値は復元先パス文字列（Local の PathBuf を文字列化）。
     /// Local は `&mut self`（DB 再オープンを伴う）のため、このメソッドも `&mut self`。
     pub fn restore(&mut self, selector: &BackupSelector, timeout_ms: Option<u32>) -> Result<String> {

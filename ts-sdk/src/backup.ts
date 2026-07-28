@@ -20,6 +20,8 @@
 import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { AuditLogFilter, AuditRecord } from './types';
+import { isAuditRecord } from './types';
 
 // 時間定数（秒）
 const HOUR_SECS = 3600;
@@ -1004,6 +1006,51 @@ export class BackupManager {
       '\n';
 
     fs.appendFileSync(this.recordsPath, content);
+  }
+
+  // ---- audit.log (TASK-46・設計 §10) ----
+
+  private get auditLogPath(): string {
+    return path.join(this.backupDir, 'meta', 'audit.log');
+  }
+
+  /** 監査レコードを `backup/meta/audit.log`（JSONL）へ追記（設計 §10・TASK-46）。
+   *  append-only・ヘッダなし（JSONL）。best-effort（例外送出なし・操作結果に影響させない）。 */
+  appendAuditRecord(record: AuditRecord): void {
+    try {
+      fs.mkdirSync(path.join(this.backupDir, 'meta'), { recursive: true });
+      fs.appendFileSync(this.auditLogPath, JSON.stringify(record) + '\n', 'utf8');
+    } catch {
+      // best-effort・auto-records と同じ（監査書込失敗は操作に影響させない）
+    }
+  }
+
+  /** 監査ログを読む（フィルタ適用済み・新しい順・limit 上限）。未存在は空。
+   *  不正行（型ガード不合格）はスキップ（前方互換・将来スキーマ拡張時の耐性）。 */
+  readAuditLogs(filter: AuditLogFilter = {}): AuditRecord[] {
+    if (!fs.existsSync(this.auditLogPath)) return [];
+    const content = fs.readFileSync(this.auditLogPath, 'utf-8');
+    let records: AuditRecord[] = content
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => {
+        try {
+          const parsed: unknown = JSON.parse(l);
+          return isAuditRecord(parsed) ? parsed : null;
+        } catch {
+          // 不正なJSONL行をスキップ（プロセス中断時の不完全なwrite等）
+          return null;
+        }
+      })
+      .filter((r): r is AuditRecord => r !== null);
+    const op = filter.operation;
+    if (op) records = records.filter((r) => r.operation === op);
+    const from = filter.from;
+    if (from) records = records.filter((r) => r.timestamp >= from);
+    const to = filter.to;
+    if (to) records = records.filter((r) => r.timestamp <= to);
+    records.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    return records.slice(0, Math.min(filter.limit ?? 1000, 10000));
   }
 
   private updateAutoRecordPruned(id: string): void {

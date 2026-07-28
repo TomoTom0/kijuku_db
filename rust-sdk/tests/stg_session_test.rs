@@ -31,7 +31,7 @@ fn setup_prod(dir: &TempDir, n: usize) -> (PathBuf, PathBuf) {
 fn test_sync_writes_stg_meta_revision() {
     let dir = TempDir::new().unwrap();
     let (prod, stg) = setup_prod(&dir, 3);
-    KijukuDB::replicate_db(&prod, &stg).expect("sync");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("sync");
 
     assert!(meta_path(&stg).exists(), "meta ファイル生成");
     let meta = read_stg_meta(&stg)
@@ -69,7 +69,7 @@ fn test_sync_holds_lock_during_operation() {
 
     // stg を事前にロック（編集中セッションを模擬）
     let _held = StgLock::acquire(&stg).expect("hold lock");
-    let err = KijukuDB::replicate_db(&prod, &stg).unwrap_err();
+    let err = KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).unwrap_err();
     assert!(
         matches!(err, KijukuError::StgBusy { .. }),
         "sync はロック保持中に StgBusy: {err:?}"
@@ -81,7 +81,7 @@ fn test_sync_holds_lock_during_operation() {
 fn test_observe_prod_sync_revision_pass_when_unchanged() {
     let dir = TempDir::new().unwrap();
     let (prod, stg) = setup_prod(&dir, 2);
-    KijukuDB::replicate_db(&prod, &stg).expect("sync");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("sync");
 
     let stg_db = KijukuDB::open(&stg).expect("open stg");
     let result = stg_db
@@ -104,7 +104,7 @@ fn test_observe_prod_sync_revision_pass_when_unchanged() {
 fn test_observe_prod_sync_revision_fails_on_drift_then_resync() {
     let dir = TempDir::new().unwrap();
     let (prod, stg) = setup_prod(&dir, 2);
-    KijukuDB::replicate_db(&prod, &stg).expect("sync");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("sync");
 
     // prod を sync 後に変更（drift 発生）
     {
@@ -136,7 +136,7 @@ fn test_observe_prod_sync_revision_fails_on_drift_then_resync() {
 
     // 再 sync で revision 更新 -> 合格に復帰
     drop(stg_db);
-    KijukuDB::replicate_db(&prod, &stg).expect("re-sync");
+    KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("re-sync");
     let stg_db = KijukuDB::open(&stg).expect("open stg");
     let result2 = stg_db
         .observe(&prod, &ObserveOptions::default())
