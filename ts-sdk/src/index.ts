@@ -1064,13 +1064,32 @@ export class KijukuDB {
       });
     }
 
-    return {
-      passed: allGateChecksPassed(checks),
+    const passed = allGateChecksPassed(checks);
+    const result: ObserveResult = {
+      passed,
       prodSchemaVersion,
       stgSchemaVersion,
       summary,
       checks,
     };
+
+    // 監査: prod 側 backup/meta/audit.log（設計 §10・best-effort）。
+    KijukuDB.appendAuditToProd(
+      prodDbPath,
+      'observe',
+      'prod',
+      passed ? 'success' : 'failure',
+      passed ? null : 'gate checks failed',
+      {
+        stgPath: this.dbPath,
+        prodSchemaVersion,
+        stgSchemaVersion,
+        diffTotals: summary.totals,
+        checkNames: checks.map((c) => ({ name: c.name, passed: c.passed })),
+      },
+    );
+
+    return result;
   }
 
   /**
@@ -1137,6 +1156,13 @@ export class KijukuDB {
 
       // 5. stg → prod コピー（Online Backup API・src=stg を RO で開く・ファイル全体・§15-1）。
       await BackupManager.copyDbOnline(this.dbPath, prodDbPath);
+
+      // 監査: prod 側 backup/meta/audit.log（設計 §10・best-effort）。
+      KijukuDB.appendAuditToProd(prodDbPath, 'promote', 'prod', 'success', null, {
+        stgPath: this.dbPath,
+        preStashPath,
+        diffTotals: observe.summary.totals,
+      });
 
       return { observe, preStashPath };
     } finally {

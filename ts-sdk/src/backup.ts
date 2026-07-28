@@ -1034,8 +1034,13 @@ export class BackupManager {
       .split('\n')
       .filter((l) => l.trim() !== '')
       .map((l) => {
-        const parsed: unknown = JSON.parse(l);
-        return isAuditRecord(parsed) ? parsed : null;
+        try {
+          const parsed: unknown = JSON.parse(l);
+          return isAuditRecord(parsed) ? parsed : null;
+        } catch {
+          // 不正なJSONL行をスキップ（プロセス中断時の不完全なwrite等）
+          return null;
+        }
       })
       .filter((r): r is AuditRecord => r !== null);
     const op = filter.operation;

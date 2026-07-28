@@ -1287,13 +1287,21 @@ impl BackupManager {
     /// 監査ログを読む（フィルタ適用済み・新しい順・limit 上限）。未存在は空。
     ///
     /// 不正行（パース失敗）はスキップ（前方互換・将来スキーマ拡張時の耐性）。
-    /// `from`/`to` は ISO 8601 文字列の辞書順比較（ミリ秒固定フォーマットで時系列順序と一致）。
+    /// `from`/`to` は ISO 8601 文字列をパースして DateTime 同士で比較（タイムゾーン異なる表現も正しく比較）。
     pub fn read_audit_logs(&self, filter: &AuditLogFilter) -> Result<Vec<AuditRecord>> {
         let path = self.audit_log_path();
         if !path.exists() {
             return Ok(Vec::new());
         }
         let content = fs::read_to_string(&path)?;
+
+        // ISO 8601文字列をパースしてDateTime同士で比較するヘルパー
+        let parse_timestamp = |s: &str| -> Option<chrono::DateTime<chrono::Utc>> {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .ok()
+        };
+
         let mut records: Vec<AuditRecord> = content
             .lines()
             .filter(|l| !l.trim().is_empty())
@@ -1303,11 +1311,29 @@ impl BackupManager {
                 None => true,
             })
             .filter(|r| match &filter.from {
-                Some(t) => r.timestamp.as_str() >= t.as_str(),
+                Some(from) => {
+                    if let (Some(record_time), Some(from_time)) =
+                        (parse_timestamp(&r.timestamp), parse_timestamp(from))
+                    {
+                        record_time >= from_time
+                    } else {
+                        // パース失敗時はスキップ
+                        false
+                    }
+                }
                 None => true,
             })
             .filter(|r| match &filter.to {
-                Some(t) => r.timestamp.as_str() <= t.as_str(),
+                Some(to) => {
+                    if let (Some(record_time), Some(to_time)) =
+                        (parse_timestamp(&r.timestamp), parse_timestamp(to))
+                    {
+                        record_time <= to_time
+                    } else {
+                        // パース失敗時はスキップ
+                        false
+                    }
+                }
                 None => true,
             })
             .collect();

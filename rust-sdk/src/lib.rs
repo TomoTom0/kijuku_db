@@ -310,17 +310,42 @@ impl KijukuDB {
                 std::fs::remove_file(p)?;
             }
         }
-        backup::BackupManager::copy_db_online(src, dst)?;
+        backup::BackupManager::copy_db_online(src, dst).map_err(|e| {
+            // 失敗時に監査ログを記録（stagingは既に破壊されている）
+            Self::append_audit_to_prod(
+                src,
+                op.as_str(),
+                AuditTarget::Stg,
+                AuditResult::Failure,
+                Some(&e.to_string()),
+                serde_json::json!({"stgPath": dst.display().to_string()}),
+            );
+            e
+        })?;
 
         // revision 指紋を `<dst>.meta.json` に原子書き込み。
         let meta = stg_session::StgMeta {
             synced_from: stg_session::SyncedFrom {
                 prod_path: src.display().to_string(),
-                revision,
+                revision: revision.clone(),
                 synced_at: chrono::Utc::now(),
             },
         };
-        stg_session::write_stg_meta(dst, &meta)?;
+        stg_session::write_stg_meta(dst, &meta).map_err(|e| {
+            // 失敗時に監査ログを記録（DBコピーは成功している）
+            Self::append_audit_to_prod(
+                src,
+                op.as_str(),
+                AuditTarget::Stg,
+                AuditResult::Failure,
+                Some(&e.to_string()),
+                serde_json::json!({
+                    "stgPath": dst.display().to_string(),
+                    "revision": serde_json::to_value(&revision).unwrap_or(serde_json::Value::Null),
+                }),
+            );
+            e
+        })?;
 
         // 監査: prod(src) 側 backup/meta/audit.log へ追記（設計 §10・best-effort）。
         // sync/discard を operation で区別し、revision 指紋を対象範囲として記録。
