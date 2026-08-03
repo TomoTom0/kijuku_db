@@ -79,12 +79,13 @@ docs/
 
 デプロイされた `kijuku-cli` バイナリの新旧を `--version` の数値だけで判別できるよう、feature ブランチの push 時に version の patch を +1 する。タイムスタンプで新旧を判断する必要をなくすための仕組み。
 
-- **push**: `mise run push`（`scripts/dev/bump-and-push.sh`）。以下5箇所の version の patch を +1 して commit & push する:
+- **push**: `mise run push`（`scripts/dev/bump-and-push.sh`）。以下5箇所の version の patch を +1 して commit & push する（`Cargo.lock` は cargo check で間接更新）:
   - `rust-sdk/Cargo.toml`（`--version` の元 = `CARGO_PKG_VERSION`）
   - `ts-sdk/package.json`
   - `rust-sdk/README.md`（依存関係例）
-  - `rust-sdk/src/bin/cli.rs`（`//! Version:` docコメント）
-  - `rust-sdk/Cargo.lock`（`kijuku-db` エントリ）
+  - `rust-sdk/src/bin/cli/main.rs`（`//! Version:` docコメント）
+  - `ts-sdk/src/version.ts`（`SDK_VERSION` 定数・リモート自動デプロイのバージョン比較用）
+  - `rust-sdk/Cargo.lock`（`kijuku-db` エントリ・cargo check で更新）
 - **CHANGELOG / tm release は version と独立**: version は push 単位で増えるが、CHANGELOG は機能リリースの区切りでのみ `docs/changelog/unreleased.md` に記載する。リリース時にその時点の version で `v{version}.md` 化 + `tm release` する。
 - **minor / major**: 機能追加・破壊的変更のリリース時に手動で上記5箇所を更新する。以降は push ごとに patch +1。
 - **dev / main では実行不可**（origin/dev, origin/main は PR のみ）。
