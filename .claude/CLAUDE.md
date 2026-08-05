@@ -22,7 +22,7 @@ mise run deploy     # Rust バイナリをビルドしてローカル配置
 - `~/.local/bin/kijuku-cli` にシンボリックリンクを作成
 - `REMOTE_SSH_HOST`（`.env`）設定時はリモートにもデプロイ
 
-`schema.sql`/`schema.d1.sql` 等の埋め込みリソースはビルド時にバイナリに埋め込まれるため、これらを更新した場合は必ず `mise run deploy` を実行してください（`docs/` 配下のドキュメントはバイナリに埋め込まれず GitHub で管理されるため deploy 不要）。
+`schema.sql`/`schema.d1.sql` 等の埋め込みリソース、および `docs/` 配下のドキュメント（`kijuku-cli docs` サブコマンドが `include_dir!` でバイナリに埋め込む）は、いずれもビルド時にバイナリに埋め込まれるため、これらを更新した場合は必ず `mise run deploy` を実行してください（`docs/` は GitHub でも管理されますが、CLI での参照用にバイナリにも埋め込まれます）。
 
 mise を使わず個別に実行する場合は各 SDK ディレクトリで直接コマンドを実行（`cd rust-sdk && cargo build --release` / `cd ts-sdk && pnpm run build` 等）。
 
@@ -30,7 +30,7 @@ mise を使わず個別に実行する場合は各 SDK ディレクトリで直�
 
 - `rust-sdk/`: Rust SDK（kijuku-cli バイナリを含む）
 - `ts-sdk/`: TypeScript SDK
-- `docs/`: ドキュメント（GitHub で管理・バイナリには埋め込まれない）
+- `docs/`: ドキュメント（GitHub で管理。`kijuku-cli docs` 用にバイナリにも埋め込まれる）
 
 ## 設計原則
 
