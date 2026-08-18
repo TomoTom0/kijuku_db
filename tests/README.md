@@ -19,6 +19,8 @@ rust-sdk/src/                # 内蔵ユニットテスト（#[cfg(test)]）
   media_path.rs              - media path 安全化・sandbox 境界
   backup.rs                  - バックアップ（BackupManager・保持ポリシー・file-less DBのbackupDir明示必須）
   migration.rs               - マイグレーション（ベーススキーマ履歴記録のトリップワイヤ含む）
+  lib.rs                     - KijukuDB オープン（:memory: の既定backup無効化・明示指定時のbackupDir必須検証）
+  remote.rs                  - RemoteKijukuDB（stgパス導出・target別DBパス解決・sync/discardのfrom/to具象解決）
 
 ts-sdk/test/
   unit/                      # 純粋関数・モックのテスト（I/O なし）

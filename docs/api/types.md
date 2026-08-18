@@ -268,7 +268,7 @@ interface RetentionPolicy { tiers: RetentionTier[]; }
 
 自動バックアップ設定オプション。`retentionPolicy` 未設定時は `maxBackups`/`maxAgeDays` で制限する。
 
-> **file-less DB（`:memory:`）の扱い**: `backupDir` の既定解決（DBパスの親 + `backup/`）はファイル実体のないDBではcwd依存となるため、`:memory:` では** `backupDir` の明示指定が必須**（未指定だとエラー）。出力先の無断cwd基準解決は行わない。`KijukuDB(':memory:')` は `backup` オプション未指定の場合バックアップ無効（マネージャーを生成しない）で動作する。
+> **file-less DB（`:memory:`）の扱い**: `backupDir` の既定解決（DBパスの親 + `backup/`）はファイル実体のないDBではcwd依存となるため、`:memory:` では** `backupDir` の明示指定が必須**（未指定だとエラー）。出力先の無断cwd基準解決は行わない。`KijukuDB(':memory:')` は `backup` オプション未指定の場合バックアップ無効（マネージャーを生成しない）で動作する。Rust `KijukuDB::open(":memory:")` も同じ挙動（既定オプションならバックアップ無効・backup_dir を含む明示指定は `BackupManager` が検証する）。
 
 **使用例:**
 

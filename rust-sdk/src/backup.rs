@@ -136,7 +136,7 @@ pub struct BackupMetaStore {
 }
 
 /// 保持ポリシーの1段階
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RetentionTier {
     pub max_age_secs: u64,
@@ -144,7 +144,7 @@ pub struct RetentionTier {
 }
 
 /// 自動バックアップの粗密保持ポリシー
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RetentionPolicy {
     pub tiers: Vec<RetentionTier>,
@@ -177,7 +177,7 @@ pub struct BackupProgress {
 ///
 /// 全フィールド `Option` かつ `#[serde(default)]` で部分指定を許容（CLI/remote wire・TASK-62）。
 /// `onProgress` のようなコールバックは持たない（Rust 側は純粋なシリアライズ対象）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub struct BackupOptions {
     /// バックアップ保存先ディレクトリ

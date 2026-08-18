@@ -275,8 +275,8 @@ kijuku-cli --db ./data/kijuku.stg.db observe --prod ./data/kijuku.db \
 kijuku-cli --db ./data/kijuku.stg.db observe --prod ./data/kijuku.db --json
 ```
 
-- `--prod` 省略時は `KIJUKU_DB_PATH` / デフォルトから解決します
-- リモート DB（`--db host:path`）では `--prod` を無視し、リモート側の prod/stg パス設定で評価します
+- `--prod` 省略時は `KIJUKU_DB_PATH` 環境変数から解決します（未設定の場合はエラー・DB配置は明示指定必須）
+- リモート DB（`--db host:path`）でも `--prod`（または `KIJUKU_DB_PATH`）で解決した prod パスをリモート側に渡して評価します
 
 ### promote（stdin 操作のみ）
 
@@ -319,7 +319,7 @@ kijuku-cli --db ./data/kijuku.db sync-db --from ./data/kijuku.db --to ./data/kij
 echo '{"operation":"sync","params":{"from":"./data/kijuku.db","to":"./data/kijuku.stg.db"}}' | kijuku-cli --db ./data/kijuku.db
 ```
 
-- `--from`/`--to` を省略した場合は環境変数（`KIJUKU_DB_PATH`/`KIJUKU_STG_DB_PATH`）とデフォルトから解決します
+- `--from`/`--to` を省略した場合は環境変数（`KIJUKU_DB_PATH`/`KIJUKU_STG_DB_PATH`）から解決します（未設定の場合はエラー・DB配置は明示指定必須）
 - `--from` と `--to` が同一パスの場合はエラーになります
 - **排他前提**: stg（`--to`）に接続中のプロセスがないこと（呼出側の責任）
 

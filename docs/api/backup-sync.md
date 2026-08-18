@@ -2,7 +2,7 @@
 
 本番DB保護を含む `KijukuDB` のバックアップ系・prod/stg 運用系API。設計の詳細は `docs/design/db-protection.md`・`docs/design/backup.md` を参照。
 
-> **バックアップ出力先**: `BackupOptions.backupDir` 未指定時の既定は「DBパスの親ディレクトリ + `backup/`」。ただしファイル実体のないDB（`:memory:`）では cwd 依存の解決となるため、**`backupDir` の明示指定が必須**（未指定だとエラー・出力先の無断cwd基準解決は禁止）。`KijukuDB(':memory:')` は `backup` 未指定ならバックアップ無効で動作する。
+> **バックアップ出力先**: `BackupOptions.backupDir` 未指定時の既定は「DBパスの親ディレクトリ + `backup/`」。ただしファイル実体のないDB（`:memory:`）では cwd 依存の解決となるため、**`backupDir` の明示指定が必須**（未指定だとエラー・出力先の無断cwd基準解決は禁止）。`KijukuDB(':memory:')` は `backup` 未指定ならバックアップ無効で動作する（Rust `KijukuDB::open(":memory:")` も同じ）。
 
 ## バックアップ操作
 
