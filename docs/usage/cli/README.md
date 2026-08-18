@@ -22,7 +22,7 @@ kijuku-cli --db <dbファイルのパス> [--verbose] <サブコマンド> [オ�
 
 | オプション | 説明 |
 |-----------|------|
-| `--db <path>` | データベースファイルのパス（省略時: `./kijuku.db`） |
+| `--db <path>` | データベースファイルのパス。省略時は `--target` に応じ `KIJUKU_DB_PATH`（prod）/ `KIJUKU_STG_DB_PATH`（stg）環境変数で解決し、**いずれも無い場合はエラー**（DB配置は明示指定必須・暗黙の既定パスなし・設計 §13）。相対パスの明示指定は可能。`user@host:path` 形式でリモートSSH接続も可 |
 | `--verbose` | 実行したSQLをstderrに出力する（デバッグ用） |
 | `--backend <BACKEND>` | バックエンド（`local` / `d1`）。`d1` は `D1_ACCOUNT_ID` / `D1_DATABASE_ID` 環境変数と事前の `wrangler login` が必要（省略時: `local`） |
 | `--media-root <path>` | ファイル操作（`file` / `trash` サブコマンド）のサンドボックス境界。media root の**絶対パス**を指定。`file` / `trash` サブコマンドで必須（未指定時は SDK がエラーを返す） |
@@ -33,7 +33,8 @@ kijuku-cli --db <dbファイルのパス> [--verbose] <サブコマンド> [オ�
 **例:**
 
 ```bash
-kijuku-cli --db ./data/kijuku.db --verbose search
+# stdin プロトコルでメディア検索（検索の通常サブコマンドは存在しないため）
+echo '{"operation":"findMedia","params":{"filter":{"media_type":"comic"}}}' | kijuku-cli --db ./data/kijuku.stg.db --verbose
 ```
 
 ## サブコマンド一覧
@@ -47,12 +48,13 @@ TypeScript SDKの `RemoteKijukuDB` はこのモードを使用してSSH経由で
 echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.db
 ```
 
-**stdin操作一覧（55種類）:**
+**stdin操作一覧（62種類）:**
 
 | カテゴリ | 操作名 | 説明 | 主なパラメータ |
 |---------|--------|------|--------------|
 | **DB操作** | `migrate` | マイグレーション実行 | なし |
 | | `getSchemaVersion` | スキーマバージョン取得 | なし |
+| | `getServerVersion` | リモートCLIバイナリ自身のバージョン取得（自動デプロイのバージョン比較用） | なし |
 | | `getTables` | テーブル一覧取得 | なし |
 | | `getTableInfo` | テーブル定義取得 | `table_name` |
 | **メディアCRUD** | `createMedia` | メディア作成 | `data: MediaInput` |
@@ -93,13 +95,17 @@ echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.d
 | | `computeMediaHashes` | 一括ハッシュ計算 | `filter`, `options?`, `force` |
 | **バックアップ** | `backup` | バックアップ作成 | `label?` |
 | | `listBackups` | バックアップ一覧 | なし |
+| | `listPreStashes` | pre-stash（即時復旧用ロールバックファイル）一覧（設計 §8） | なし |
+| | `listAuditLogs` | 監査ログ取得（設計 §10） | `operation?`, `from?`, `to?`, `limit?` |
 | | `restore` | バックアップ復元 **(b)** | `selector?`, `dryRun?` |
 | | `diffBackup` | 現在DBとの差分 | `selector?`, `options?` |
 | | `setBackupLabel` | 事後ラベル付与 | `id`, `label?` |
 | | `setBackupNote` | 事後メモ付与 | `id`, `note?` |
 | | `getBackupMeta` | 事後メタ取得 | `id` |
 | **DB複製** | `sync` | prod(RO)→stg(RW) フル複製（設計 §4.2） | `from`, `to` |
+| | `discard` | stg 破棄・prod から再 sync（設計 §4.6） | `from`, `to` |
 | | `diffProdStg` | prod(RO)/stg 差分（promote 判断用・設計 §4.4） | `prodDbPath?`, `options?` |
+| | `observe` | 機械的 promote gate 評価（promote 可否・設計 §3.4） | `prodDbPath?`, `options?` |
 | | `promote` | stg→prod 反映（promote gate 通過後・設計 §4.5） | `prodDbPath?`, `options?`, `backupOpts?` |
 | **ファイル操作（media root）** | `mediaCp` | ファイル/ディレクトリ複製（dry-run ファースト・上書きは trash 経由） | `src`, `dst`, `options?` |
 | | `mediaMv` | ファイル/ディレクトリ移動 **(b)**（dry-run ファースト・上書きは trash 経由） | `src`, `dst`, `options?` |
@@ -109,7 +115,7 @@ echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.d
 | | `restoreFromTrash` | trash から復元（衝突時はエラー） | `id` |
 | | `purgeTrash` | trash を物理削除 **(b)**（dry-run ファースト） | `ids?`, `dry_run?` |
 
-> **(b) 制限操作**（設計 §9・[本番DB保護](../../design/db-protection.md)）: `mediaMv`/`purgeTrash`/`restore` は破壊的/全床上書きのため stg（既定）では**拒否**されます。prod 直接 `--target prod` で起票すると、環境が **dry-run + trash + pre-stash** のシステム gate を強制して実行します（人間承認不要・§3.2/§5.2）。`restore` は `dryRun: true` で復元差分を返し prod を変更しません。stg のリセットは `sync`（prod→stg 再複製）を使用してください。
+> **(b) 制限操作**（設計 §9・[本番DB保護](../../design/db-protection.md)）: stdin 操作の `mediaMv`/`purgeTrash`/`restore` は破壊的/全床上書きのため stg（既定）では**拒否**されます。prod 直接 `--target prod` で起票すると、環境が **dry-run + trash + pre-stash** のシステム gate を強制して実行します（人間承認不要・§3.2/§5.2）。`restore` は `dryRun: true` で復元差分を返し prod を変更しません。stg のリセットは `sync`（prod→stg 再複製）を使用してください。
 
 **使用例:**
 
@@ -136,8 +142,6 @@ echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.d
 **QueryOptions対応:** `findMedia`, `updateExist`, `checkThumbnail`, `updateThumbnail`では`options`パラメータで`QueryOptions`（`sortKeys`, `limit`, `offset`）を渡して対象を絞り込めます。
 
 ---
-
-### backup
 
 ### backup
 
@@ -209,6 +213,8 @@ kijuku-cli --db ./data/kijuku.db restore --nth 1
 kijuku-cli --db ./data/kijuku.db restore --id 20260707120000-000
 ```
 
+> **stdin 操作 `restore` との違い:** このサブコマンドに `--dry-run` はなく（`--nth` / `--id` / `--timeout-ms` のみ）、ローカル DB では SDK の `restore` を直接実行します。(b) 制限操作の gate（stg での拒否・`--target prod` での dry-run + pre-stash 強制・監査 `b-restore`）は stdin プロトコルの `restore` に適用されます。リモート DB（`--db host:path`）ではこのサブコマンドもリモート側の stdin `restore` として RPC されるため gate が適用されます（stg では拒否・`--target prod` で gate 付き実行）。
+
 ### diff-backup
 
 バックアップと現在DBの差分を表示します（復元判断用）。
@@ -253,6 +259,37 @@ kijuku-cli --db ./data/kijuku.stg.db diff-prod-stg --prod ./data/kijuku.db --pro
 - `removed`: prod のみ（promote で prod から削除）
 - `changed`: 両方で異なる（promote で prod が上書き）
 
+### observe
+
+stg と prod を比較し、機械的 promote gate を評価します（promote 可否・設計 §3.4/§4.4・[本番DB保護](../../design/db-protection.md)）。integrity/FK/schema_version/件数差分上限 の機械検査を実行し、全合格で promote 可能と判定します。
+
+```bash
+# prod と stg を比較して promote gate を評価
+kijuku-cli --db ./data/kijuku.stg.db observe --prod ./data/kijuku.db
+
+# gate 閾値を上書き（既定: max-added=5000 / max-removed=1000 / max-changed=5000）
+kijuku-cli --db ./data/kijuku.stg.db observe --prod ./data/kijuku.db \
+  --max-added 100 --max-removed 10 --max-changed 100
+
+# 機械可読 JSON で出力（他の出力を抑制）
+kijuku-cli --db ./data/kijuku.stg.db observe --prod ./data/kijuku.db --json
+```
+
+- `--prod` 省略時は `KIJUKU_DB_PATH` / デフォルトから解決します
+- リモート DB（`--db host:path`）では `--prod` を無視し、リモート側の prod/stg パス設定で評価します
+
+### promote（stdin 操作のみ）
+
+stg→prod 反映の `promote` には CLI サブコマンドはありません。stdin 操作 `promote`（設計 §4.5）または SDK（Rust `KijukuDB::promote` / TS `RemoteKijukuDB`）を使用します。observe gate 通過後に実行します。
+
+```bash
+# stdin 操作で promote（gate 不合格ならエラー）
+echo '{"operation":"promote","params":{"prodDbPath":"./data/kijuku.db"}}' | kijuku-cli --db ./data/kijuku.stg.db
+```
+
+- `backupOpts` で pre-stash 先をカスタマイズできます（省略時はデフォルト `tmp/`・§7.2）
+- 実行結果（JSON）に `preStashPath` が含まれるため、問題があれば `list-pre-stashes` から即時復旧（§8）できます
+
 ### set-backup-label / set-backup-note
 
 既存バックアップにラベル・メモを事後付与します（`backup/meta/backup-meta.json` に保存）。
@@ -285,6 +322,18 @@ echo '{"operation":"sync","params":{"from":"./data/kijuku.db","to":"./data/kijuk
 - `--from`/`--to` を省略した場合は環境変数（`KIJUKU_DB_PATH`/`KIJUKU_STG_DB_PATH`）とデフォルトから解決します
 - `--from` と `--to` が同一パスの場合はエラーになります
 - **排他前提**: stg（`--to`）に接続中のプロセスがないこと（呼出側の責任）
+
+### discard-db
+
+stg を破棄して prod から再 sync します（設計 §4.6・[本番DB保護](../../design/db-protection.md)）。処理は `sync-db` と同一（prod→stg の Online Backup フル複製・既存 stg は上書き破棄）で、操作名のみ監査ログ（§10）で区別するための独立サブコマンドです。書込セッション中断・observe gate 不合格時に stg を捨てて再構築する経路で、prod は一切触りません。引数の意味・解決方法は `sync-db` に準じます。
+
+```bash
+# stg を破棄して prod から再構築
+kijuku-cli --db ./data/kijuku.stg.db discard-db --from ./data/kijuku.db --to ./data/kijuku.stg.db
+
+# または stdin 操作で
+echo '{"operation":"discard","params":{"from":"./data/kijuku.db","to":"./data/kijuku.stg.db"}}' | kijuku-cli --db ./data/kijuku.stg.db
+```
 
 ### check-thumbnail
 
@@ -463,6 +512,24 @@ kijuku-cli --db ./data/kijuku.db hash find --hash <sha256_hex>
 kijuku-cli --db ./data/kijuku.db hash duplicates
 ```
 
+### import
+
+JSON/CSV/TSV ファイルからメディアを一括インポートします（タグ・追加属性も処理）。拡張子（`.json` / `.csv` / `.tsv`）で形式を自動判定します。
+
+- 各レコードの `media_type`・`title` は必須です
+- `tags` 列（カンマ区切り）はタグ関連付けとして登録します
+- `--additional-columns` で指定した列は `media_attributes` へ string 型で格納されます
+
+```bash
+# JSON ファイルから一括インポート
+kijuku-cli --db ./data/kijuku.db import media.json
+
+# CSV からインポートし、author/publisher 列を追加属性として格納
+kijuku-cli --db ./data/kijuku.db import media.csv --additional-columns "author,publisher"
+```
+
+prod 読込経路（`--target prod`）では書込不可のため事前に拒否されます。結果は1行JSON（`CommandResponse`）で出力されます。
+
 ### bulk-load
 
 ローカルDB（`--db`）の全データを D1 へバルクロード（移行）し、件数・内容一致を検証します。`--backend d1` が必要で、source はローカル SQLite、dest は D1 です。
@@ -481,6 +548,8 @@ kijuku-cli --db ./data/kijuku.db --backend d1 bulk-load --verify-only
 ```
 
 `--backend d1` を指定すれば、stdin（デフォルト）モードの各 operation（`createMedia` / `findMedia` など）も D1 に対して実行できます。
+
+> **D1 バックエンドの制限:** `--backend d1` で実行できるサブコマンドは **stdin（サブコマンド省略）・ `docs` ・ `bulk-load` のみ**です。`file` / `trash` を含む他のサブコマンド（`backup` / `restore` / `hash` など）は local バックエンド専用で、指定するとエラーになります。逆に `bulk-load` は `--backend d1` が必須です（local 指定時はエラー）。
 
 ### server
 
@@ -514,27 +583,30 @@ kijuku-cli docs rust
 kijuku-cli docs api
 ```
 
-### audit
+### audit-logs
 
 監査ログを表示・検索します。本番DB保護操作（sync/discard/observe/diffProdStg/promote/restore/mediaMv/purgeTrash）の事後追跡用レコードを取得します。詳細は[設計§10](../../design/db-protection.md)を参照してください。
 
 ```bash
 # 全監査ログを表示（新しい順・デフォルト上限1000件）
-kijuku-cli --db ./data/kijuku.db audit list
+kijuku-cli --db ./data/kijuku.db audit-logs
 
 # 特定操作でフィルタ
-kijuku-cli --db ./data/kijuku.db audit list --operation promote
+kijuku-cli --db ./data/kijuku.db audit-logs --operation promote
 
 # 日時範囲でフィルタ
-kijuku-cli --db ./data/kijuku.db audit list \
+kijuku-cli --db ./data/kijuku.db audit-logs \
   --from "2026-07-01T00:00:00.000Z" \
   --to "2026-07-31T23:59:59.999Z"
 
-# 上限件数を指定
-kijuku-cli --db ./data/kijuku.db audit list --limit 500
+# 上限件数を指定（最大 10000）
+kijuku-cli --db ./data/kijuku.db audit-logs --limit 500
+
+# 機械可読 JSON で出力
+kijuku-cli --db ./data/kijuku.db audit-logs --json
 
 # 組み合わせ
-kijuku-cli --db ./data/kijuku.db audit list \
+kijuku-cli --db ./data/kijuku.db audit-logs \
   --operation sync \
   --from "2026-07-01T00:00:00.000Z" \
   --limit 100
@@ -564,4 +636,4 @@ kijuku-cli --db ./data/kijuku.db audit list \
 - [SDK選択ガイド](../sdk/README.md)
 - [Rust SDK利用ガイド](../sdk/rust/README.md)
 - [TypeScript SDK利用ガイド](../sdk/ts/README.md)
-- [API仕様書](../../api.md)
+- [API仕様書](../../api/README.md)

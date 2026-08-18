@@ -13,15 +13,17 @@ rust-sdk/tests/              # Rust SDK のインテグレーションテスト
   sync_test.rs               - sync（prod→stg フル複製・replicate_db/copy_db_online）
 
 rust-sdk/src/                # 内蔵ユニットテスト（#[cfg(test)]）
-  config.rs                  - config.toml 読み込み・target解決（Target/resolve_target）
+  config.rs                  - config.toml 読み込み・target解決（Target/resolve_target・db_path明示必須の検証）
   file_ops.rs                - media root 配下ファイル操作（cp/mv/sync）
   trash.rs                   - 論理削除（move/list/restore/purge）
   media_path.rs              - media path 安全化・sandbox 境界
+  backup.rs                  - バックアップ（BackupManager・保持ポリシー・file-less DBのbackupDir明示必須）
+  migration.rs               - マイグレーション（ベーススキーマ履歴記録のトリップワイヤ含む）
 
 ts-sdk/test/
   unit/                      # 純粋関数・モックのテスト（I/O なし）
     create-database.test.ts  - createDatabase() の分岐ロジック
-    db-options.test.ts       - DBOptions/open 挙動（WAL・readonly skip・migrate拒否・pre_migrate snapshot）
+    db-options.test.ts       - DBOptions/open 挙動（WAL・readonly skip・migrate拒否・pre_migrate snapshot・file-less DBのバックアップ既定無効化）
     error-handling.test.ts   - エラークラスとハンドラ関数
     file-ops.test.ts         - media root 配下ファイル操作（cp/mv/sync・dry-run）
     media-path.test.ts       - media path 安全化・sandbox 境界

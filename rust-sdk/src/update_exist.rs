@@ -6,18 +6,24 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const UPDATED_IDS_INLINE_LIMIT: usize = 1000;
 
 fn temp_file_path(suffix: &str) -> String {
+    // pid + ナノ秒 + プロセス内連番で一意化。同一プロセス内（cargo test の並列実行等）で
+    // 別スレッドが同じナノ秒を取得するとファイル名衝突し、write の truncate〜flush 間に
+    // 読んだ側が空ファイルをパースして失敗するため、連番で衝突を排除する。
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = process::id();
     std::env::temp_dir()
-        .join(format!("kijuku-update-exist-{}-{}{}", pid, ts, suffix))
+        .join(format!("kijuku-update-exist-{}-{}-{}{}", pid, ts, seq, suffix))
         .to_string_lossy()
         .into_owned()
 }

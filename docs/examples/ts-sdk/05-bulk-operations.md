@@ -49,7 +49,7 @@ created.forEach(media => {
 ### パフォーマンス比較
 
 ```typescript
-// ❌ 遅い: 1件ずつ作成
+// 悪い例（遅い）: 1件ずつ作成
 console.time('Individual Create');
 for (let i = 0; i < 100; i++) {
   db.createMedia({
@@ -60,7 +60,7 @@ for (let i = 0; i < 100; i++) {
 console.timeEnd('Individual Create');
 // => Individual Create: ~250ms
 
-// ✅ 速い: 一括作成
+// 推奨（速い）: 一括作成
 console.time('Bulk Create');
 const bulkData = Array.from({ length: 100 }, (_, i) => ({
   title: `メディア ${i}`,
@@ -207,7 +207,7 @@ bulkCreateWithProgress(largeData);
 // シリーズ内のすべてのメディアに言語情報を追加
 const onePiece = db.findMedia({ series: 'ワンピース' });
 
-// ✅ bulkUpdateMediaを使う（ローカル・リモート共通で推奨）
+// 推奨: bulkUpdateMediaを使う（ローカル・リモート共通で推奨）
 db.bulkUpdateMedia(
   onePiece.map(m => ({
     id: m.id,
@@ -244,7 +244,7 @@ console.log(`${updates.length}件のパスを更新しました`);
 // テストデータを削除
 const testMedia = db.findMedia({ source: 'test' });
 
-// ✅ bulkDeleteMediaを使う（ローカル・リモート共通で推奨）
+// 推奨: bulkDeleteMediaを使う（ローカル・リモート共通で推奨）
 db.bulkDeleteMedia(testMedia.map(m => m.id));
 
 console.log(`${testMedia.length}件のテストデータを削除しました`);
@@ -319,7 +319,7 @@ function importFromJSON(filePath: string) {
     
     // インポート
     const created = db.bulkCreateMedia(data);
-    console.log(`✓ ${created.length}件をインポートしました`);
+    console.log(`${created.length}件をインポートしました`);
     
     return created;
   } catch (error) {
@@ -504,24 +504,24 @@ restoreDatabase('./backup.json', './data/restored.db');
 ### 1. バルク操作を使う
 
 ```typescript
-// ✅ 推奨
+// 推奨例
 db.bulkCreateMedia(dataArray);
 
-// ❌ 非推奨
+// 非推奨例
 dataArray.forEach(data => db.createMedia(data));
 ```
 
 ### 2. トランザクションでまとめる
 
 ```typescript
-// ✅ 推奨（1回のトランザクション）
+// 推奨例（1回のトランザクション）
 db.transaction(() => {
   for (let i = 0; i < 100; i++) {
     db.createMedia({ title: `${i}`, media_type: 'comic' });
   }
 });
 
-// ❌ 非推奨（100回のトランザクション）
+// 非推奨例（100回のトランザクション）
 for (let i = 0; i < 100; i++) {
   db.createMedia({ title: `${i}`, media_type: 'comic' });
 }
@@ -558,4 +558,4 @@ processBatches(largeDataset, BATCH_SIZE, (batch) => {
 
 ## 次のステップ
 
-- [API仕様書](../../api.md) - 全メソッドの詳細仕様
+- [API仕様書](../../api/README.md) - 全メソッドの詳細仕様

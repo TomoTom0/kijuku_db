@@ -54,14 +54,9 @@ dir = "{{config_root}}/ts-sdk"
 run = "pnpm run test:integration"
 
 [tasks."test:ts:e2e"]
-description = "TypeScript SDK の E2E テスト・ローカル (pnpm run test:e2e)"
+description = "TypeScript SDK の E2E テスト・リモート SSH接続 (pnpm run test:e2e = test/e2e/sdk-remote.test.ts)。TEST_SSH_HOST 未設定時はスキップ"
 dir = "{{config_root}}/ts-sdk"
 run = "pnpm run test:e2e"
-
-[tasks."test:ts:e2e:remote"]
-description = "TypeScript SDK のリモート E2E テスト (pnpm run test:e2e:remote)。TEST_SSH_HOST が必要"
-dir = "{{config_root}}/ts-sdk"
-run = "pnpm run test:e2e:remote"
 
 [tasks."test:ts:watch"]
 description = "TypeScript SDK のテストをウォッチモードで実行 (pnpm run test:watch)"

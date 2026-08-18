@@ -214,6 +214,15 @@ export class BackupManager {
   constructor(db: Database.Database, private readonly dbPath: string, options: BackupOptions) {
     this.db = db;
     this.dbStem = path.basename(dbPath, path.extname(dbPath)) || 'database';
+    // ファイル実体のないDB（:memory:）は既定解決（dirname(':memory:') = '.' = cwd）を持たない。
+    // 出力先は明示指定必須（無断のcwd基準解決を許さない・TASK-95）。
+    if (dbPath === ':memory:' && !options.backupDir) {
+      throw new Error(
+        'backupDir must be specified explicitly for a file-less database (:memory:) - ' +
+          'implicit cwd-relative resolution is not allowed. ' +
+          'Pass backup: { backupDir: ... } or disable backups with backup: null.'
+      );
+    }
     this.backupDir = options.backupDir ?? path.join(path.dirname(dbPath), 'backup');
     this.intervalMs = options.intervalMs ?? 3_600_000;
     this.enabled = options.enabled ?? true;

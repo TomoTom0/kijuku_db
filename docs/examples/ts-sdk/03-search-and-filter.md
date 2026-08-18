@@ -257,7 +257,7 @@ const page3 = getPage(3, 20);
 
 ### 全件数の取得
 
-> **⚠️ パフォーマンス注意**: 以下の実装は全データをメモリにロードするため、データ量が多い場合はメモリ消費が大きくなります。件数のみが必要な場合は、データベースの集計機能を使用するか、SDKにカウント専用メソッドが追加されるまでは注意して使用してください。
+> **パフォーマンス注意**: 以下の実装は全データをメモリにロードするため、データ量が多い場合はメモリ消費が大きくなります。件数のみが必要な場合は、データベースの集計機能を使用するか、SDKにカウント専用メソッドが追加されるまでは注意して使用してください。
 
 ```typescript
 const allComics = db.findMedia({ media_type: 'comic' });
@@ -355,7 +355,7 @@ seriesList.forEach(series => {
 
 ### 作者別の作品数
 
-> **⚠️ パフォーマンス注意**: 以下の実装は全データをメモリにロードして集計するため、データ量が多い場合はメモリ消費が大きくなります。集計処理にはデータベースのGROUP BY機能を使用することを推奨します。
+> **パフォーマンス注意**: 以下の実装は全データをメモリにロードして集計するため、データ量が多い場合はメモリ消費が大きくなります。集計処理にはデータベースのGROUP BY機能を使用することを推奨します。
 
 ```typescript
 const allMedia = db.findMedia({ media_type: 'comic' });
@@ -393,26 +393,26 @@ LIMIT 10;
 ### 1. インデックスが効く検索を優先
 
 ```typescript
-// ✅ 速い（インデックスあり）
+// 推奨（速い・インデックスあり）
 db.findMedia({ media_type: 'comic' });
 db.findMedia({ title_id: 'one-piece-vol1' });
 db.findMedia({ artist_id: 'oda-eiichiro' });
 db.findMedia({ source: 'bookwalker' });
 
-// ⚠️ 遅い可能性（全件スキャン）
+// 注意: 遅い可能性（全件スキャン）
 db.findMedia({ description: 'keyword' }); // descriptionにはインデックスなし
 ```
 
 ### 2. 必要な件数だけ取得
 
 ```typescript
-// ✅ 効率的
+// 推奨（効率的）
 const top10 = db.findMedia(
   { media_type: 'comic' },
   { limit: 10 }
 );
 
-// ❌ 非効率（全件取得してから10件に絞る）
+// 非推奨（非効率・全件取得してから10件に絞る）
 const all = db.findMedia({ media_type: 'comic' });
 const top10Bad = all.slice(0, 10);
 ```
@@ -420,14 +420,14 @@ const top10Bad = all.slice(0, 10);
 ### 3. フィルタを組み合わせる
 
 ```typescript
-// ✅ データベース側でフィルタ
+// 推奨: データベース側でフィルタ
 const results = db.findMedia({
   media_type: 'comic',
   series: 'ワンピース',
   artist: '尾田栄一郎',
 });
 
-// ❌ アプリケーション側でフィルタ（非効率）
+// 非推奨: アプリケーション側でフィルタ（非効率）
 const all = db.findMedia({});
 const filtered = all.filter(m => 
   m.media_type === 'comic' &&

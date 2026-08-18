@@ -144,8 +144,10 @@ export class KijukuDB {
       this.db.pragma('journal_mode = WAL');
     }
 
-    // バックアップマネージャーの初期化（合意に基づきデフォルトで有効）
-    if (options?.backup !== null) {
+    // バックアップマネージャーの初期化（合意に基づきファイル実体のあるDBではデフォルトで有効）。
+    // :memory: は既定で無効（backup を明示した場合のみ生成され、BackupManager が
+    // backupDir の明示指定を要求する・cwd依存の暗黙解決を許さない・TASK-95）。
+    if (options?.backup !== null && !(dbPath === ':memory:' && options?.backup === undefined)) {
       this.backupManager = new BackupManager(this.db, dbPath, options?.backup ?? {});
     }
 
@@ -1126,13 +1128,16 @@ export class KijukuDB {
     try {
       // 3. pre-stash 強制（enabled と独立・常時実行・§7.2）。prod を一時 RW 接続で BackupManager 経由。
       //    backupOpts 未指定時は enabled:false（auto/manual/meta dir を作らず tmp/ のみ）。
+      //    ファイル実体のない prod（:memory:）は pre-stash 対象外（preStashPath undefined）。
       let preStashPath: string | undefined;
-      const prodDb = new Database(prodDbPath);
-      try {
-        const bm = new BackupManager(prodDb, prodDbPath, backupOpts ?? { enabled: false });
-        preStashPath = bm.createPrePromoteSnapshot();
-      } finally {
-        prodDb.close();
+      if (prodDbPath !== ':memory:') {
+        const prodDb = new Database(prodDbPath);
+        try {
+          const bm = new BackupManager(prodDb, prodDbPath, backupOpts ?? { enabled: false });
+          preStashPath = bm.createPrePromoteSnapshot();
+        } finally {
+          prodDb.close();
+        }
       }
 
       // 3b. 排他ロック下で gate を再評価（authoritative）。手順1の observe → ロック取得の間に別 promoter

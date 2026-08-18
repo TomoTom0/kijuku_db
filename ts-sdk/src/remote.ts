@@ -31,6 +31,7 @@ import type { ThumbnailOptions, CheckThumbnailResult, UpdateThumbnailResult } fr
 import type { FileOpOptions, FileOpResult } from './file_ops.js';
 import { defaultFileOpOptions } from './file_ops.js';
 import type { TrashEntry, TrashOperation } from './trash.js';
+import type { AuditLogFilter, AuditRecord } from './types.js';
 import { resolveWithinRoot, isProtected, trashDir } from './media_path.js';
 import type { Target } from './config.js';
 import { SDK_VERSION } from './version.js';
@@ -1503,6 +1504,16 @@ export class RemoteKijukuDB {
       operation: 'getBackupMeta',
       params: { id },
     });
+    return this.checkResponse(response);
+  }
+
+  /** 監査ログを取得（prod 側 backup/meta/audit.log・ローカル KijukuDB.listAuditLogs と同じフィルタ） */
+  async listAuditLogs(filter: AuditLogFilter = {}, timeoutMs?: number): Promise<AuditRecord[]> {
+    // params には filter をそのまま渡す（Rust CLI が AuditLogFilter として直接デシリアライズ・parity）
+    const response = await this.executeRemoteCommand(
+      { operation: 'listAuditLogs', params: filter },
+      timeoutMs,
+    );
     return this.checkResponse(response);
   }
 }

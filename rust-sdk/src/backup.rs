@@ -344,6 +344,13 @@ impl BackupManager {
         let backup_dir = match options.backup_dir {
             Some(dir) => PathBuf::from(dir),
             None => {
+                // ファイル実体のないDB（`:memory:`）は既定解決（dbPathの親 = cwd）を持たない。
+                // 出力先は明示指定必須（無断のcwd基準解決を許さない・TASK-95）。
+                if db_path.as_ref().to_string_lossy() == ":memory:" {
+                    return Err(KijukuError::Validation(
+                        "backup_dir must be specified explicitly for a file-less database (:memory:)".into(),
+                    ));
+                }
                 let parent = db_path_buf.parent().unwrap_or(Path::new("."));
                 parent.join("backup")
             }
@@ -2644,5 +2651,37 @@ mod tests {
             .to_wire_value()
             .unwrap();
         assert_eq!(v, serde_json::json!({ "type": "latest" }));
+    }
+}
+
+#[cfg(test)]
+mod task95_tests {
+    use super::*;
+
+    /// ファイル実体のないDB（:memory:）は既定解決（cwd）を持たないため、
+    /// backup_dir の明示指定を要求する（TASK-95・無断cwd基準解決の禁止）。
+    #[test]
+    fn test_file_less_db_requires_explicit_backup_dir() {
+        let err = match BackupManager::new(":memory:", BackupOptions::default()) {
+            Err(e) => e,
+            Ok(_) => panic!("file-less DB without backup_dir must be rejected"),
+        };
+        assert!(
+            err.to_string()
+                .contains("backup_dir must be specified explicitly"),
+            "unexpected error: {err}"
+        );
+
+        // 明示指定があれば許可される（enabled:false なのでディレクトリも作らない）
+        let dir = std::env::temp_dir().join(format!("kijuku-bm-nomkdir-{}", std::process::id()));
+        let manager = BackupManager::new(
+            ":memory:",
+            BackupOptions {
+                backup_dir: Some(dir.to_string_lossy().into_owned()),
+                enabled: Some(false),
+                ..Default::default()
+            },
+        );
+        assert!(manager.is_ok());
     }
 }

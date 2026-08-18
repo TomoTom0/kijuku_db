@@ -403,7 +403,7 @@ result.details.forEach(item => {
 
 #### updateThumbnail
 
-ImageMagick (`convert`) を使用してサムネイルを生成・更新します：
+メディアタイプに応じて外部ツールを使用してサムネイルを生成・更新します（comic: ImageMagick `convert`、video: `ffmpeg`、music: 対象外）：
 
 ```typescript
 // 全メディアのサムネイルを生成（既存はスキップ）
@@ -417,12 +417,15 @@ const dryResult = db.updateThumbnail({}, undefined, { dry_run: true });
 const forceResult = db.updateThumbnail({ media_type: 'comic' }, undefined, { force: true });
 ```
 
-**サムネイル生成のロジック:**
+**サムネイル生成のロジック（全タイプ共通）:**
 - `path` が未設定 → スキップ
 - `path` に `content` コンポーネントが含まれない → スキップ
-- `{path}/001.{ext}` が存在しない → スキップ
 - サムネイルパス: `{content親}/cover/{uuid}.jpg`
-- ImageMagick `convert` で高さ 180px 固定（縦横比維持）、品質 85
+
+**タイプ別の処理:**
+- `comic`: `{path}/001.{ext}` が存在しない → スキップ。ImageMagick `convert` で高さ 180px 固定（縦横比維持）、品質 85
+- `video`: 動画ファイルを `path` → `{path}.{ext}` → 同階層の `{uuid}.{任意拡張子}` の順に解決し、存在しない → スキップ。`ffmpeg` で再生 1 秒地点のフレームを 1 枚抽出（`-ss 00:00:01 -vframes 1 -q:v 2`）
+- `music`: サムネイル対象外のため常にスキップ
 
 ### 自動バックアップ
 
@@ -431,15 +434,32 @@ const forceResult = db.updateThumbnail({ media_type: 'comic' }, undefined, { for
 ```typescript
 const db = new KijukuDB('./data/kijuku.db', {
   backup: {
-    enabled: true,
-    intervalMs: 3600000, // 1時間ごと（ミリ秒）
-    backupDir: './backups',
+    enabled: true,                  // バックアップ機能全体の有効/無効（デフォルト: true）
+    autoEnabled: true,              // 自動バックアップの有効/無効
+    intervalMs: 3600000,            // 自動バックアップのトリガー間隔（ミリ秒・デフォルト: 1時間）
+    backupDir: './backups',         // バックアップ保存先ディレクトリ（省略時: dbPathの親ディレクトリ/backup/）
+    tmpRetentionSecs: 604800,       // tmp/ の保持期間（秒・デフォルト: 7日）
+    maxBackups: 100,                // 最大バックアップ数（retentionPolicy 未設定時のみ有効）
+    maxAgeDays: 365,                // 最大保持日数（retentionPolicy 未設定時のみ有効）
+    retentionPolicy: {              // 保持ポリシー（ティア別・maxBackups/maxAgeDays より優先）
+      tiers: [
+        { maxAgeSecs: 86400, keepIntervalSecs: 3600 },   // 1日以内は1時間間隔で保持
+        { maxAgeSecs: 604800, keepIntervalSecs: 86400 }, // 1週間以内は1日間隔で保持
+      ],
+    },
+    busyTimeoutMs: 5000,            // DBロック時に1回の試行で待機する最大時間（ミリ秒）
+    retryIntervalsMs: [500, 1000, 2000],  // DBロック時のリトライ間隔（ミリ秒）のリスト。長さがリトライ回数を決定
+    onProgress: (info) => {         // バックアップ進捗コールバック
+      console.log(`${info.totalPages - info.remainingPages}/${info.totalPages} pages`);
+    },
   }
 });
 
 db.migrate();
 // バックアップは自動的に実行されます
 ```
+
+詳細な仕様は [BackupOptions（型定義）](../../../api/types.md) を参照してください。なお `:memory:` で開いた場合は `backup` 未指定だとバックアップ無効、利用時は `backupDir` の明示指定が必須です（未指定だとエラー）。
 
 手動でバックアップを作成：
 
@@ -464,7 +484,9 @@ backups.forEach(b => console.log(`${b.name} [${b.scope}] (${b.createdAt.toISOStr
 import { BackupSelector } from 'kijuku-db';
 const restoredPath = db.restore();  // 最新
 const restoredPath2 = db.restore(BackupSelector.nth(1));  // 2番目に新しい
-const restoredPath3 = db.restore(BackupSelector.withLabel('before_import'));
+// ラベルからバックアップを探して ID（タイムスタンプ文字列）で直接指定
+const target = db.listBackups().find(b => b.label === 'before_import');
+const restoredPath3 = db.restore(BackupSelector.byId(target!.id));
 
 // BackupManagerに直接アクセス（高度な用途）
 const manager = db.getBackupManager();
@@ -579,6 +601,16 @@ const restoredPath3 = await remoteDb.restore({ type: 'latest' }, 30 * 60_000);
 await remoteDb.disconnect();
 ```
 
+**RemoteConfig の全プロパティ:**
+- `sshHost`: SSH接続先ホスト（`.ssh/config`のHost名・必須）
+- `dbPath`: リモートの prod DB パス（デフォルト: `~/.local/share/kijuku/kijuku.db`）
+- `stgDbPath`: リモートの stg DB パス（未指定時は `dbPath` から `<stem>.stg.db` を導出）
+- `workDir`: 作業ディレクトリ（省略可・将来の拡張用）
+- `binaryPath`: リモートの kijuku-cli バイナリパス（デフォルト: `~/.local/bin/kijuku-cli`）
+- `port`: SSHポート（省略時はSSH設定から読み取り）
+- `mediaRoot`: リモートホスト上の media root（`mediaCp()` / `mediaMv()` / `mediaSync()` 等ファイル操作APIのサンドボックス境界）
+- `target`: 操作対象 DB（`'prod'` / `'stg'`・デフォルトは `'stg'`。`prod` 指定時は readonly オープン・migrate スキップ）
+
 **注意:**
 - リモート操作は非同期（async/await）です
 - 初回実行時、リモート側にバイナリが存在しない場合は自動的に転送されます
@@ -588,12 +620,12 @@ await remoteDb.disconnect();
 リモートDBでは、**1操作ごとにリモート CLI プロセスが1回起動されます**（SSH 接続自体は接続プールで再利用されるため接続回数は増えません・後述）。個別操作をループで繰り返すと RPC 往復とリモートプロセス起動が繰り返されて大幅に遅くなるため、バルク操作の利用を推奨します。
 
 ```typescript
-// ❌ 危険: 1000件 = 1000回のSSH呼び出し
+// 悪い例: 1000件 = 1000回のSSH呼び出し
 for (const item of largeDataset) {
   await remoteDb.createMedia(item);  // SSHが1000回実行される
 }
 
-// ✅ 推奨: 1回のSSH呼び出しで完結
+// 推奨: 1回のSSH呼び出しで完結
 await remoteDb.bulkCreateMedia(largeDataset);
 ```
 
@@ -625,10 +657,18 @@ await remoteDb.bulkDeleteMedia(oldMedia.map(m => m.id));
 
 RemoteKijukuDBはKijukuDBと同等の全メソッドを`Promise`で提供します：
 
-- メディアCRUD / 検索 / バルク操作
-- タグ操作 / 属性操作
+- マイグレーション: `migrate()` / `getSchemaVersion()` / `getTables()` / `getTableInfo()`
+- メディアCRUD / 検索 / バルク操作（`getDistinctValues()` 含む）
+- タグ操作 / 属性操作 / タグ一括取得（`getMediaTagsBulk()`）
+- コンテンツハッシュ操作（`addMediaHash()` / `computeMediaHash()` / `findByContentHash()` / `findDuplicateHashes()` など一式）
 - `updateExist()` / `checkThumbnail()` / `updateThumbnail()`
-- `getSchemaVersion()` / `getServerVersion()` / `getTables()` / `getTableInfo()`
+- ファイル操作: `mediaCp()` / `mediaMv()` / `mediaSync()`（`mediaRoot` がサンドボックス境界・dry-run ファースト）
+- trash操作: `moveToTrash()` / `listTrash()` / `restoreFromTrash()` / `purgeTrash()`
+- ファイル転送: `upload()` / `download()`（SFTP経由）
+- バックアップ: `backup()` / `listBackups()` / `listPreStashes()`（pre-stash一覧） / `restore()` / `setBackupLabel()` / `setBackupNote()` / `getBackupMeta()`
+- prod/stg運用: `sync()` / `discard()` / `diffWithBackup()` / `diffWithProd()` / `observe()` / `promote()`
+
+> **注意:** 監査ログの `listAuditLogs()` は RemoteKijukuDB にも公開されています（prod 側 audit.log を取得）。メソッドの詳細仕様は [RemoteKijukuDB API仕様](../../../api/remote.md) を参照してください。
 
 **リモート CLI の自動デプロイ（TASK-69）:** 全ての RPC の先頭でリモート `kijuku-cli` のバージョン（`getServerVersion`）を取得し、ローカル（クライアント）より古い場合に自動デプロイします（`local > remote` の厳密大なり・ダウングレード保護・同等なら skip）。デプロイ先は `deploy-local.sh` と同じ実体 `~/.local/kijuku-db/bin/kijuku-cli` + symlink `~/.local/bin/kijuku-cli` 構成。リモートが未存在・または TASK-69 前の古いバイナリ（`getServerVersion` 未対応）でも自動デプロイで回復します。
 
@@ -641,7 +681,7 @@ RemoteKijukuDBはKijukuDBと同等の全メソッドを`Promise`で提供しま�
 ```typescript
 import { loadConfig, globalConfigPath } from 'kijuku-db';
 
-// 設定を読み込み（dbPath基準でconfig.tomlを検索）
+// 設定を読み込み（dbPath基準で kijuku-db-config.toml を検索）
 const config = loadConfig('./data/kijuku.db');
 console.log('バックアップ設定:', config.backup);
 
@@ -649,9 +689,12 @@ console.log('バックアップ設定:', config.backup);
 console.log('グローバル設定:', globalConfigPath());
 ```
 
-設定ファイルの優先順位:
-1. `{dbPathと同じディレクトリ}/config.toml`
-2. `~/.config/kijuku/config.toml`（グローバル）
+設定ファイルの優先順位（低い順に上書き・読み込むファイル名は `kijuku-db-config.toml`）:
+1. デフォルト値
+2. `~/.local/config/kijuku-db/config.toml`（グローバル）
+3. `{cwd}/kijuku-db-config.toml`（実行場所）
+4. `{dbPathのディレクトリ}/kijuku-db-config.toml`（DB階層）
+5. `extraConfigPath`（`loadConfig` 第3引数で明示指定・最優先）
 
 ### カスタムエラークラス
 
@@ -763,15 +806,23 @@ const options: QueryOptions = {
 
 ## 環境変数
 
-以下の環境変数で動作をカスタマイズできます：
+SDKの target 解決（`resolveTarget()`・CLI / サーバーで利用）は以下の環境変数を読みます。`KijukuDB` コンストラクタに直接 `dbPath` を渡す場合、これらの環境変数は参照されません:
 
 ```bash
-# データベースファイルのパス（デフォルト値）
-DATABASE_PATH=./data/kijuku.db
+# 操作対象DB（prod / stg・未指定時のデフォルトは stg）
+KIJUKU_TARGET=stg
 
-# クエリログ出力の有効化
-KIJUKU_DB_VERBOSE=true
+# 読み込み専用セッションのソース（prod 指定時は prod を readonly 読込・KIJUKU_TARGET より優先）
+KIJUKU_READ_SOURCE=prod
+
+# prod target の DB パス（デフォルト: kijuku.db）
+KIJUKU_DB_PATH=./data/kijuku.db
+
+# stg target の DB パス（デフォルト: kijuku.stg.db）
+KIJUKU_STG_DB_PATH=./data/kijuku.stg.db
 ```
+
+なお、監査ログの記録時には `USER` 環境変数を actor 名として使用します。
 
 `.env`ファイルを使用する場合は、`dotenv`パッケージと組み合わせて使用してください：
 
@@ -779,7 +830,7 @@ KIJUKU_DB_VERBOSE=true
 import 'dotenv/config';
 import { KijukuDB } from 'kijuku-db';
 
-const db = new KijukuDB(process.env.DATABASE_PATH || './data/kijuku.db');
+const db = new KijukuDB(process.env.KIJUKU_STG_DB_PATH || './data/kijuku.stg.db');
 ```
 
 > **注意:** リモートDB設定は環境変数ではなく`RemoteConfig`オブジェクトで指定します。
@@ -895,6 +946,6 @@ WSL環境で使用する場合、Windowsファイルシステム（/mnt/c/など
 
 ## 関連ドキュメント
 
-- [API仕様書](../../../api.md) - 全メソッドの詳細仕様
+- [API仕様書](../../../api/README.md) - 全メソッドの詳細仕様
 - [サンプルコード](../../../../examples/README.md) - 実行可能なサンプル集
 - [パフォーマンスガイド](../../../PERFORMANCE.md) - ベンチマークと最適化

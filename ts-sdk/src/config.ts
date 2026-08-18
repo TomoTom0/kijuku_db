@@ -188,8 +188,9 @@ export interface TargetResolution {
   shouldMigrate: boolean;
 }
 
-const DEFAULT_PROD_DB = 'kijuku.db';
-const DEFAULT_STG_DB = 'kijuku.stg.db';
+/** 既定のDBパス解決は持たない: DB配置は利用者の明示指定（`--db` または
+ *  `KIJUKU_DB_PATH` / `KIJUKU_STG_DB_PATH`）のみとし、未指定はエラー（TASK-94）。
+ *  暗黙の既定パス（cwd相対・固定絶対パスの双方）で勝手にファイルを作らせない。 */
 
 /** 文字列から target へ変換（大文字小文字無視・不正値は undefined）。 */
 export function parseTarget(s: string | undefined): Target | undefined {
@@ -219,7 +220,7 @@ export const systemEnv: EnvGetter = (key) => process.env[key];
  * - read-source: `cliReadSource` > `KIJUKU_READ_SOURCE`(env) > 未指定
  * - target: `readSource`（指定なら優先・target に折り畳む） > `cliTarget` > `KIJUKU_TARGET`(env) > デフォルト `stg`
  * - dbPath: `cliDb` > target 別 env（prod=`KIJUKU_DB_PATH` / stg=`KIJUKU_STG_DB_PATH`）
- *   > target 別デフォルト（prod=`kijuku.db` / stg=`kijuku.stg.db`）
+ *   > いずれも無い場合はエラー（DB配置は明示指定必須・暗黙の既定パスは持たない）
  *
  * read-source は target に折り畳む（方式A: read-source=prod は prod RO 読込専用セッション・
  * 設計 §3.5/§6.2 を「インスタンス使い分け」で実現）。readonly / shouldMigrate は target から導出。
@@ -235,10 +236,13 @@ export function resolveTarget(
   // target 解決: read-source（指定なら優先・target に折り畳む） > --target > KIJUKU_TARGET > デフォルト stg。
   const target = readSource ?? cliTarget ?? parseTarget(env('KIJUKU_TARGET')) ?? 'stg';
 
-  const dbPath =
-    cliDb ??
-    (target === 'prod' ? env('KIJUKU_DB_PATH') : env('KIJUKU_STG_DB_PATH')) ??
-    (target === 'prod' ? DEFAULT_PROD_DB : DEFAULT_STG_DB);
+  // db_path 解決: --db > target 別 env。未指定はエラー（DB配置は明示指定必須・暗黙の既定パスなし・TASK-94）。
+  const dbPath = cliDb ?? (target === 'prod' ? env('KIJUKU_DB_PATH') : env('KIJUKU_STG_DB_PATH'));
+  if (!dbPath || dbPath.trim() === '') {
+    throw new Error(
+      'db path is required: specify --db or KIJUKU_DB_PATH / KIJUKU_STG_DB_PATH (no implicit default path)'
+    );
+  }
 
   const readonly = target === 'prod';
   return { target, dbPath, readonly, shouldMigrate: !readonly };

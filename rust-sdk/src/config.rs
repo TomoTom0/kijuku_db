@@ -6,6 +6,7 @@
 /// 3. `{cwd}/kijuku-db-config.toml`（実行場所）
 /// 4. `{db_dir}/kijuku-db-config.toml`（DB階層）
 /// 5. `--config {path}` 引数（絶対最優先）
+use crate::{KijukuError, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -254,8 +255,9 @@ impl EnvProvider for SystemEnv {
     }
 }
 
-const DEFAULT_PROD_DB: &str = "kijuku.db";
-const DEFAULT_STG_DB: &str = "kijuku.stg.db";
+/// 既定のDBパス解決は持たない: DB配置は利用者の明示指定（`--db` または
+/// `KIJUKU_DB_PATH` / `KIJUKU_STG_DB_PATH`）のみとし、未指定はエラー（TASK-94）。
+/// 暗黙の既定パス（cwd相対・固定絶対パスの双方）で勝手にファイルを作らせない。
 
 /// target と db_path を解決する純粋関数（設計 §13）。
 ///
@@ -263,8 +265,8 @@ const DEFAULT_STG_DB: &str = "kijuku.stg.db";
 /// - read-source: `cli_read_source` > `KIJUKU_READ_SOURCE`(env) > 未指定
 /// - target: `read_source`（Some なら優先・target に折り畳む） > `cli_target` > `KIJUKU_TARGET`(env)
 ///   > デフォルト `Stg`
-/// - db_path: `cli_db` > target 別 env（prod=`KIJUKU_DB_PATH` / stg=`KIJUKU_STG_DB_PATH`）
-///   > target 別デフォルト（prod=`kijuku.db` / stg=`kijuku.stg.db`）
+/// - db_path: `cli_db` > target 別 env（prod=`KIJUKU_DB_PATH` / stg=`KIJUKU_STG_DB_PATH`）。
+///   いずれも無い場合はエラー（DB配置は明示指定必須・暗黙の既定パスは持たない・TASK-94）
 ///
 /// read-source は target に折り畳む（方式A: `read-source=prod` は prod RO 読込専用セッション・
 /// 設計 §3.5/§6.2 を「インスタンス使い分け」で実現）。readonly / should_migrate は target から
@@ -274,7 +276,7 @@ pub fn resolve_target(
     cli_db: Option<&str>,
     cli_read_source: Option<Target>,
     env: &dyn EnvProvider,
-) -> TargetResolution {
+) -> Result<TargetResolution> {
     // read-source 解決（設計 §3.5/§13）。
     let read_source = cli_read_source
         .or_else(|| env.get("KIJUKU_READ_SOURCE").and_then(|s| Target::parse(&s)));
@@ -287,36 +289,56 @@ pub fn resolve_target(
         })
         .unwrap_or_default();
 
-    let db_path = cli_db
+    // db_path 解決: --db > target 別 env。未指定はエラー（DB配置は明示指定必須・暗黙の既定パスなし・TASK-94）。
+    let db_path = match cli_db
         .map(|s| s.to_string())
         .or_else(|| match target {
             Target::Prod => env.get("KIJUKU_DB_PATH"),
             Target::Stg => env.get("KIJUKU_STG_DB_PATH"),
         })
-        .unwrap_or_else(|| match target {
-            Target::Prod => DEFAULT_PROD_DB.to_string(),
-            Target::Stg => DEFAULT_STG_DB.to_string(),
-        });
+        .filter(|p| !p.trim().is_empty())
+    {
+        Some(p) => p,
+        None => {
+            return Err(KijukuError::Validation(
+                "db path is required: specify --db or KIJUKU_DB_PATH / KIJUKU_STG_DB_PATH (no implicit default path)".into(),
+            ))
+        }
+    };
 
     let readonly = matches!(target, Target::Prod);
-    TargetResolution {
+    Ok(TargetResolution {
         target,
         db_path,
         readonly,
         should_migrate: !readonly,
-    }
+    })
 }
 
-/// prod と stg の両 DB パスを環境変数/デフォルトから解決する（sync 用・設計 §4.2）。
+/// prod と stg の両 DB パスを環境変数から解決する（sync 用・設計 §4.2）。
 ///
 /// sync は prod(RO)→stg(RW) のファイルコピーで両パスを要するが、`resolve_target` は
 /// 単一 target しか解決しないため、Prod と Stg をそれぞれ解決する。
 /// `cli_db` / `KIJUKU_TARGET` は無視し、それぞれ `KIJUKU_DB_PATH` / `KIJUKU_STG_DB_PATH`
-/// （未設定時はデフォルト `kijuku.db` / `kijuku.stg.db`）を用いる。
-pub fn resolve_prod_and_stg_paths(env: &dyn EnvProvider) -> (String, String) {
-    let prod = resolve_target(Some(Target::Prod), None, None, env).db_path;
-    let stg = resolve_target(Some(Target::Stg), None, None, env).db_path;
-    (prod, stg)
+/// を用いる。未設定の側はエラー（`--from` / `--to` の明示指定へ誘導・TASK-94）。
+pub fn resolve_prod_and_stg_paths(env: &dyn EnvProvider) -> Result<(String, String)> {
+    let prod = env
+        .get("KIJUKU_DB_PATH")
+        .filter(|p| !p.trim().is_empty())
+        .ok_or_else(|| {
+            KijukuError::Validation(
+                "prod db path is required: specify --from (or KIJUKU_DB_PATH)".into(),
+            )
+        })?;
+    let stg = env
+        .get("KIJUKU_STG_DB_PATH")
+        .filter(|p| !p.trim().is_empty())
+        .ok_or_else(|| {
+            KijukuError::Validation(
+                "stg db path is required: specify --to (or KIJUKU_STG_DB_PATH)".into(),
+            )
+        })?;
+    Ok((prod, stg))
 }
 
 /// `--db` 文字列の解析結果（設計 §13・TS `cli.ts:parseDbPath` と同等）。
@@ -568,10 +590,30 @@ keep_interval_secs = 3600
     }
 
     #[test]
-    fn test_resolve_target_default_is_stg() {
-        let r = resolve_target(None, None, None, &MockEnv::empty());
+    fn test_resolve_target_requires_explicit_db_path() {
+        // --db・環境変数とも未指定はエラー（DB配置は明示指定必須・暗黙の既定パスなし・TASK-94）
+        let err = match resolve_target(None, None, None, &MockEnv::empty()) {
+            Err(e) => e,
+            Ok(_) => panic!("missing db path must be rejected"),
+        };
+        assert!(
+            err.to_string().contains("db path is required"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_target_default_target_is_stg() {
+        // target 既定は stg（db パスは env で明示）
+        let r = resolve_target(
+            None,
+            None,
+            None,
+            &MockEnv::empty().with("KIJUKU_STG_DB_PATH", "/env/stg.db"),
+        )
+        .unwrap();
         assert_eq!(r.target, Target::Stg);
-        assert_eq!(r.db_path, "kijuku.stg.db");
+        assert_eq!(r.db_path, "/env/stg.db");
         assert!(!r.readonly);
         assert!(r.should_migrate);
     }
@@ -579,35 +621,61 @@ keep_interval_secs = 3600
     #[test]
     fn test_resolve_target_cli_beats_env() {
         // CLI --target prod が KIJUKU_TARGET=stg に勝つ
-        let r = resolve_target(Some(Target::Prod), None, None, &MockEnv::empty().with("KIJUKU_TARGET", "stg"));
+        let r = resolve_target(
+            Some(Target::Prod),
+            None,
+            None,
+            &MockEnv::empty()
+                .with("KIJUKU_TARGET", "stg")
+                .with("KIJUKU_DB_PATH", "/env/prod.db"),
+        )
+        .unwrap();
         assert_eq!(r.target, Target::Prod);
         assert!(r.readonly);
         assert!(!r.should_migrate);
-        assert_eq!(r.db_path, "kijuku.db"); // prod デフォルト
+        assert_eq!(r.db_path, "/env/prod.db");
     }
 
     #[test]
     fn test_resolve_target_env_beats_default() {
-        let r = resolve_target(None, None, None, &MockEnv::empty().with("KIJUKU_TARGET", "prod"));
+        let r = resolve_target(
+            None,
+            None,
+            None,
+            &MockEnv::empty()
+                .with("KIJUKU_TARGET", "prod")
+                .with("KIJUKU_DB_PATH", "/env/prod.db"),
+        )
+        .unwrap();
         assert_eq!(r.target, Target::Prod);
         assert!(r.readonly);
     }
 
     #[test]
     fn test_resolve_target_invalid_env_falls_back_to_stg() {
-        let r = resolve_target(None, None, None, &MockEnv::empty().with("KIJUKU_TARGET", "bogus"));
+        let r = resolve_target(
+            None,
+            None,
+            None,
+            &MockEnv::empty()
+                .with("KIJUKU_TARGET", "bogus")
+                .with("KIJUKU_STG_DB_PATH", "/env/stg.db"),
+        )
+        .unwrap();
         assert_eq!(r.target, Target::Stg);
+        assert_eq!(r.db_path, "/env/stg.db");
     }
 
     #[test]
     fn test_resolve_target_db_cli_beats_all() {
-        // --db が target 別 env/デフォルトに勝つ（target=prod でも --db を尊重）
+        // --db が target 別 env に勝つ（target=prod でも --db を尊重）
         let r = resolve_target(
             Some(Target::Prod),
             Some("/custom/path.db"),
             None,
             &MockEnv::empty().with("KIJUKU_DB_PATH", "/env/prod.db"),
-        );
+        )
+        .unwrap();
         assert_eq!(r.db_path, "/custom/path.db");
         assert!(r.readonly); // readonly は target から導出（--db には依存しない）
     }
@@ -620,7 +688,8 @@ keep_interval_secs = 3600
             None,
             None,
             &MockEnv::empty().with("KIJUKU_DB_PATH", "/env/prod.db"),
-        );
+        )
+        .unwrap();
         assert_eq!(r.db_path, "/env/prod.db");
         // stg + KIJUKU_STG_DB_PATH
         let r = resolve_target(
@@ -628,20 +697,36 @@ keep_interval_secs = 3600
             None,
             None,
             &MockEnv::empty().with("KIJUKU_STG_DB_PATH", "/env/stg.db"),
-        );
+        )
+        .unwrap();
         assert_eq!(r.db_path, "/env/stg.db");
     }
 
     #[test]
     fn test_resolve_target_stg_ignores_prod_env() {
-        // target=stg のとき KIJUKU_DB_PATH(prod用) は無視して stg デフォルト
+        // target=stg のとき KIJUKU_DB_PATH(prod用) は無視して stg 用 env を使う
         let r = resolve_target(
             Some(Target::Stg),
             None,
             None,
+            &MockEnv::empty()
+                .with("KIJUKU_DB_PATH", "/env/prod.db")
+                .with("KIJUKU_STG_DB_PATH", "/env/stg.db"),
+        )
+        .unwrap();
+        assert_eq!(r.db_path, "/env/stg.db");
+    }
+
+    #[test]
+    fn test_resolve_target_stg_missing_db_errors() {
+        // target=stg で stg 用 env が無くても prod 用 env では補完しない（エラー）
+        assert!(resolve_target(
+            Some(Target::Stg),
+            None,
+            None,
             &MockEnv::empty().with("KIJUKU_DB_PATH", "/env/prod.db"),
-        );
-        assert_eq!(r.db_path, "kijuku.stg.db");
+        )
+        .is_err());
     }
 
     #[test]
@@ -651,12 +736,13 @@ keep_interval_secs = 3600
             Some(Target::Stg),
             None,
             Some(Target::Prod),
-            &MockEnv::empty(),
-        );
+            &MockEnv::empty().with("KIJUKU_DB_PATH", "/env/prod.db"),
+        )
+        .unwrap();
         assert_eq!(r.target, Target::Prod);
         assert!(r.readonly);
         assert!(!r.should_migrate);
-        assert_eq!(r.db_path, "kijuku.db"); // prod デフォルト
+        assert_eq!(r.db_path, "/env/prod.db");
     }
 
     #[test]
@@ -666,8 +752,11 @@ keep_interval_secs = 3600
             None,
             None,
             None,
-            &MockEnv::empty().with("KIJUKU_READ_SOURCE", "prod"),
-        );
+            &MockEnv::empty()
+                .with("KIJUKU_READ_SOURCE", "prod")
+                .with("KIJUKU_DB_PATH", "/env/prod.db"),
+        )
+        .unwrap();
         assert_eq!(r.target, Target::Prod);
         assert!(r.readonly);
     }
@@ -679,8 +768,11 @@ keep_interval_secs = 3600
             None,
             None,
             Some(Target::Stg),
-            &MockEnv::empty().with("KIJUKU_READ_SOURCE", "prod"),
-        );
+            &MockEnv::empty()
+                .with("KIJUKU_READ_SOURCE", "prod")
+                .with("KIJUKU_STG_DB_PATH", "/env/stg.db"),
+        )
+        .unwrap();
         assert_eq!(r.target, Target::Stg);
         assert!(!r.readonly);
     }
@@ -694,8 +786,10 @@ keep_interval_secs = 3600
             None,
             &MockEnv::empty()
                 .with("KIJUKU_TARGET", "stg")
-                .with("KIJUKU_READ_SOURCE", "prod"),
-        );
+                .with("KIJUKU_READ_SOURCE", "prod")
+                .with("KIJUKU_DB_PATH", "/env/prod.db"),
+        )
+        .unwrap();
         assert_eq!(r.target, Target::Prod);
         assert!(r.readonly);
     }
@@ -703,7 +797,13 @@ keep_interval_secs = 3600
     #[test]
     fn test_resolve_target_read_source_none_falls_back_to_target() {
         // read-source 未指定時は target に従う（従来通り）
-        let r = resolve_target(Some(Target::Prod), None, None, &MockEnv::empty());
+        let r = resolve_target(
+            Some(Target::Prod),
+            None,
+            None,
+            &MockEnv::empty().with("KIJUKU_DB_PATH", "/env/prod.db"),
+        )
+        .unwrap();
         assert_eq!(r.target, Target::Prod);
         assert!(r.readonly);
     }
@@ -715,8 +815,11 @@ keep_interval_secs = 3600
             None,
             None,
             None,
-            &MockEnv::empty().with("KIJUKU_READ_SOURCE", "bogus"),
-        );
+            &MockEnv::empty()
+                .with("KIJUKU_READ_SOURCE", "bogus")
+                .with("KIJUKU_STG_DB_PATH", "/env/stg.db"),
+        )
+        .unwrap();
         assert_eq!(r.target, Target::Stg);
         assert!(!r.readonly);
     }

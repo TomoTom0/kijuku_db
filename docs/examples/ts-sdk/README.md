@@ -97,7 +97,7 @@ const media = db.createMedia({
 
 ## ヘルプとサポート
 
-- [API仕様書](../../api.md) - 全メソッドの詳細な仕様
+- [API仕様書](../../api/README.md) - 全メソッドの詳細な仕様
 - [README.md](../../../README.md) - プロジェクト概要
 - [SDK利用ガイド](../../usage/sdk/ts/README.md) - TypeScript SDK詳細ガイド
 
