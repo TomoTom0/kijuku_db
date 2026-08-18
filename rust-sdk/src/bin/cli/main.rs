@@ -1,7 +1,7 @@
 //! Kijuku DB CLI
 //!
 //! JSON形式の入出力でリモート操作を可能にするCLIツール
-//! Version: 0.3.0
+//! Version: 0.3.1
 //!
 //! NOTE: CLI のハンドラ群は Phase 3 で async 化（KijukuBackend 経由）する予定。
 //! それまで KijukuDB の deprecated 同期メソッドを使用するため、移行完了まで一時的に許容する。
@@ -16,7 +16,7 @@ use kijuku_db::{
     BulkUpdateItem, D1Config, D1KijukuDB, DBOptions, KijukuBackend, KijukuDB,
     MediaFilter, MediaInput, MediaHashInput, MediaType, MediaUpdateInput, QueryOptions,
     RemoteKijukuDB, SystemEnv, Target, ThumbnailOptions, TransferOptions,
-    UpdateExistOptions, parse_db_path, resolve_prod_and_stg_paths, resolve_target, transfer,
+    UpdateExistOptions, parse_db_path, resolve_target, transfer,
     verify,
     file_ops::FileOpOptions,
     trash::TrashOperation,
@@ -651,7 +651,7 @@ fn show_docs(doc_type: &str) {
         "overview" | "sdk" => ("usage/sdk/README.md", "SDK選択ガイド"),
         "ts" | "typescript" => ("usage/sdk/ts/README.md", "TypeScript SDKガイド"),
         "rust" => ("usage/sdk/rust/README.md", "Rust SDKガイド"),
-        "api" => ("api.md", "API仕様書"),
+        "api" => ("api/README.md", "API仕様書"),
         _ => {
             eprintln!("エラー: 不明なドキュメントタイプ: {}", doc_type);
             eprintln!();
@@ -1489,18 +1489,28 @@ fn handle_restore_subcommand(ctx: &CliContext, nth: Option<usize>, id: Option<St
     }
 }
 
+/// prod パスを解決: 指定値 > `KIJUKU_DB_PATH` 環境変数 > エラー（明示指定必須・TASK-94）。
+fn resolve_prod_path(cli: Option<String>) -> Result<String, String> {
+    cli.filter(|p| !p.trim().is_empty())
+        .or_else(|| std::env::var("KIJUKU_DB_PATH").ok().filter(|p| !p.trim().is_empty()))
+        .ok_or_else(|| "prod db path is required: specify --prod / --from (or KIJUKU_DB_PATH)".to_string())
+}
+
 /// sync 用に prod/stg 両パスを解決する（設計 §4.2）。
 ///
-/// `from`/`to` の両方が指定されていればそれらを使い、欠落分は環境変数
-/// （`KIJUKU_DB_PATH` / `KIJUKU_STG_DB_PATH`）またはデフォルトで補完する。
-fn resolve_sync_paths(from: Option<String>, to: Option<String>) -> (String, String) {
-    match (from, to) {
-        (Some(f), Some(t)) => (f, t),
-        (f, t) => {
-            let (default_prod, default_stg) = resolve_prod_and_stg_paths(&SystemEnv);
-            (f.unwrap_or(default_prod), t.unwrap_or(default_stg))
-        }
-    }
+/// `from`/`to` が指定されていればそれらを使い、欠落分は環境変数
+/// （`KIJUKU_DB_PATH` / `KIJUKU_STG_DB_PATH`）で補完する。
+/// 補完できない側はエラー（DB配置は明示指定必須・暗黙の既定パスなし・TASK-94）。
+fn resolve_sync_paths(from: Option<String>, to: Option<String>) -> Result<(String, String), String> {
+    let prod = from
+        .filter(|p| !p.trim().is_empty())
+        .or_else(|| std::env::var("KIJUKU_DB_PATH").ok().filter(|p| !p.trim().is_empty()))
+        .ok_or_else(|| "prod db path is required: specify --from (or KIJUKU_DB_PATH)".to_string())?;
+    let stg = to
+        .filter(|p| !p.trim().is_empty())
+        .or_else(|| std::env::var("KIJUKU_STG_DB_PATH").ok().filter(|p| !p.trim().is_empty()))
+        .ok_or_else(|| "stg db path is required: specify --to (or KIJUKU_STG_DB_PATH)".to_string())?;
+    Ok((prod, stg))
 }
 
 /// `sync-db` サブコマンド: prod(RO)→stg(RW) のフル複製（設計 §4.2）。
@@ -1523,7 +1533,13 @@ fn handle_sync_subcommand(ctx: &CliContext, from: Option<String>, to: Option<Str
             Err(e) => eprintln!("sync に失敗: {}", e),
         }
     } else {
-        let (prod, stg) = resolve_sync_paths(from, to);
+        let (prod, stg) = match resolve_sync_paths(from, to) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("エラー: {}", e);
+                return;
+            }
+        };
         match KijukuDB::replicate_db(Path::new(&prod), Path::new(&stg), kijuku_db::SyncOp::Sync) {
             Ok(()) => println!("sync 完了: {} -> {}", prod, stg),
             Err(e) => eprintln!("sync に失敗: {}", e),
@@ -1549,7 +1565,13 @@ fn handle_discard_subcommand(ctx: &CliContext, from: Option<String>, to: Option<
             Err(e) => eprintln!("discard に失敗: {}", e),
         }
     } else {
-        let (prod, stg) = resolve_sync_paths(from, to);
+        let (prod, stg) = match resolve_sync_paths(from, to) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("エラー: {}", e);
+                return;
+            }
+        };
         match KijukuDB::replicate_db(Path::new(&prod), Path::new(&stg), kijuku_db::SyncOp::Discard) {
             Ok(()) => println!("discard 完了: {} -> {}", prod, stg),
             Err(e) => eprintln!("discard に失敗: {}", e),
@@ -1624,7 +1646,13 @@ fn handle_diff_prod_stg_subcommand(
     let options = kijuku_db::diff::DiffOptions {
         detail: Some(detail_enum),
     };
-    let (prod_path, _stg) = resolve_sync_paths(prod, None);
+    let prod_path = match resolve_prod_path(prod) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("エラー: {}", e);
+            return;
+        }
+    };
     match client.diff_with_prod(Some(&prod_path), &options, timeout_ms) {
         Ok(diff) => {
             let summary = kijuku_db::diff::summarize_diff(&diff);
@@ -1683,7 +1711,13 @@ fn handle_observe_subcommand(
     if let Some(m) = max_changed {
         options.gate_config.max_changed = m;
     }
-    let (prod_path, _stg) = resolve_sync_paths(prod, None);
+    let prod_path = match resolve_prod_path(prod) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("エラー: {}", e);
+            return;
+        }
+    };
     match client.observe(Some(&prod_path), &options, timeout_ms) {
         Ok(result) => {
             if json {
@@ -2112,13 +2146,35 @@ async fn handle_stdin(ctx: &CliContext) {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    // target / db_path 解決（CLI 引数 > 環境変数 > デフォルト stg・設計 §13）
-    let resolution = resolve_target(
+    // target / db_path 解決（CLI 引数 > 環境変数・設計 §13）。
+    // db_path は明示指定必須（--db または KIJUKU_DB_PATH / KIJUKU_STG_DB_PATH・暗黙の既定パスなし・TASK-94）。
+    // ctx のDBを開かないサブコマンド（docs / sync-db / discard-db は明示引数のみで動作）は
+    // 未指定でも実行を許可する（プレースホルダ解決）。
+    let resolution = match resolve_target(
         cli.target.as_deref().and_then(Target::parse),
         cli.db.as_deref(),
         cli.read_source.as_deref().and_then(Target::parse),
         &SystemEnv,
-    );
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            let dbless = matches!(
+                &cli.command,
+                Some(Commands::Docs { .. }) | Some(Commands::SyncDb { .. }) | Some(Commands::DiscardDb { .. })
+            );
+            if dbless {
+                kijuku_db::config::TargetResolution {
+                    target: Target::Stg,
+                    db_path: String::new(),
+                    readonly: false,
+                    should_migrate: true,
+                }
+            } else {
+                eprintln!("エラー: {}", e);
+                std::process::exit(1);
+            }
+        }
+    };
     let ctx = CliContext {
         db_path: resolution.db_path,
         verbose: cli.verbose,
@@ -2449,7 +2505,10 @@ async fn handle_sync(params: &serde_json::Value, operation: &str) -> CommandResp
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
-    let (prod, stg) = resolve_sync_paths(params.from, params.to);
+    let (prod, stg) = match resolve_sync_paths(params.from, params.to) {
+        Ok(v) => v,
+        Err(e) => return CommandResponse::error(e),
+    };
     let op = if operation == "discard" {
         kijuku_db::SyncOp::Discard
     } else {
@@ -2491,7 +2550,10 @@ async fn handle_diff_prod_stg(db: &KijukuDB, params: &serde_json::Value) -> Comm
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
-    let (prod_path, _stg) = resolve_sync_paths(params.prod_db_path, None);
+    let prod_path = match resolve_prod_path(params.prod_db_path) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(e),
+    };
     let options = params.options.map(|o| o.to_options()).unwrap_or_default();
     match db.diff_with_prod(Path::new(&prod_path), &options) {
         Ok(diff) => match serde_json::to_value(&diff) {
@@ -2508,7 +2570,10 @@ async fn handle_observe(db: &KijukuDB, params: &serde_json::Value) -> CommandRes
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
-    let (prod_path, _stg) = resolve_sync_paths(params.prod_db_path, None);
+    let prod_path = match resolve_prod_path(params.prod_db_path) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(e),
+    };
     match db.observe(Path::new(&prod_path), &params.options) {
         Ok(result) => match serde_json::to_value(&result) {
             Ok(v) => CommandResponse::success(v),
@@ -2526,7 +2591,10 @@ async fn handle_promote(db: &KijukuDB, params: &serde_json::Value) -> CommandRes
         Ok(p) => p,
         Err(e) => return CommandResponse::error(format!("パラメータエラー: {}", e)),
     };
-    let (prod_path, _stg) = resolve_sync_paths(params.prod_db_path, None);
+    let prod_path = match resolve_prod_path(params.prod_db_path) {
+        Ok(p) => p,
+        Err(e) => return CommandResponse::error(e),
+    };
     match db.promote(Path::new(&prod_path), &params.options, params.backup_opts) {
         Ok(outcome) => match serde_json::to_value(&outcome) {
             Ok(v) => CommandResponse::success(v),

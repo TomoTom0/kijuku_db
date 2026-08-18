@@ -667,6 +667,29 @@ mod tests {
     use parking_lot::ReentrantMutex;
     use std::sync::Arc;
 
+    /// ベーススキーマは全マイグレーション履歴（1..=最新）を schema_version に記録する
+    /// （3コピー統一・TASK-89）。新バージョン追加時にベーススキーマの INSERT 行を
+    /// 更新しないとここで失敗する（トリップワイヤ）。
+    #[test]
+    fn test_base_schema_records_full_migration_history() {
+        for sql in [get_schema_sql(), get_d1_schema_sql()] {
+            let mut versions: Vec<u32> = sql
+                .lines()
+                .filter_map(|l| {
+                    let l = l.trim();
+                    l.strip_prefix("INSERT OR IGNORE INTO schema_version (version) VALUES (")?
+                        .strip_suffix(");")?
+                        .parse()
+                        .ok()
+                })
+                .collect();
+            versions.sort_unstable();
+            versions.dedup();
+            let expected: Vec<u32> = (1..=6).collect();
+            assert_eq!(versions, expected, "base schema must record migrations 1..=6");
+        }
+    }
+
     fn setup_exec() -> LocalExec {
         let conn = Connection::open_in_memory().unwrap();
         LocalExec::new(Arc::new(ReentrantMutex::new(conn)))

@@ -633,7 +633,7 @@ PC側から利用する場合は、上記の「リモートDB操作」機能を�
 - [データベースセットアップガイド](docs/DATABASE_SETUP.md) - DBの作成とデータインポート手順
 - [テストガイド](docs/TESTING.md) - テスト実行方法
 - [パフォーマンスガイド](docs/PERFORMANCE.md) - パフォーマンステストとベンチマーク
-- [API仕様書](docs/api.md) - 詳細なAPI仕様
+- [API仕様書](docs/api/README.md) - 詳細なAPI仕様
 - [リモートテスト手順](docs/manual-testing-remote.md) - リモート環境でのテスト方法
 
 ## ライセンス

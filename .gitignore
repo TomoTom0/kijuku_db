@@ -14,7 +14,11 @@ target
 *.db
 *.db-wal
 *.db-shm
+*.db.lock
+*.db.meta.json
 db/
+data/
+backup/
 
 # Backup files
 *.backup.*.db

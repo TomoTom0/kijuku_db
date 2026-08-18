@@ -79,3 +79,24 @@ describe('KijukuDB open options (WAL / readonly)', () => {
     expect(snaps.length).toBe(1);
   });
 });
+
+describe('file-less DB のバックアップ出力先管理（TASK-95）', () => {
+  it(':memory: は既定でバックアップ無効（BackupManager を生成せず cwd に backup/ を作らない）', () => {
+    const before = existsSync('backup');
+    const db = new KijukuDB(':memory:');
+    expect(db.getBackupManager()).toBeUndefined();
+    db.close();
+    expect(existsSync('backup')).toBe(before);
+  });
+
+  it(':memory: で backup を明示した場合、backupDir 未指定だとエラー（cwd 暗黙解決の拒否）', () => {
+    expect(() => new KijukuDB(':memory:', { backup: {} })).toThrow(/backupDir must be specified explicitly/);
+  });
+
+  it(':memory: + 明示 backupDir は許可される', () => {
+    const dir = tempDir();
+    const db = new KijukuDB(':memory:', { backup: { backupDir: dir } });
+    expect(db.getBackupManager()).toBeDefined();
+    db.close();
+  });
+});

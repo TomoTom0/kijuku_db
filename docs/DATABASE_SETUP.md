@@ -43,6 +43,8 @@ console.log(`Current schema version: ${version}`); // 現在: 6
 | 5 | `media_tags`・`media_attributes` の外部キーに `ON DELETE CASCADE` 追加（media削除時の自動カスケード削除） |
 | 6 | `media_hashes` テーブル追加（ファイル内容ベースの同定・重複検出、`content_hash` BLOB + `item_uuid` FK CASCADE） |
 
+テーブルのほかに、検索用インデックス（`idx_media_*`・`idx_media_tags_*`・`idx_media_hashes_content`）と `updated_at` 自動更新トリガー（`update_media_timestamp`・`update_media_hashes_timestamp`）も `rust-sdk/schema.sql` に定義されており、マイグレーション時に自動作成されます。
+
 ## 2. データインポート
 
 ### 2.1. TSVファイルからのインポート
@@ -220,12 +222,27 @@ const results = db.findMedia(
 
 ### 6.1. データベースのバックアップ
 
-```bash
-# シンプルなコピー
-cp db/my-media.db db/my-media.db.backup
+CLI のバックアップ系サブコマンドを使用します（`cp` による手動コピーはバックアップ管理外となるため非推奨）。バックアップは DB と同一階層の `backup/`（`manual/`・`auto/`・`meta/`）に作成されます:
 
-# 日付付きバックアップ
-cp db/my-media.db "db/my-media.db.$(date +%Y%m%d_%H%M%S)"
+```bash
+# バックアップ作成（ラベル付き・省略可）
+kijuku-cli --db db/my-media.db backup --label "before-import"
+
+# バックアップ一覧
+kijuku-cli --db db/my-media.db list-backups
+
+# バックアップと現在DBの差分（復元判断用）
+kijuku-cli --db db/my-media.db diff-backup --nth 0
+
+# バックアップから復元（--nth 0 が最新・--id <タイムスタンプ> での指定も可）
+kijuku-cli --db db/my-media.db restore --nth 0
+
+# 事後のラベル・メモ付与
+kijuku-cli --db db/my-media.db set-backup-label --id <backup-id> --label "重要"
+kijuku-cli --db db/my-media.db set-backup-note --id <backup-id> --note "移行前の状態"
+
+# pre-stash（promote・prod直接(b)操作直前の prod スナップショット）一覧
+kijuku-cli --db db/my-media.db list-pre-stashes
 ```
 
 ### 6.2. VACUUMの実行
@@ -272,14 +289,18 @@ kijuku-dbでは、本番DB（prod）の誤破壊を防ぐための**prod/stg構�
 CLIでは `--target` / `--read-source` オプションで操作対象を制御します：
 
 ```bash
-# 既定: stgで書込可能（明示的--target stgと同じ）
-kijuku-cli --db ./data/kijuku.db import data.tsv
+# 既定: stgで書込可能（--db 省略時は KIJUKU_STG_DB_PATH 環境変数から解決。未設定だとエラー=明示指定必須。
+# --db は target 解決より優先されるため、prod のパスを渡すと target に関係なくそのファイルをRWで開く点に注意）
+kijuku-cli --db ./data/kijuku.stg.db import data.tsv
 
 # prodをreadonlyで参照（--target prod: migrateスキップ + readonly接続）
-kijuku-cli --db ./data/kijuku.db --target prod search --title "作品名"
+# （メディア検索の通常サブコマンドは存在しないため、stdin operation の findMedia を使用）
+echo '{"operation":"findMedia","params":{"filter":{"title":"作品名"}}}' | \
+  kijuku-cli --db ./data/kijuku.db --target prod
 
 # 読込先を明示的にprodに指定（--read-source prod: readonlyセッション）
-kijuku-cli --db ./data/kijuku.db --read-source prod findMedia '{}'
+echo '{"operation":"findMedia","params":{"filter":{"media_type":"comic"}}}' | \
+  kijuku-cli --db ./data/kijuku.db --read-source prod
 ```
 
 **優先順位:** `--read-source` > `KIJUKU_READ_SOURCE`(環境変数) > `--target` > `KIJUKU_TARGET`(環境変数) > `stg`(既定)
@@ -300,41 +321,43 @@ prod保護操作は自動的に監査ログに記録されます：
 
 ```bash
 # 全監査ログを確認
-kijuku-cli --db ./data/kijuku.db audit list
+kijuku-cli --db ./data/kijuku.db audit-logs
 
 # promote操作のみ
-kijuku-cli --db ./data/kijuku.db audit list --operation promote
+kijuku-cli --db ./data/kijuku.db audit-logs --operation promote
 
 # 特定期間のログ
-kijuku-cli --db ./data/kijuku.db audit list \
+kijuku-cli --db ./data/kijuku.db audit-logs \
   --from "2026-07-01T00:00:00.000Z" \
   --to "2026-07-31T23:59:59.999Z"
 ```
 
-**監査される操作:** sync, discard, observe, diffProdStg, promote, restore, mediaMv, purgeTrash
+**監査される操作:** sync, discard, observe, diffProdStg, promote, b-restore, b-mediaMv, b-purgeTrash（`b-` 接頭辞は prod 直接実行の (b) 操作 restore・mediaMv・purgeTrash）
 
 **監査ログの場所:** `backup/meta/audit.log`（prod DB外のJSONLファイル）
 
 ### 7.5. 推奨運用フロー
 
 1. **stgで作業**: `--target stg`（既定）で書込操作
-2. **gate評価**: observeでprod-stg差分チェック・gate評価
-3. **promote実行**: gate通過後にpromoteでstg→prod反映
-4. **監査確認**: audit listで操作履歴を確認
+2. **gate評価**: observeサブコマンドでprod-stg差分チェック・gate評価
+3. **promote実行**: gate通過後にpromote（stdin operation）でstg→prod反映
+4. **監査確認**: audit-logsで操作履歴を確認
 
 ```bash
-# 1. stgでデータ更新
-kijuku-cli --db ./data/kijuku.db import new-data.tsv
+# 1. stgでデータ更新（self=stg のパスを指定）
+kijuku-cli --db ./data/kijuku.stg.db import new-data.tsv
 
-# 2. prod-stg差分チェック・gate評価
-kijuku-cli --db ./data/kijuku.db observe
+# 2. prod-stg差分チェック・gate評価（self=stg で起動し --prod に prod パスを指定）
+kijuku-cli --db ./data/kijuku.stg.db observe --prod ./data/kijuku.db
 
-# 3. gate通過後にpromote
-kijuku-cli --db ./data/kijuku.db promote
+# 3. gate通過後にpromote（promoteサブコマンドは存在しないためstdin operationを使用）
+echo '{"operation":"promote","params":{"prodDbPath":"./data/kijuku.db"}}' | kijuku-cli --db ./data/kijuku.stg.db
 
-# 4. 監査ログでpromote記録を確認
-kijuku-cli --db ./data/kijuku.db audit list --operation promote
+# 4. 監査ログでpromote記録を確認（prod側の audit.log を参照）
+kijuku-cli --db ./data/kijuku.db audit-logs --operation promote
 ```
+
+promote は SDK からも実行できます（Rust: `KijukuDB::promote` / `RemoteKijukuDB::promote`、TypeScript: ローカル `db.promote()` / リモート `remoteDb.promote()`）。
 
 ### 7.6. 本番DB保護の詳細
 
@@ -349,5 +372,5 @@ kijuku-cli --db ./data/kijuku.db audit list --operation promote
 
 - [テストガイド](TESTING.md) - テスト実行方法
 - [パフォーマンスガイド](PERFORMANCE.md) - パフォーマンステストとベンチマーク
-- [API仕様書](api.md) - 詳細なAPI仕様
+- [API仕様書](api/README.md) - 詳細なAPI仕様
 - [リモートテスト手順](manual-testing-remote.md) - リモート環境でのテスト方法

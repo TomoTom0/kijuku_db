@@ -1,11 +1,11 @@
 # パフォーマンスベンチマーク
 
-きじゅくDB TypeScript SDKのパフォーマンス測定結果です。
+きじゅくDB TypeScript SDK（ローカルSQLite / better-sqlite3）のパフォーマンス測定結果です。Rust SDK、D1（Cloudflare）、リモート接続（RemoteKijukuDB）は本ベンチマークの対象外です。
 
 ## 実行環境
 
 - Node.js v22.19.0
-- better-sqlite3 v11.0.0
+- better-sqlite3 ^11系
 - OS: Linux x64
 
 ## ベンチマーク結果サマリ
@@ -88,15 +88,36 @@ db.transaction(() => {
 
 ### 2. インデックスの活用
 
-スキーマには以下のインデックスが定義されています：
+スキーマ（正本は `rust-sdk/schema.sql`、`ts-sdk/src/migration.ts` も同一内容）には以下のインデックスが定義されています：
 
+**media テーブル**:
 - PRIMARY KEY (id)
-- title_id (UNIQUE)
-- artist_id
-- media_type
-- created_at
+- UNIQUE (uuid)
+- UNIQUE (path)
+- idx_media_title_id (title_id)
+- idx_media_artist_id (artist_id)
+- idx_media_media_type (media_type)
+- idx_media_series (series)
+- idx_media_source (source)
+- idx_media_type_created (media_type, created_at DESC)
 
-これらのカラムでの検索は高速です。
+**media_tags テーブル**:
+- PRIMARY KEY (media_id, tag_id)
+- idx_media_tags_media_id (media_id)
+- idx_media_tags_tag_id (tag_id)
+
+**media_attributes テーブル**:
+- PRIMARY KEY (media_id, key)
+
+**media_hashes テーブル**:
+- PRIMARY KEY (item_uuid, filename, time_range)
+- idx_media_hashes_content (content_hash)
+
+**tags テーブル**:
+- PRIMARY KEY (id)
+- UNIQUE (name)
+
+これらのカラムでの検索は高速です。なお `created_at` 単体のインデックスは存在せず、複合インデックス `(media_type, created_at DESC)` でカバーされます。
 
 ### 3. ページネーションの活用
 
@@ -114,7 +135,7 @@ const results = db.findMedia({}, { limit: 100, offset: 0 });
 
 ```bash
 cd ts-sdk
-bun run benchmark
+pnpm run benchmark
 ```
 
 ## 結論

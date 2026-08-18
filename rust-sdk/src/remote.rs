@@ -155,6 +155,25 @@ fn resolve_remote_db_path(config: &RemoteConfig) -> String {
     }
 }
 
+/// `RemoteConfig` から sync/discard の `from`（prod）/`to`（stg）パスを解決する（TS `runProdToStg` と同一規約）。
+///
+/// - from: `db_path`（未設定時は prod デフォルト）
+/// - to: `stg_db_path`、未設定なら `db_path` から導出、それも無ければ stg デフォルト
+///
+/// サーバ側 `resolve_sync_paths` はデフォルト補完しない（TASK-94）ため、null を送らないよう必ず具象化する。
+fn resolve_sync_paths_from_config(config: &RemoteConfig) -> (String, String) {
+    let from = config
+        .db_path
+        .clone()
+        .unwrap_or_else(|| DEFAULT_REMOTE_PROD_DB.to_string());
+    let to = config
+        .stg_db_path
+        .clone()
+        .or_else(|| config.db_path.as_deref().map(derive_stg_db_path))
+        .unwrap_or_else(|| DEFAULT_REMOTE_STG_DB.to_string());
+    (from, to)
+}
+
 /// リモートで実行する CLI コマンド文字列を組み立てる（テスト容易化のため分離）。
 ///
 /// `--target` を常に付与する（設計 §13「CLI が常に勝つ」）。これによりリモート側の
@@ -1475,14 +1494,11 @@ impl RemoteKijukuDB {
     }
 
     /// prod→stg コピー操作の共通基盤（sync/discard・設計 §4.2/§4.6）。`operation` に "sync" または
-    /// "discard" を渡す。`from`/`to` は config（prod `db_path` と導出 stg）から解決し明示渡す（TS parity）。
-    /// いずれか未設定時はサーバ側 `resolve_sync_paths` がデフォルト補完する。
+    /// "discard" を渡す。`from`/`to` は `resolve_sync_paths_from_config` で必ず具象パスに解決して
+    /// 明示渡す（TS parity）。サーバ側 `resolve_sync_paths` は TASK-94 でデフォルト補完しなく
+    /// なったため、null を送ると環境変数設定がない限り失敗する。
     fn run_prod_to_stg(&self, operation: &str, timeout_ms: Option<u32>) -> Result<SyncResult> {
-        let from = self.config.db_path.clone();
-        let to = match &self.config.stg_db_path {
-            Some(s) => Some(s.clone()),
-            None => self.config.db_path.as_ref().map(|p| derive_stg_db_path(p)),
-        };
+        let (from, to) = resolve_sync_paths_from_config(&self.config);
         let response = self.execute_remote_command_timed(CommandRequest {
             operation: operation.to_string(),
             params: serde_json::json!({ "from": from, "to": to }),
@@ -2095,6 +2111,53 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve_remote_db_path(&stg_default), "~/.local/share/kijuku/kijuku.stg.db");
+    }
+
+    /// sync/discard の from/to は必ず具象パスに解決される（サーバ側 resolve_sync_paths は
+    /// TASK-94 でデフォルト補完しないため・TS runProdToStg と同一規約・PR#61 レビュー指摘）。
+    #[test]
+    fn resolve_sync_paths_from_config_always_concrete() {
+        // db_path 指定: from=db_path、to=導出 stg
+        let explicit = RemoteConfig {
+            db_path: Some("~/.local/share/kijuku/kijuku.db".to_string()),
+            stg_db_path: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_sync_paths_from_config(&explicit),
+            (
+                "~/.local/share/kijuku/kijuku.db".to_string(),
+                "~/.local/share/kijuku/kijuku.stg.db".to_string(),
+            )
+        );
+
+        // stg_db_path 指定: to は導出でなく明示値
+        let stg_explicit = RemoteConfig {
+            db_path: Some("~/.local/share/kijuku/kijuku.db".to_string()),
+            stg_db_path: Some("/custom/stg.db".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_sync_paths_from_config(&stg_explicit),
+            (
+                "~/.local/share/kijuku/kijuku.db".to_string(),
+                "/custom/stg.db".to_string(),
+            )
+        );
+
+        // 両方未指定: リモートデフォルトで補完（null を送らない）
+        let all_default = RemoteConfig {
+            db_path: None,
+            stg_db_path: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_sync_paths_from_config(&all_default),
+            (
+                "~/.local/share/kijuku/kijuku.db".to_string(),
+                "~/.local/share/kijuku/kijuku.stg.db".to_string(),
+            )
+        );
     }
 
     #[test]

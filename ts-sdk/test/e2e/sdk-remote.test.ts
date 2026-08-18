@@ -91,7 +91,7 @@ describeRemote('RemoteKijukuDB 統合テスト', () => {
     it('リモートDBをマイグレーションできる', async () => {
       await remoteDb.migrate();
       const version = await remoteDb.getSchemaVersion();
-      expect(version).toBe(1);
+      expect(version).toBe(6); // 現行スキーマバージョン
     });
   });
 
@@ -316,6 +316,21 @@ describeRemote('RemoteKijukuDB 統合テスト', () => {
       await remote.disconnect();
       await remote.getSchemaVersion(); // 再接続
       expect(remote.connectCount).toBe(before + 1);
+    });
+  });
+
+  describe('監査ログ', () => {
+    it('listAuditLogs() で監査ログを配列で取得できる', async () => {
+      const logs = await remoteDb.listAuditLogs();
+      expect(Array.isArray(logs)).toBe(true);
+    });
+
+    it('operation フィルタが機能する', async () => {
+      const logs = await remoteDb.listAuditLogs({ operation: 'sync', limit: 10 });
+      expect(Array.isArray(logs)).toBe(true);
+      for (const log of logs) {
+        expect(log.operation).toBe('sync');
+      }
     });
   });
 });

@@ -1,6 +1,6 @@
 # テストガイド
 
-Kijuku DBプロジェクトのテスト戦略とガイドライン
+Kijuku DBプロジェクトのテスト戦略とガイドライン。TypeScript SDK（`ts-sdk/`）とRust SDK（`rust-sdk/`）の両方を対象とします。
 
 ## 目次
 
@@ -44,7 +44,6 @@ Kijuku DBプロジェクトのテスト戦略とガイドライン
 - `migration.test.ts`: マイグレーション機能のテスト
 - `transaction.test.ts`: トランザクション管理のテスト
 - `errors.test.ts`: エラーハンドリングのテスト
-- `sdk-cli.test.ts`: SDKとCLIの統合テスト
 
 ### 3. E2Eテスト（End-to-End Tests）
 
@@ -53,36 +52,50 @@ Kijuku DBプロジェクトのテスト戦略とガイドライン
 **目的**: エンドユーザーの視点から実際の使用シナリオをテストする
 
 **特徴**:
-- 実際のCLIコマンドを実行
-- 実際のファイルシステムを使用
-- 子プロセスでCLIを起動
+- RemoteKijukuDB（SSH経由のリモートDB操作）を実際の接続でテスト
+- 環境変数 `TEST_SSH_HOST` が未設定の場合はスキップ
 
-**ローカルE2E** (`cli-local.test.ts`):
-- ローカルDBでのCLI動作確認
-- migrate/import/searchコマンドのテスト
-- 18テストケース
-
-**リモートE2E** (`cli-remote.test.ts`):
-- SSH経由でのリモートDB操作
-- 環境変数 `TEST_SSH_HOST` が必要
-- 13テストケース
-
-**SDK リモート** (`sdk-remote.test.ts`):
+**リモートE2E** (`sdk-remote.test.ts`):
 - RemoteKijukuDB SDKの直接テスト
-- SSH接続のテスト
-- 17テストケース
+- SSH接続でのCRUD・属性・同期等のテスト
+- 21テストケース
+
+### 4. Rust SDK テスト
+
+**場所**: `rust-sdk/tests/`
+
+**目的**: Rust SDK（kijuku-cli バイナリを含む）の機能テスト
+
+**例**:
+- `integration_test.rs`: CRUD・検索・トランザクション等の統合テスト
+- `d1_test.rs`: D1（Cloudflare）向け実装のテスト
+- `remote_test.rs`: リモート接続（SSH）のテスト
+- `backup_test.rs` / `promote_test.rs` / `sync_test.rs`: バックアップ・昇格・同期のテスト
+- `cli_integration_test.rs`: CLIの統合テスト
+
+**実行**（`.mise.toml` のタスクを使用）:
+
+```bash
+# Rust SDK のテストのみ
+mise run test:rust
+
+# Rust + TypeScript 両方のテスト
+mise run test
+```
 
 ## テスト実行方法
 
 ### 全テスト実行
 
 ```bash
-# リモートテストを除く全テスト
+# TypeScript SDK の全テスト（unit + integration + e2e）
 mise run test:ts
 
-# または（全テスト、better-sqlite3エラーは無視）
+# または直接実行
 cd ts-sdk && pnpm run test
 ```
+
+`mise run test:ts` は `pnpm run test`（`vitest run`）を呼び出し、全テストディレクトリが対象になります。E2Eのリモートテストは `TEST_SSH_HOST` が未設定の場合にスキップされます。
 
 ### カテゴリ別実行
 
@@ -90,10 +103,10 @@ cd ts-sdk && pnpm run test
 # 単体テストのみ
 mise run test:ts:unit
 
-# 結合テストのみ（better-sqlite3エラーが出る場合があります）
+# 結合テストのみ
 mise run test:ts:integration
 
-# E2Eテスト（ローカルのみ）
+# E2Eテスト（リモート接続テスト。TEST_SSH_HOST 未設定時はスキップ）
 mise run test:ts:e2e
 ```
 
@@ -106,10 +119,9 @@ mise run test:ts:e2e
 export TEST_SSH_HOST=as5202  # ~/.ssh/config に設定されているホスト名
 
 # リモートE2Eテストを実行
-mise run test:ts:e2e:remote
+mise run test:ts:e2e
 
 # または直接実行
-cd ts-sdk && TEST_SSH_HOST=as5202 pnpm exec vitest run test/e2e/cli-remote.test.ts
 cd ts-sdk && TEST_SSH_HOST=as5202 pnpm exec vitest run test/e2e/sdk-remote.test.ts
 ```
 
@@ -126,24 +138,37 @@ mise run test:ts:watch
 
 ## テストの書き方
 
+### 出力先の管理（必須）
+
+テストは管理外の場所（リポジトリ内・cwd）に成果物を作ってはなりません:
+
+- 一時ファイル・一時DBは `mkdtempSync`（TS）/ `tempfile::TempDir`（Rust）等のテンポラリディレクトリ配下に作る
+- `:memory:` DB でバックアップを使うテストは `backup: { backupDir: <tempdir> }` を明示指定する（未指定のバックアップ有効化はエラーになる・TASK-95）。`backup` 未指定の `:memory:` はバックアップ無効で動作する
+- リポジトリ直下・`ts-sdk/` 直下等への `backup/`・`*.db` の生成が無いことを確認しながらテストを追加する
+
 ### ディレクトリ構造
 
 ```
 ts-sdk/
-├── test/
-│   ├── unit/              # 単体テスト
-│   │   ├── parse-db-path.test.ts
-│   │   └── create-database.test.ts
-│   ├── integration/       # 結合テスト
-│   │   ├── crud.test.ts
-│   │   ├── search.test.ts
-│   │   └── ...
-│   ├── e2e/               # E2Eテスト
-│   │   ├── fixtures/      # テストデータ
-│   │   ├── cli-local.test.ts
-│   │   ├── cli-remote.test.ts
-│   │   └── sdk-remote.test.ts
-│   └── manual/            # 手動テスト用スクリプト
+├── benchmarks/            # パフォーマンスベンチマーク
+│   └── performance.bench.ts
+└── test/
+    ├── unit/              # 単体テスト（13ファイル）
+    │   ├── parse-db-path.test.ts
+    │   ├── create-database.test.ts
+    │   └── ...
+    ├── integration/       # 結合テスト（19ファイル）
+    │   ├── crud.test.ts
+    │   ├── search.test.ts
+    │   └── ...
+    └── e2e/               # E2Eテスト（リモート接続）
+        └── sdk-remote.test.ts
+
+rust-sdk/
+└── tests/                 # Rust SDK テスト（13ファイル）
+    ├── integration_test.rs
+    ├── d1_test.rs
+    └── ...
 ```
 
 ### 単体テストの例
@@ -213,19 +238,19 @@ describe('Feature Integration', () => {
 
 ```typescript
 /**
- * CLI E2Eテスト
+ * リモートE2Eテスト（実際のSSH接続）
  */
 import { describe, it, expect } from 'vitest';
-import { execSync } from 'child_process';
+import { RemoteKijukuDB } from '../../src/remote.js';
 
-function runCli(args: string[]) {
-  // CLIを実行
-}
+const SSH_HOST = process.env.TEST_SSH_HOST;
+// SSH_HOSTが設定されていない場合はテストをスキップ
+const describeRemote = SSH_HOST ? describe : describe.skip;
 
-describe('CLI E2E', () => {
-  it('コマンドが正常に実行される', () => {
-    const result = runCli(['command', '--option', 'value']);
-    expect(result.exitCode).toBe(0);
+describeRemote('RemoteKijukuDB E2E', () => {
+  it('リモートDBへの接続と操作が正常に動作する', async () => {
+    const db = new RemoteKijukuDB({ sshHost: SSH_HOST!, dbPath: '/tmp/test.db' });
+    // テストコード
   });
 });
 ```
@@ -235,7 +260,7 @@ describe('CLI E2E', () => {
 - **テストファイル名**: `*.test.ts`
 - **単体テスト**: `<module-name>.test.ts`
 - **結合テスト**: `<feature-name>.test.ts`
-- **E2Eテスト**: `<cli/sdk>-<local/remote>.test.ts`
+- **E2Eテスト**: 接続方法を表す名前（例: `sdk-remote.test.ts`）
 
 ### テストの構造
 
@@ -304,16 +329,11 @@ jobs:
         run: pnpm run build
         working-directory: ts-sdk
 
-      - name: Run unit tests
-        run: pnpm run test:unit
+      - name: Run tests
+        run: pnpm run test
         working-directory: ts-sdk
 
-      - name: Run E2E tests (local)
-        run: pnpm run test:e2e
-        working-directory: ts-sdk
-
-      # リモートテストは環境変数が必要なためスキップ
-      # または専用のジョブで実行
+      # リモートE2Eテストは TEST_SSH_HOST が未設定のため自動的にスキップされる
 ```
 
 ### テストカバレッジ
@@ -324,16 +344,6 @@ cd ts-sdk && pnpm exec vitest run --coverage
 ```
 
 ## トラブルシューティング
-
-### better-sqlite3 エラー
-
-結合テストで `better-sqlite3` のエラーが出る場合:
-
-```
-error: 'better-sqlite3' is not yet supported in Bun.
-```
-
-これは既知の問題です。単体テストとE2Eテストは正常に動作します。
 
 ### SSH接続エラー
 
@@ -355,6 +365,7 @@ Host as5202
 
 - **単体テスト**: 高速、モック使用、関数レベル
 - **結合テスト**: 中速、実DB使用、SDKレベル
-- **E2Eテスト**: 低速、実環境、CLIレベル
+- **E2Eテスト**: 低速、実SSH接続、リモートSDKレベル
+- **Rust SDKテスト**: `cargo test`（`mise run test:rust`）、機能別に分割された結合テスト
 
 テストを書く際は、適切なカテゴリを選択し、テスト対象のスコープに応じたテストを作成してください。

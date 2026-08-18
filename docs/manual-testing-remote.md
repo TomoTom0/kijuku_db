@@ -30,12 +30,13 @@ Host testserver
 
 ### 3. 環境変数の設定（オプション）
 
-`.env`ファイルを作成:
+`mise run deploy` でリモートにもバイナリを配置したい場合、`.env`ファイルに設定:
 
 ```bash
 REMOTE_SSH_HOST=testserver
-REMOTE_DB_PATH=~/.local/share/kijuku/test.db
 ```
+
+（テストコード側の接続先は `RemoteConfig`（`sshHost`・`dbPath` 等）で指定するため、`.env` はデプロイ先用）
 
 ## テストケース
 
@@ -68,11 +69,16 @@ console.log('更新完了');
 // メディア削除
 await db.deleteMedia(media.id);
 console.log('削除完了');
+
+// プールされたSSH接続を閉じる（one-shotスクリプトでは必須。
+// 未呼び出しだと TCP ソケットがイベントループを保持し、プロセスが終了しない）
+await db.disconnect();
 ```
 
 **期待される結果:**
 - 全ての操作がエラーなく完了する
-- SSH接続が自動的に確立・切断される
+- 初回RPCでSSH接続が確立され、以降の連続RPCで同じ接続が再利用される（`db.connectCount` が1のまま）
+- `disconnect()` の後、プロセスが正常に終了する
 
 ### テスト2: 検索機能
 
@@ -87,6 +93,8 @@ await db.bulkCreateMedia([
 // 検索
 const results = await db.findMedia({ media_type: 'comic' });
 console.log(`検索結果: ${results.length}件`);
+
+await db.disconnect();
 ```
 
 **期待される結果:**
@@ -109,6 +117,8 @@ await db.addTagToMedia(media.id, tag.id);
 // メディアのタグを取得
 const tags = await db.getMediaTags(media.id);
 console.log('メディアのタグ:', tags);
+
+await db.disconnect();
 ```
 
 **期待される結果:**
@@ -125,6 +135,8 @@ const db = new RemoteKijukuDB({
   sshHost: 'testserver',
   dbPath: '~/.local/share/kijuku/test.db',
 });
+// 各シナリオのone-shot実行では、RPC後に await db.disconnect() で
+// プールされたSSH接続を閉じること（未呼び出しだとプロセスが終了しない）
 ```
 
 #### シナリオ1: 初回デプロイ
@@ -196,11 +208,119 @@ try {
 } catch (error) {
   console.log('期待通りのエラー:', error.message);
 }
+
+await db.disconnect();
 ```
 
 **期待される結果:**
 - 適切なエラーメッセージが返される
-- SSH接続は正常に切断される
+- `disconnect()` でSSH接続が正常に切断される
+
+### テスト6: prod/stg 構成（target・stgDbPath・sync/discard）
+
+```typescript
+const db = new RemoteKijukuDB({
+  sshHost: 'testserver',
+  dbPath: '~/.local/share/kijuku/test.db',          // prod DB パス
+  stgDbPath: '~/.local/share/kijuku/test.stg.db',   // 省略時は dbPath から <stem>.stg.db を導出
+});
+
+// prod(RO) → stg(RW) のフル複製（sync・サーバ側でコピー実行）
+const synced = await db.sync();
+console.log('sync:', synced.prodPath, '->', synced.stgPath);
+
+// 既定の target は stg（書込は導出・指定された stg DB に対して行われる）
+await db.createMedia({ title: 'stg側で作成', media_type: 'comic' });
+
+// stg を破棄して prod から再構築（discard・stg 側の変更は失われる）
+await db.discard();
+
+await db.disconnect();
+```
+
+**期待される結果:**
+- sync/discard がリモート側の prod/stg パスで実行され、両パスが返る
+- 書込は stg にのみ反映され、prod（dbPath）は変更されない
+- `target: 'prod'` を指定したインスタンスでは書込操作がエラーになる（readonly + migrate skip）
+
+### テスト7: diffWithProd・observe・promote（gate評価と stg→prod 反映）
+
+```typescript
+// prod と stg（現在DB）の差分（promote 判断用）
+const diff = await db.diffWithProd({});
+console.log(diff.summary);
+
+// 機械的 promote gate 評価（スキーマ不一致・外部キー違反・件数差分上限等）
+const result = await db.observe();
+console.log('gate:', result.passed);
+
+// gate 通過後に stg→prod へ反映（gate 不合格時は Error）
+const outcome = await db.promote();
+console.log('pre-stash:', outcome.preStashPath);
+
+await db.disconnect();
+```
+
+**期待される結果:**
+- diffWithProd の差分要約（media/tags/mediaTags/attributes/hashes）が取得できる
+- observe の gate 結果（`passed`・各 `checks`）が取得できる
+- promote 後に prod へ stg の変更が反映され、pre-stash（`tmp/` 配下の prod スナップショット）パスが返る
+- gate 不合格の状態で promote するとエラーになる
+
+### テスト8: ファイル操作・trash（mediaRoot サンドボックス）
+
+```typescript
+const db = new RemoteKijukuDB({
+  sshHost: 'testserver',
+  dbPath: '~/.local/share/kijuku/test.db',
+  mediaRoot: '~/media',  // ファイル操作APIのサンドボックス境界（未設定だとエラーで拒否される）
+});
+
+// dry-run ファースト（既定 apply=false で計画のみ返る）
+const plan = await db.mediaCp('a/sample.jpg', 'a/copy.jpg');
+console.log(plan.steps);
+
+// trash（論理削除）: 移動・一覧・復元・物理削除
+await db.moveToTrash('a/old.jpg', 'delete');
+const entries = await db.listTrash();
+await db.restoreFromTrash(entries[0].id);
+await db.purgeTrash(undefined, true);  // dry-run で物理削除計画のみ確認
+
+await db.disconnect();
+```
+
+**期待される結果:**
+- `apply` 省略時はファイル変更が行われず、操作計画（steps）が返る
+- trash への移動・一覧・復元が media root 配下で完結する
+- media root 外のパス指定はエラーで拒否される
+
+### テスト9: バックアップ・pre-stash・長操作タイムアウト・監査ログ
+
+```typescript
+// バックアップ（backup/restore/sync/discard/diff*/observe/promote は長操作で、
+// 省略時は DB サイズから適応的にタイムアウトが算出される）
+const path = await db.backup('manual-test');
+console.log(await db.listBackups());
+
+// pre-stash（promote・prod直接(b)操作直前の prod スナップショット）一覧
+console.log(await db.listPreStashes());
+
+// タイムアウトの明示指定（例: 30分）も可能
+await db.restore({ type: 'latest' }, 30 * 60_000);
+
+await db.disconnect();
+```
+
+監査ログは TS SDK の `RemoteKijukuDB` には公開されていないため、CLI（`--db host:path`）で確認する:
+
+```bash
+kijuku-cli --db testserver:~/.local/share/kijuku/test.db audit-logs --operation promote
+```
+
+**期待される結果:**
+- バックアップがリモートの `backup/` 配下に作成され、一覧に表示される
+- promote・prod直接(b)操作の後に pre-stash と監査ログが記録される
+- 長操作がタイムアウトせずに完了する（大規模 DB でも適応的タイムアウトが機能する）
 
 ## チェックリスト
 
@@ -209,9 +329,13 @@ try {
 - [ ] タグ操作が動作する
 - [ ] 初回実行時に自動バイナリデプロイが行われる
 - [ ] エラー時に適切なメッセージが表示される
-- [ ] SSH接続が適切に確立・切断される
-- [ ] 複数回の操作で問題が発生しない
-- [ ] 異なる設定オプション（workDir、binaryPath）で動作する
+- [ ] 連続RPCでSSH接続が再利用され（`connectCount` が1のまま）、`disconnect()` で切断される
+- [ ] one-shotスクリプトが `disconnect()` 後に正常終了する
+- [ ] 異なる設定オプション（binaryPath・stgDbPath・target・mediaRoot）で動作する
+- [ ] sync/discard で prod→stg の複製・再構築が動作する
+- [ ] diffWithProd・observe・promote の gate 評価と stg→prod 反映が動作する
+- [ ] media root 配下のファイル操作（cp/mv/sync）と trash が動作する
+- [ ] バックアップ・pre-stash・監査ログが記録・参照できる
 
 ## トラブルシューティング
 

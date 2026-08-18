@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // テーブル定義の確認
     let columns = db.get_table_info("media")?;
     for col in &columns {
-        println!("{} ({})", col.name, col.type_);
+        println!("{} ({})", col.name, col.type_name);
     }
 
     // 明示的に接続を閉じる（省略可、スコープを抜けると自動的に閉じる）
@@ -410,7 +410,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 属性を設定（上書き）
     db.set_media_attribute(media_id, "rating", Some("5"), None)?;
-    db.set_media_attribute(media_id, "note", Some("お気に入り"), Some(AttributeValueType::Text))?;
+    db.set_media_attribute(media_id, "note", Some("お気に入り"), Some(AttributeValueType::String))?;
 
     // 属性を1件取得
     if let Some(attr) = db.get_media_attribute(media_id, "rating")? {
@@ -557,7 +557,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[{}] {}: {:?}", item.id, item.title, item.status);
     }
 
-    // サムネイルの生成・更新（コミック対象）
+    // サムネイルの生成・更新（comic / video 対象・musicは対象外）
     let result = db.update_thumbnail(
         &MediaFilter { media_type: Some(MediaType::Comic), ..Default::default() },
         None,
@@ -575,10 +575,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - その親ディレクトリに `cover/{uuid}.jpg` を配置
 - 例: `/media/onepiece/vol1/content` → `/media/onepiece/vol1/cover/{uuid}.jpg`
 
+**メディアタイプごとの生成方式:**
+- `comic`: `{path}/001.{ext}` を ImageMagick `convert`（`-resize x180 -quality 85`）でリサイズ
+- `video`: 動画ファイルの1秒時点（`-ss 00:00:01`）のフレームを ffmpeg（`-vframes 1 -q:v 2`）で1枚抽出。`path` のファイルが存在しない場合は `{path}.{ext}` や同ディレクトリ内の `{uuid}.*` を代替探索
+- `music`: サムネイル対象外（常にスキップ）
+
 **スキップ条件（以下のいずれかに該当する場合はスキップ）:**
 - `path` が未設定
 - `path` に `content` コンポーネントが含まれない
-- `{path}/001.{ext}` が存在しない
+- `comic`: `{path}/001.{ext}` が存在しない
+- `video`: 動画ファイル（代替探索含む）が存在しない
+- `music`: 常にスキップ
 
 **オプション:**
 - `dry_run`: DBを更新せず結果のみ確認（ファイルも生成しない）
@@ -743,19 +750,23 @@ for b in &db.list_backups()? {
 リモートサーバーのDBをSSH経由で操作できます：
 
 ```rust
-use kijuku_db::{RemoteKijukuDB, RemoteConfig, MediaFilter, MediaType};
+use kijuku_db::{RemoteKijukuDB, RemoteConfig, Target, MediaFilter, MediaInput, MediaType};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let remote_db = RemoteKijukuDB::new(RemoteConfig {
         ssh_host: "example.com".to_string(),
         port: Some(22),
-        username: "user".to_string(),
-        db_path: Some("/path/to/kijuku.db".to_string()),
+        username: Some("user".to_string()), // 未設定時は ~/.ssh/config や USER 環境変数から解決
         private_key_path: Some(std::path::PathBuf::from("~/.ssh/id_rsa")),
-        binary_path: None, // 自動検出
+        db_path: Some("/path/to/kijuku.db".to_string()),
+        stg_db_path: None, // 未設定時は db_path から <stem>.stg.db を導出
+        binary_path: None, // 未設定時は ~/.local/bin/kijuku-cli
+        media_root: None,  // ファイル操作APIのサンドボックス境界（未設定時はファイル操作APIが拒否される）
+        target: Target::Stg,     // 操作対象DB（デフォルト stg・prod は readonly + migrate skip）
+        read_source: None, // 読込先DB（未指定時は target に従う）
     });
 
-    // KijukuDBと同等のAPI（全て非同期）
+    // KijukuDBと同等のAPI（同期・ブロッキングRPC）
     remote_db.migrate()?;
     let media = remote_db.create_media(&MediaInput {
         title: "テスト".to_string(),
@@ -766,7 +777,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // バックアップ操作
     let backups = remote_db.list_backups()?;
-    let backup_path = remote_db.backup(Some("label".to_string()), None)?;
+    let backup_path = remote_db.backup(Some("label"), None)?;
 
     // リモートのDB情報
     let tables = remote_db.get_tables()?;
@@ -780,14 +791,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | フィールド | 型 | 必須 | 説明 |
 |-----------|-----|------|------|
-| `ssh_host` | `String` | ✓ | SSH接続先ホスト |
-| `port` | `Option<u16>` | | SSHポート（デフォルト: 22） |
-| `username` | `String` | ✓ | SSHユーザー名 |
-| `private_key_path` | `Option<PathBuf>` | | 秘密鍵ファイルパス |
-| `db_path` | `Option<String>` | | リモートのDBファイルパス |
+| `ssh_host` | `String` | 必須 | SSH接続先ホスト（`~/.ssh/config` の Host エイリアスも可） |
+| `port` | `Option<u16>` | | SSHポート（未設定時は `~/.ssh/config`・それもなければ 22） |
+| `username` | `Option<String>` | | SSHユーザー名（未設定時は `~/.ssh/config` の user → `USER` 環境変数の順で解決） |
+| `private_key_path` | `Option<PathBuf>` | | 秘密鍵ファイルパス（未設定時は `~/.ssh/config` の IdentityFile） |
+| `db_path` | `Option<String>` | | リモートの prod DB ファイルパス |
+| `stg_db_path` | `Option<String>` | | リモートの stg DB パス（未設定時は `db_path` から `<stem>.stg.db` を導出） |
 | `binary_path` | `Option<String>` | | リモートのkijuku-cliパス（symlink・未設定時 `~/.local/bin/kijuku-cli`・実体は `~/.local/kijuku-db/bin/`） |
+| `media_root` | `Option<String>` | | リモートホスト上の media root（ファイル操作APIのサンドボックス境界。未設定時はファイル操作APIがエラーで拒否される） |
+| `target` | `Target` | | 操作対象 DB（`Target::Stg` がデフォルト・RW。`Target::Prod` は readonly + migrate skip） |
+| `read_source` | `Option<Target>` | | 読込先 DB（未指定時は `target` に従う。指定時はそちらを優先して読込専用セッションに折り畳む） |
 
-**対応メソッド:** KijukuDBと同等の全メソッドが利用可能です（バックアップ読み取り含む）。
+**同期APIと非同期API:** `RemoteKijukuDB` の固有メソッドはKijukuDBと同様に同期（ブロッキング）で、SSH RPC を実行して完了を待ちます。非同期で使う場合は `KijukuBackend` trait（`remote_db` を `Box<dyn KijukuBackend>` 等）経由で呼べます（内部で `spawn_blocking` に逃して `async fn` として公開）。
+
+**対応メソッド:** KijukuDBと同等のメソッドが利用可能です。CRUD・検索・タグ・属性・ハッシュ・サムネイル・`update_exist`・バックアップ読み取りに加え、以下も公開しています（詳細は [API仕様書](../../../api/rust.md)・[バックアップ・DB複製・差分・promote gate](../../../api/backup-sync.md) を参照）:
+- ファイル操作・trash: `media_cp` / `media_mv` / `media_sync` / `move_to_trash` / `list_trash` / `restore_from_trash` / `purge_trash` / `upload` / `download`
+- prod/stg 運用: `sync` / `discard` / `diff_with_prod` / `observe` / `promote`
+- 監査ログ・pre-stash: `list_audit_logs` / `list_pre_stashes`
 
 **リモート CLI の自動デプロイ（TASK-69）:** 全ての RPC の先頭でリモート `kijuku-cli` のバージョン（`getServerVersion`）を取得し、ローカル（クライアント）より古い場合に自動デプロイします（`local > remote` の厳密大なり・ダウングレード保護・同等なら skip）。デプロイ先は `deploy-local.sh` と同じ実体 `~/.local/kijuku-db/bin/kijuku-cli` + symlink `~/.local/bin/kijuku-cli` 構成（`binary_path` は symlink 側）。リモートが未存在・または TASK-69 前の古いバイナリ（`getServerVersion` 未対応）でも自動デプロイで回復します。
 
@@ -1009,6 +1029,7 @@ pub struct MediaFilter {
     pub title_en: Option<String>,
     pub artist_en: Option<String>,
     pub id_in: Option<Vec<i64>>,  // IDのIN句フィルタ（999件超は自動チャンク分割）
+    pub exclude_ids: Option<Vec<i64>>,  // 除外IDのNOT IN句フィルタ（999件超は自動チャンク分割）
     pub or_filters: Option<Vec<MediaFilter>>,  // OR条件（ネスト可能）
 }
 
@@ -1099,10 +1120,13 @@ pub struct BackupInfo {
     pub scope: BackupScope,
     pub kind: BackupKind,
     pub label: Option<String>,
+    pub label_source: LabelSource,  // ラベルの由来（Filename / Sidecar）
+    pub note: Option<String>,       // メモ（サイドカー backup-meta.json 由来）
 }
 
 pub enum BackupScope { Auto, Manual, Tmp }
-pub enum BackupKind { Full, Diff }
+pub enum BackupKind { Full, Diff { base_id: String } }  // 差分は基底フルのIDを持つ
+pub enum LabelSource { Filename, Sidecar }
 
 // サムネイル結果
 pub struct CheckThumbnailResult {
@@ -1134,12 +1158,12 @@ pub struct UpdateExistResult {
 
 // テーブルカラム情報
 pub struct TableColumnInfo {
-    pub cid: i32,
+    pub cid: i64,
     pub name: String,
-    pub type_: String,
+    pub type_name: String,
     pub notnull: bool,
-    pub default_value: Option<String>,
-    pub pk: i32,
+    pub dflt_value: Option<String>,
+    pub pk: bool,
 }
 ```
 
@@ -1203,7 +1227,7 @@ cargo build --target x86_64-pc-windows-gnu --release
 
 ## 関連ドキュメント
 
-- [API仕様書](../../../api.md) - TS/Rust両SDKの全API仕様
+- [API仕様書](../../../api/README.md) - TS/Rust両SDKの全API仕様
 - [パフォーマンスガイド](../../../PERFORMANCE.md) - ベンチマークと最適化
 
 ## 注意事項

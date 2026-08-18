@@ -209,9 +209,9 @@ db.migrate(); // これを追加
 `media_type`に不正な値が指定されています：
 
 ```typescript
-// ✅ 正しい
+// 推奨例
 media_type: 'comic'
 
-// ❌ 間違い
+// 非推奨例
 media_type: 'book'  // サポートされていません
 ```

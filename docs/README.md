@@ -7,13 +7,22 @@ kijuku_dbプロジェクトのドキュメント一覧と管理方針。
 ```
 docs/
 ├── README.md                  # このファイル（ドキュメント構成の管理）
-├── api.md                     # API仕様書（全エンドポイント・型定義）
+├── api/                       # API仕様書（エリア別分割）
+│   ├── README.md              # API索引・概要
+│   ├── kijuku-db.md           # ローカル KijukuDB（CRUD・ファイル・trash等）
+│   ├── backup-sync.md         # バックアップ・DB複製・差分・promote gate・監査
+│   ├── remote.md              # RemoteKijukuDB（SSH）
+│   ├── rust.md                # Rust SDK対応表
+│   ├── web-gui.md             # Web GUIサーバー
+│   ├── types.md               # 型定義（正本）
+│   └── errors.md              # エラー・環境変数・パフォーマンス
 ├── DATABASE_SETUP.md          # DBセットアップガイド
 ├── PERFORMANCE.md             # パフォーマンスガイド
 ├── TESTING.md                 # テスト戦略・実行方法
 ├── manual-testing-remote.md   # リモートDB手動テスト手順
 ├── changelog/
-│   └── unreleased.md          # リリース前の変更履歴
+│   ├── unreleased.md          # リリース前の変更履歴
+│   └── v*.md                  # リリース済み変更履歴（v0.2.0 / v0.3.0 ...）
 ├── design/
 │   ├── decisions.md           # 設計上の意思決定記録
 │   ├── path-design.md         # path設計（決定論path + root管理）の設計・実装計画
@@ -42,7 +51,7 @@ docs/
 | ドキュメント | 更新タイミング |
 |-------------|--------------|
 | `docs/changelog/unreleased.md` | 機能追加・バグ修正・破壊的変更のたびに追記 |
-| `docs/api.md` | APIインターフェース（型・エンドポイント・フィールド）変更時 |
+| `docs/api/`（該当エリアのファイル） | APIインターフェース（型・エンドポイント・フィールド）変更時 |
 
 ### 条件付き更新
 

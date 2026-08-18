@@ -1,6 +1,6 @@
 {
   "name": "kijuku-db",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",
@@ -17,7 +17,7 @@
     "examples/"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --target node18 --external better-sqlite3 --dts && cp -r src/server/static dist/server/ && mkdir -p dist/docs/usage && cp -r ../docs/usage/sdk dist/docs/usage/ && cp ../docs/api.md dist/docs/",
+    "build": "tsup src/index.ts --format esm --target node18 --external better-sqlite3 --dts && cp -r src/server/static dist/server/ && mkdir -p dist/docs/usage && cp -r ../docs/usage/sdk dist/docs/usage/ && cp -r ../docs/api dist/docs/",
     "deploy:local": "../scripts/dev/deploy-local.sh",
     "build:all": "pnpm run build && pnpm run deploy:local",
     "test": "vitest run",

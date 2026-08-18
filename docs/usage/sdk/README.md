@@ -97,6 +97,6 @@ kijuku-dbはSQLiteをバックエンドとして使用します。
 
 ## 関連ドキュメント
 
-- [API仕様書](../../api.md) - 詳細なAPI仕様
+- [API仕様書](../../api/README.md) - 詳細なAPI仕様
 - [データベースセットアップガイド](../../DATABASE_SETUP.md) - DBの初期設定
 - [パフォーマンスガイド](../../PERFORMANCE.md) - パフォーマンス最適化

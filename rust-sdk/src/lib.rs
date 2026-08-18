@@ -182,11 +182,20 @@ impl KijukuDB {
             conn.trace(Some(|sql: &str| eprintln!("[SQL] {sql}")));
         }
 
-        // バックアップマネージャーの初期化
-        let backup_manager = if let Some(backup_opts) = options.backup.clone() {
-            Some(BackupManager::new(path_ref, backup_opts)?)
-        } else {
-            None
+        // バックアップマネージャーの初期化。
+        // ファイル実体のないDB（:memory:）は既定でバックアップ無効（TSコンストラクタと同じ挙動）:
+        // `open()` が供給する既定オプション（== BackupOptions::default()）は manager 生成をスキップし、
+        // backup_dir を含む明示指定は BackupManager の検証（:memory: は backup_dir 必須）に委ねる。
+        let backup_manager = match options.backup.clone() {
+            Some(backup_opts) => {
+                let file_less = path_ref.to_string_lossy() == ":memory:";
+                if file_less && backup_opts == crate::backup::BackupOptions::default() {
+                    None
+                } else {
+                    Some(BackupManager::new(path_ref, backup_opts)?)
+                }
+            }
+            None => None,
         };
 
         let conn = Arc::new(ReentrantMutex::new(conn));
@@ -1876,6 +1885,60 @@ mod tests {
     fn test_open_in_memory() {
         let db = KijukuDB::open_in_memory();
         assert!(db.is_ok());
+    }
+
+    /// ファイル実体のないDB（:memory:）のオープンは既定backupオプションで失敗しない
+    /// （既定ではバックアップ無効・TSコンストラクタと同じ挙動・PR#61 レビュー指摘）。
+    #[test]
+    fn test_open_memory_path_with_default_options() {
+        let db = KijukuDB::open(":memory:").unwrap();
+        assert!(db.backup_manager.is_none());
+
+        // DBOptions::default() を明示渡した場合も同様（open() と同一内容のため区別不能）
+        let db = KijukuDB::open_with_options(":memory:", DBOptions::default()).unwrap();
+        assert!(db.backup_manager.is_none());
+    }
+
+    /// :memory: で backup を明示カスタマイズ（backup_dir なし）した場合は検証エラー
+    /// （BackupManager が backup_dir 必須を要求・TS の throw と同じ挙動）。
+    #[test]
+    fn test_open_memory_path_with_explicit_backup_requires_dir() {
+        let err = KijukuDB::open_with_options(
+            ":memory:",
+            DBOptions {
+                backup: Some(crate::backup::BackupOptions {
+                    enabled: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .err()
+        .expect("file-less DB with explicit backup options must be rejected");
+        assert!(
+            err.to_string()
+                .contains("backup_dir must be specified explicitly"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// :memory: + 明示 backup_dir は backup manager が生成される。
+    #[test]
+    fn test_open_memory_path_with_explicit_backup_dir() {
+        let dir = std::env::temp_dir().join(format!("kijuku-open-mem-{}", std::process::id()));
+        let db = KijukuDB::open_with_options(
+            ":memory:",
+            DBOptions {
+                backup: Some(crate::backup::BackupOptions {
+                    backup_dir: Some(dir.to_string_lossy().into_owned()),
+                    enabled: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(db.backup_manager.is_some());
     }
 
     #[test]

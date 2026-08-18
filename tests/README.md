@@ -13,15 +13,33 @@ rust-sdk/tests/              # Rust SDK のインテグレーションテスト
   sync_test.rs               - sync（prod→stg フル複製・replicate_db/copy_db_online）
 
 rust-sdk/src/                # 内蔵ユニットテスト（#[cfg(test)]）
-  config.rs                  - config.toml 読み込み・target解決（Target/resolve_target）
+  config.rs                  - config.toml 読み込み・target解決（Target/resolve_target・db_path明示必須の検証）
   file_ops.rs                - media root 配下ファイル操作（cp/mv/sync）
   trash.rs                   - 論理削除（move/list/restore/purge）
   media_path.rs              - media path 安全化・sandbox 境界
+  backup.rs                  - バックアップ（BackupManager・保持ポリシー・file-less DBのbackupDir明示必須）
+  migration.rs               - マイグレーション（ベーススキーマ履歴記録のトリップワイヤ含む）
+  lib.rs                     - KijukuDB オープン（:memory: の既定backup無効化・明示指定時のbackupDir必須検証）
+  remote.rs                  - RemoteKijukuDB（stgパス導出・target別DBパス解決・sync/discardのfrom/to具象解決）
+  crud.rs                    - メディアCRUD（作成・取得・更新・削除・行変換・巻数算出）
+  tag.rs                     - タグ（作成・名前検索・メディアへの付与/解除）
+  attribute.rs               - メディア追加属性（CRUD・一括削除）
+  hash.rs                    - メディアハッシュ（追加・取得・hex変換・item_uuid/時間範囲検索）
+  search.rs                  - 検索（フィルタ条件構築・LIKEエスケープ・get_distinct_values）
+  thumbnail.rs               - サムネイル（パス解決・親メディア特定・存在チェック・DB反映）
+  bulk.rs                    - 一括操作（bulk create/delete/update・chunking・async版）
+  bulk_load.rs               - bulk_load（MediaHashInput/MediaInput 変換・verify・ログ出力）
+  update_exist.rs            - flag_exist 更新（一時ファイル連番・代替拡張子・ページ数集計）
+  db_value.rs                - DbValue のSQLパラメータ変換（from_opt_*・to_rusqlite_refs）
+  types.rs                   - 型変換（MediaType from_str・nullableフィールドdeserialize）
+  diff.rs                    - 差分（compute_diff・diff_media/tag/attribute・ObserveOptions既定値）
+  error.rs                   - エラー種別（NotFound/Validation/Parse・Display/Debug出力）
+  stg_session.rs             - stg編集セッション（排他ロック・stg meta読み書き・prod revision算出）
 
 ts-sdk/test/
   unit/                      # 純粋関数・モックのテスト（I/O なし）
     create-database.test.ts  - createDatabase() の分岐ロジック
-    db-options.test.ts       - DBOptions/open 挙動（WAL・readonly skip・migrate拒否・pre_migrate snapshot）
+    db-options.test.ts       - DBOptions/open 挙動（WAL・readonly skip・migrate拒否・pre_migrate snapshot・file-less DBのバックアップ既定無効化）
     error-handling.test.ts   - エラークラスとハンドラ関数
     file-ops.test.ts         - media root 配下ファイル操作（cp/mv/sync・dry-run）
     media-path.test.ts       - media path 安全化・sandbox 境界
