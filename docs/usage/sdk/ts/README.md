@@ -89,6 +89,9 @@ if (media) {
   console.log(media.title);
 }
 
+// UUIDで1件取得（uuidカラムはUNIQUEのため単一取得）
+const mediaByUuid = db.getMediaByUuid('550e8400-e29b-41d4-a716-446655440000');
+
 // 部分更新（指定フィールドのみ更新）
 db.updateMedia(1, { artist: '新しい作者名', flag_exist: false });
 
@@ -796,6 +799,8 @@ const filter: MediaFilter = {
   series: 'ワンピース',
   tag_ids: [1, 2],       // タグIDで絞り込む場合
   id_in: [1, 2, 3],      // 複数IDを一括取得（999件超は自動チャンク分割）
+  uuid: '550e8400-e29b-41d4-a716-446655440000',  // UUID完全一致
+  uuid_in: ['550e8400-...', '6ba7b810-...'],      // 複数UUIDを一括取得（999件超は自動チャンク分割）
 };
 
 const options: QueryOptions = {

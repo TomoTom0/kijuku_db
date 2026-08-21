@@ -156,6 +156,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", media.title);
     }
 
+    // UUIDで1件取得（uuidカラムはUNIQUEのため単一取得）
+    if let Some(media) = db.get_media_by_uuid("550e8400-e29b-41d4-a716-446655440000") {
+        println!("{}", media.title);
+    }
+
     // 部分更新（指定フィールドのみ更新）
     db.update_media(1, &MediaUpdateInput {
         artist: Some(Some("新しい作者名".to_string())),
@@ -1025,6 +1030,8 @@ pub struct MediaFilter {
     pub magazine_id: Option<String>,
     pub extension: Option<String>,
     pub external_id: Option<String>,
+    pub uuid: Option<String>,       // UUIDの完全一致フィルタ（uuidカラムはUNIQUE）
+    pub uuid_in: Option<Vec<String>>,  // UUIDのIN句フィルタ（999件超は自動チャンク分割）
     pub volume_title: Option<String>,
     pub title_en: Option<String>,
     pub artist_en: Option<String>,
