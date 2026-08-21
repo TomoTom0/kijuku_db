@@ -351,12 +351,12 @@ console.log(media === null); // true
 | `extension` | `string` | 拡張子完全一致 |
 | `external_id` | `string` | 外部ID完全一致 |
 | `uuid` | `string` | UUID完全一致（uuidカラムはUNIQUE） |
-| `uuid_in` | `string[]` | UUIDのIN句フィルタ（複数UUIDを一括フェッチする場合に使用）。999件超の場合は自動的にチャンク分割して処理 |
+| `uuid_in` | `string[]` | UUIDのIN句フィルタ（複数UUIDを一括フェッチする場合に使用）。`json_each` で1つのパラメータにまとめるため件数の上限なし（SQLite/D1のバインドパラメータ上限の影響を受けない） |
 | `volume_title` | `string` | 巻タイトル部分一致検索 |
 | `title_en` | `string` | タイトル（英語）部分一致検索 |
 | `artist_en` | `string` | 作者名（英語）部分一致検索 |
-| `id_in` | `number[]` | IDのIN句フィルタ（複数IDを一括フェッチする場合に使用）。999件超の場合は自動的にチャンク分割して処理 |
-| `exclude_ids` | `number[]` | IDのNOT IN句フィルタ（指定IDを除外）。`id_in` の逆。999件超の場合は自動的にチャンク分割（NOT IN 句は AND で結合） |
+| `id_in` | `number[]` | IDのIN句フィルタ（複数IDを一括フェッチする場合に使用）。`uuid_in` と同様に件数の上限なし |
+| `exclude_ids` | `number[]` | IDのNOT IN句フィルタ（指定IDを除外）。`id_in` の逆。`uuid_in` と同様に件数の上限なし |
 | `or_filters` | `MediaFilter[]` | OR条件で結合する追加フィルタ（ネスト可能） |
 
 **QueryOptions:**

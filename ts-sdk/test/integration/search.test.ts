@@ -238,6 +238,41 @@ describe('Search and Filter', () => {
         expect(media.media_type).toBe('comic');
       });
     });
+
+    test('uuid_inがパラメータ数上限（999）を超えて動作する', () => {
+      // json_eachによる1パラメータ化の回帰テスト
+      const COUNT = 1200;
+      const uuids: string[] = [];
+      for (let i = 0; i < COUNT; i++) {
+        const hex = i.toString(16);
+        const uuid = `${hex.padStart(8, '0')}-0000-4000-8000-${hex.padStart(12, '0')}`;
+        db.createMedia({ title: `大量${i}`, media_type: 'comic', uuid });
+        uuids.push(uuid);
+      }
+      const results = db.findMedia({ uuid_in: uuids });
+      expect(results).toHaveLength(COUNT);
+      const resultUuids = new Set(results.map((m) => m.uuid));
+      expect(resultUuids.has(uuids[0])).toBe(true);
+      expect(resultUuids.has(uuids[COUNT - 1])).toBe(true);
+    });
+
+    test('id_inとexclude_idsがパラメータ数上限（999）を超えて動作する', () => {
+      // json_eachによる1パラメータ化の回帰テスト
+      const COUNT = 1200;
+      for (let i = 0; i < COUNT; i++) {
+        db.createMedia({ title: `大量${i}`, media_type: 'comic' });
+      }
+      const all = db.findMedia({});
+      const largeIds = all.filter((m) => m.title.startsWith('大量')).map((m) => m.id);
+      expect(largeIds).toHaveLength(COUNT);
+
+      const results = db.findMedia({ id_in: largeIds });
+      expect(results).toHaveLength(COUNT);
+
+      // exclude_idsで大量IDを除外するとbeforeEachの4件のみ残る
+      const excluded = db.findMedia({ exclude_ids: largeIds });
+      expect(excluded).toHaveLength(4);
+    });
   });
 
   describe('findMedia - ソート', () => {

@@ -624,6 +624,41 @@ async fn test_find_media_by_uuid_filter() {
 }
 
 #[tokio::test]
+async fn test_find_media_by_uuid_in_over_param_limit_async() {
+    // SQLite のパラメータ数上限（999）を超える uuid_in が async API
+    // （find_media_async: Local/D1 共通の SqlParam 実装）でも動作することを確認
+    // （json_each による1パラメータ化の回帰テスト）
+    let temp_file = NamedTempFile::new().unwrap();
+    let db = KijukuDB::open(temp_file.path()).unwrap();
+    db.migrate().unwrap();
+
+    const COUNT: usize = 1200;
+    let mut uuids = Vec::with_capacity(COUNT);
+    for i in 0..COUNT {
+        let uuid = format!("{:08x}-0000-4000-8000-{:012x}", i, i);
+        db.create_media(&MediaInput {
+            title: format!("作品{}", i),
+            media_type: MediaType::Comic,
+            uuid: Some(uuid.clone()),
+            ..Default::default()
+        }).unwrap();
+        uuids.push(uuid);
+    }
+
+    let results = KijukuBackend::find_media(
+        &db,
+        &MediaFilter { uuid_in: Some(uuids.clone()), ..Default::default() },
+        None,
+    ).await.unwrap();
+    assert_eq!(results.len(), COUNT);
+
+    let got: std::collections::HashSet<&str> =
+        results.iter().map(|m| m.uuid.as_str()).collect();
+    assert!(got.contains(uuids[0].as_str()));
+    assert!(got.contains(uuids[COUNT - 1].as_str()));
+}
+
+#[tokio::test]
 async fn test_get_media_tags_bulk_deduplicated() {
     // 重複した media_ids を渡しても、結果の HashMap にタグが重複して登録されないこと
     // （IN句は集合扱いだが、ユニーク化でプレースホルダー無駄増加も防止）を検証する。
