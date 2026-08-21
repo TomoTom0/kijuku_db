@@ -4,12 +4,18 @@
 
 ```
 rust-sdk/tests/              # Rust SDK のインテグレーションテスト
+  audit_test.rs              - 監査ログ（append-only JSONL・sync/discard/observe/promote での記録・promote 後も prod 側 audit.log が残る）
   backup_test.rs             - バックアップ機能（scope/kind/auto-records.csv/restore/pre_migrate・pre_promote snapshot/copy_db_online）
-  cli_integration_test.rs    - CLIコマンドのインテグレーションテスト（file/trash/sync-db サブコマンド）
+  cli_integration_test.rs    - CLIコマンドのインテグレーションテスト（stdin操作・file/trash/sync-db サブコマンド）
   d1_test.rs                 - D1バックエンドのテスト
   db_options_test.rs         - DBOptions（WAL・busy_timeout・readonly 時の WAL skip）
+  diff_prod_stg_test.rs      - diff_with_prod（prod RO + stg 比較・stg 編集視点のセマンティクス担保）
   integration_test.rs        - CRUD・タグ・属性などのDB操作
+  observe_test.rs            - observe（機械的 promote gate・evaluate_gate 純粋関数と統合テスト）
+  prod_rw_test.rs            - prod RW 一時取得（ProdRwScope・排他ロック・pre-stash 強制・RAII 解放）
+  promote_test.rs            - promote コア（stg→prod 反映・gate 不合格時の prod 無触発・同一パス拒否）
   remote_test.rs             - リモートDB接続テスト（--target 配線）
+  stg_session_test.rs        - stg 排他ロック・sync 元 revision 記録
   sync_test.rs               - sync（prod→stg フル複製・replicate_db/copy_db_online）
 
 rust-sdk/src/                # 内蔵ユニットテスト（#[cfg(test)]）
@@ -40,12 +46,16 @@ ts-sdk/test/
   unit/                      # 純粋関数・モックのテスト（I/O なし）
     create-database.test.ts  - createDatabase() の分岐ロジック
     db-options.test.ts       - DBOptions/open 挙動（WAL・readonly skip・migrate拒否・pre_migrate snapshot・file-less DBのバックアップ既定無効化）
+    diff-prompt.test.ts      - buildDiffExplanationPrompt（diff説明プロンプト構築）
+    diff-summary.test.ts     - summarizeDiff（diff要約）
     error-handling.test.ts   - エラークラスとハンドラ関数
     file-ops.test.ts         - media root 配下ファイル操作（cp/mv/sync・dry-run）
     media-path.test.ts       - media path 安全化・sandbox 境界
     parse-db-path.test.ts    - parseDbPath() のパース処理
+    readonly-guard.test.ts   - readonly セッションの書込拒否ガード（prod保護・stgでの制限操作拒否）
     remote-target.test.ts    - RemoteKijukuDB の --target / stgDbPath 配線
     remote-session-pool.test.ts - SSH Session 接続プール（再利用・無効化・disconnect/connectCount・ssh2 mock）
+    remote-version.test.ts   - parseSemver・needsDeploy（リモートCLIバージョン比較・自動デプロイ判断）
     target-resolution.test.ts - resolveTarget/parseTarget の target 解決
     trash.test.ts            - 論理削除（move/list/restore/purge）
   integration/               # 実SQLite・実ファイルシステムを使うテスト
@@ -54,9 +64,13 @@ ts-sdk/test/
     bulk.test.ts             - 一括操作
     config.test.ts           - config.toml 読み込み・マージ
     crud.test.ts             - メディアCRUD操作
+    diff-prod-stg.test.ts    - diffWithProd（prod RO / stg 差分・stg 編集視点）
     errors.test.ts           - エラーケース
+    hash.test.ts             - メディアハッシュ（追加・取得・item_uuid/時間範囲検索）
     migration.test.ts        - マイグレーション・スキーマバージョン
+    promote.test.ts          - promote（stg→prod 反映・gate）
     search.test.ts           - 検索・フィルタ・ソート・ページネーション
+    stg-lock.test.ts         - stg 排他ロック・revision 記録
     sync.test.ts             - sync（prod→stg フル複製・replicateDb）
     tag.test.ts              - タグCRUD・メディアへの紐付け・使用統計
     thumbnail.test.ts        - checkThumbnail・updateThumbnail・resolveThumbnailPath
@@ -64,8 +78,6 @@ ts-sdk/test/
     update-exist.test.ts     - flag_exist の更新ロジック
     workflow.test.ts         - migrate → import → search の操作フロー
   e2e/                       # 外部サーバーが必要なテスト（デフォルトskip）
-    cli-local.test.ts        - CLIのローカル操作
-    cli-remote.test.ts       - CLIのリモート操作
     sdk-remote.test.ts       - SDKのリモート操作
 ```
 

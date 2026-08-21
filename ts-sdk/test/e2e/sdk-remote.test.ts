@@ -121,6 +121,22 @@ describeRemote('RemoteKijukuDB 統合テスト', () => {
       expect(media!.title).toBe('リモートテスト作品');
     });
 
+    it('UUIDでメディアを取得できる', async () => {
+      const mediaId = createdMediaIds[0];
+      const byId = await remoteDb.getMedia(mediaId);
+      const media = await remoteDb.getMediaByUuid(byId!.uuid);
+
+      expect(media).toBeDefined();
+      expect(media!.id).toBe(mediaId);
+      expect(media!.uuid).toBe(byId!.uuid);
+
+      // 存在しないUUIDはnull
+      const notFound = await remoteDb.getMediaByUuid(
+        '00000000-0000-0000-0000-000000000000'
+      );
+      expect(notFound).toBeNull();
+    });
+
     it('メディアを更新できる', async () => {
       const mediaId = createdMediaIds[0];
 

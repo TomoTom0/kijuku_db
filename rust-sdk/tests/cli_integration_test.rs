@@ -232,6 +232,57 @@ fn test_cli_get_media() {
 }
 
 #[test]
+fn test_cli_get_media_by_uuid() {
+    // db_path を TempDir 内に置くことで backup_dir（db_path の親/backup）も各テスト独立となり、
+    // 並列実行時の /tmp/backup 共有競合を防ぐ（NamedTempFile は /tmp 直下になるため共有される）。
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+
+    // マイグレーション
+    execute_cli_command(db_path, json!({
+        "operation": "migrate",
+        "params": {}
+    }));
+
+    // UUID手動指定でメディア作成
+    let manual_uuid = "550e8400-e29b-41d4-a716-446655440000";
+    execute_cli_command(db_path, json!({
+        "operation": "createMedia",
+        "params": {
+            "data": {
+                "title": "UUID取得テスト",
+                "media_type": "comic",
+                "uuid": manual_uuid
+            }
+        }
+    }));
+
+    // UUIDでメディア取得
+    let get_response = execute_cli_command(db_path, json!({
+        "operation": "getMediaByUuid",
+        "params": {
+            "uuid": manual_uuid
+        }
+    }));
+
+    assert_eq!(get_response["success"], true);
+    assert_eq!(get_response["data"]["uuid"], manual_uuid);
+    assert_eq!(get_response["data"]["title"], "UUID取得テスト");
+
+    // 存在しないUUIDは data: null
+    let not_found = execute_cli_command(db_path, json!({
+        "operation": "getMediaByUuid",
+        "params": {
+            "uuid": "00000000-0000-0000-0000-000000000000"
+        }
+    }));
+
+    assert_eq!(not_found["success"], true);
+    assert!(not_found["data"].is_null());
+}
+
+#[test]
 fn test_cli_find_media() {
     // db_path を TempDir 内に置くことで backup_dir（db_path の親/backup）も各テスト独立となり、
     // 並列実行時の /tmp/backup 共有競合を防ぐ（NamedTempFile は /tmp 直下になるため共有される）。
