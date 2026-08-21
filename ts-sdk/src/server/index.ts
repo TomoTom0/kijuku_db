@@ -81,6 +81,7 @@ export function startServer(db: KijukuDB, options: ServerOptions = {}): void {
     if (query.artist) filter.artist = query.artist;
     if (query.media_type) filter.media_type = query.media_type;
     if (query.series) filter.series = query.series;
+    if (query.uuid) filter.uuid = query.uuid;
 
     const limit = query.limit ? parseInt(query.limit, 10) : 50;
     const offset = query.offset ? parseInt(query.offset, 10) : 0;
@@ -96,6 +97,20 @@ export function startServer(db: KijukuDB, options: ServerOptions = {}): void {
     });
 
     return c.json({ media, count: media.length, total });
+  });
+
+  app.get('/api/media/uuid/:uuid', async (c) => {
+    const uuid = c.req.param('uuid');
+    const media = db.getMediaByUuid(uuid);
+
+    if (!media) {
+      return c.json({ error: 'Media not found' }, 404);
+    }
+
+    const tags = db.getMediaTags(media.id);
+    const attributes = db.getMediaAttributes(media.id);
+
+    return c.json({ media, tags, attributes });
   });
 
   app.get('/api/media/:id', async (c) => {

@@ -44,6 +44,9 @@ pub trait KijukuBackend: Send + Sync {
     /// ID でメディアを取得
     async fn get_media(&self, id: i64) -> Result<Option<Media>>;
 
+    /// UUID でメディアを取得（uuidカラムはUNIQUEのため単一取得）
+    async fn get_media_by_uuid(&self, uuid: &str) -> Result<Option<Media>>;
+
     /// メディアを更新（部分更新）
     async fn update_media(&self, id: i64, input: &MediaUpdateInput) -> Result<()>;
 

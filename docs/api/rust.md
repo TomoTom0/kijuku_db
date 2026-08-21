@@ -29,6 +29,7 @@ Rust SDKのメソッドはsnake_caseで、戻り値が`Result<T>`で包まれま
 | `new KijukuDB(path)` | `KijukuDB::open(path)` | コンストラクタ → ファクトリメソッド |
 | `createMedia(data)` | `create_media(&self, input: &MediaInput)` | |
 | `getMedia(id)` | `get_media(&self, id: i64) -> Option<Media>` | |
+| `getMediaByUuid(uuid)` | `get_media_by_uuid(&self, uuid: &str) -> Option<Media>` | uuidカラムはUNIQUE |
 | `updateMedia(id, data)` | `update_media(&self, id: i64, input: &MediaUpdateInput)` | `Partial<MediaInput>` → `MediaUpdateInput` |
 | `deleteMedia(id)` | `delete_media(&self, id: i64)` | |
 | `findMedia(filter, opts)` | `find_media(&self, filter: &MediaFilter, options: Option<&QueryOptions>)` | |

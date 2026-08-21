@@ -537,6 +537,92 @@ fn test_transaction_panic_rolls_back() {
     assert_eq!(all_media.len(), 2);
 }
 
+#[test]
+fn test_get_media_by_uuid() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db = KijukuDB::open(temp_file.path()).unwrap();
+    db.migrate().unwrap();
+
+    let manual_uuid = "550e8400-e29b-41d4-a716-446655440000".to_string();
+    let media = db.create_media(&MediaInput {
+        title: "UUID取得テスト".to_string(),
+        media_type: MediaType::Comic,
+        uuid: Some(manual_uuid.clone()),
+        ..Default::default()
+    }).unwrap();
+
+    // UUIDで取得（sync deprecated API）
+    let fetched = db.get_media_by_uuid(&manual_uuid).unwrap();
+    assert_eq!(fetched.id, media.id);
+    assert_eq!(fetched.uuid, manual_uuid);
+
+    // 存在しないUUIDはNone
+    assert!(db.get_media_by_uuid("00000000-0000-0000-0000-000000000000").is_none());
+}
+
+#[tokio::test]
+async fn test_get_media_by_uuid_async() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db = KijukuDB::open(temp_file.path()).unwrap();
+    db.migrate().unwrap();
+
+    let manual_uuid = "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string();
+    let media = db.create_media(&MediaInput {
+        title: "UUID取得テスト（async）".to_string(),
+        media_type: MediaType::Comic,
+        uuid: Some(manual_uuid.clone()),
+        ..Default::default()
+    }).unwrap();
+
+    // UUIDで取得（KijukuBackend async API）
+    let fetched = KijukuBackend::get_media_by_uuid(&db, &manual_uuid).await.unwrap().unwrap();
+    assert_eq!(fetched.id, media.id);
+    assert_eq!(fetched.uuid, manual_uuid);
+
+    // 存在しないUUIDはNone
+    assert!(KijukuBackend::get_media_by_uuid(&db, "00000000-0000-0000-0000-000000000000").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_find_media_by_uuid_filter() {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db = KijukuDB::open(temp_file.path()).unwrap();
+    db.migrate().unwrap();
+
+    let uuid1 = "550e8400-e29b-41d4-a716-446655440000".to_string();
+    let uuid2 = "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string();
+    for (title, uuid) in [("作品1", uuid1.clone()), ("作品2", uuid2.clone())] {
+        db.create_media(&MediaInput {
+            title: title.to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(uuid),
+            ..Default::default()
+        }).unwrap();
+    }
+    db.create_media(&MediaInput {
+        title: "自動UUID".to_string(),
+        media_type: MediaType::Comic,
+        ..Default::default()
+    }).unwrap();
+
+    // uuid完全一致
+    let results = KijukuBackend::find_media(
+        &db,
+        &MediaFilter { uuid: Some(uuid1.clone()), ..Default::default() },
+        None,
+    ).await.unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].uuid, uuid1);
+
+    // uuid_in（重複指定を含む）
+    let results = KijukuBackend::find_media(
+        &db,
+        &MediaFilter { uuid_in: Some(vec![uuid1.clone(), uuid2.clone(), uuid1.clone()]), ..Default::default() },
+        None,
+    ).await.unwrap();
+    assert_eq!(results.len(), 2);
+}
+
 #[tokio::test]
 async fn test_get_media_tags_bulk_deduplicated() {
     // 重複した media_ids を渡しても、結果の HashMap にタグが重複して登録されないこと

@@ -174,6 +174,12 @@ pub fn get_media(conn: &Connection, id: i64) -> Option<Media> {
         .ok()
 }
 
+/// UUIDでメディアを取得（uuidカラムはUNIQUEのため単一取得）
+pub fn get_media_by_uuid(conn: &Connection, uuid: &str) -> Option<Media> {
+    conn.query_row("SELECT * FROM media WHERE uuid = ?1", params![uuid], row_to_media)
+        .ok()
+}
+
 /// メディアを更新（部分更新）
 ///
 /// 指定されたフィールドのみ更新します。
@@ -469,6 +475,17 @@ pub async fn create_media_async(exec: &dyn SqlExec, input: &MediaInput) -> Resul
 pub async fn get_media_async(exec: &dyn SqlExec, id: i64) -> Result<Option<Media>> {
     let sql = "SELECT * FROM media WHERE id = ?1";
     let params = vec![SqlParam::Int(id)];
+    let rows = exec.query(sql, &params).await?;
+    match rows.into_iter().next() {
+        Some(row) => Ok(Some(row_to_media_from_sqlrow(&row)?)),
+        None => Ok(None),
+    }
+}
+
+/// async バックエンド経由で UUID からメディアを取得（uuidカラムはUNIQUEのため単一取得）
+pub async fn get_media_by_uuid_async(exec: &dyn SqlExec, uuid: &str) -> Result<Option<Media>> {
+    let sql = "SELECT * FROM media WHERE uuid = ?1";
+    let params = vec![SqlParam::Text(uuid.to_string())];
     let rows = exec.query(sql, &params).await?;
     match rows.into_iter().next() {
         Some(row) => Ok(Some(row_to_media_from_sqlrow(&row)?)),
@@ -987,6 +1004,29 @@ mod tests {
         // 自動生成されたUUIDがUUID v4形式であることを確認
         assert_eq!(media.uuid.len(), 36);
         assert_eq!(media.uuid.chars().filter(|&c| c == '-').count(), 4);
+    }
+
+    #[test]
+    fn test_get_media_by_uuid() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let manual_uuid = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        let input = MediaInput {
+            title: "UUID取得テスト".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(manual_uuid.clone()),
+            ..Default::default()
+        };
+        let created = create_media(&conn, &input).unwrap();
+
+        // UUIDで取得できる
+        let got = get_media_by_uuid(&conn, &manual_uuid).unwrap();
+        assert_eq!(got.id, created.id);
+        assert_eq!(got.uuid, manual_uuid);
+
+        // 存在しないUUIDはNone
+        assert!(get_media_by_uuid(&conn, "00000000-0000-0000-0000-000000000000").is_none());
     }
 
     #[test]

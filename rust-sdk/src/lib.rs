@@ -512,6 +512,13 @@ impl KijukuDB {
         crud::get_media(&conn, id)
     }
 
+    /// UUIDでメディアを取得（uuidカラムはUNIQUEのため単一取得）
+    #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_by_uuid)")]
+    pub fn get_media_by_uuid(&self, uuid: &str) -> Option<Media> {
+        let conn = self.conn.lock();
+        crud::get_media_by_uuid(&conn, uuid)
+    }
+
     /// メディアを更新（部分更新）
     ///
     /// 指定されたフィールドのみ更新します。
@@ -1663,6 +1670,10 @@ impl KijukuBackend for KijukuDB {
 
     async fn get_media(&self, id: i64) -> Result<Option<Media>> {
         crud::get_media_async(&self.exec, id).await
+    }
+
+    async fn get_media_by_uuid(&self, uuid: &str) -> Result<Option<Media>> {
+        crud::get_media_by_uuid_async(&self.exec, uuid).await
     }
 
     async fn update_media(&self, id: i64, input: &MediaUpdateInput) -> Result<()> {

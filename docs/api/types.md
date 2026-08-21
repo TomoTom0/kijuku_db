@@ -115,6 +115,10 @@ interface MediaFilter {
   magazine_id?: string;
   extension?: string;
   external_id?: string;
+  /** UUIDの完全一致フィルタ（uuidカラムはUNIQUE） */
+  uuid?: string;
+  /** UUIDのIN句フィルタ（複数UUIDを一括フェッチする場合に使用） */
+  uuid_in?: string[];
   volume_title?: string;
   title_en?: string;
   artist_en?: string;

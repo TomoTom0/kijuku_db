@@ -127,6 +127,42 @@ describe('CRUD Operations', () => {
     });
   });
 
+  describe('getMediaByUuid', () => {
+    test('UUIDでメディアを取得できる', () => {
+      const manualUuid = '550e8400-e29b-41d4-a716-446655440000';
+      const input: MediaInput = {
+        title: 'UUID取得テスト',
+        media_type: 'comic',
+        uuid: manualUuid,
+      };
+
+      const created = db.createMedia(input);
+      const retrieved = db.getMediaByUuid(manualUuid);
+
+      expect(retrieved).not.toBeNull();
+      expect(retrieved?.id).toBe(created.id);
+      expect(retrieved?.uuid).toBe(manualUuid);
+    });
+
+    test('存在しないUUIDの場合、nullを返す', () => {
+      const media = db.getMediaByUuid('00000000-0000-0000-0000-000000000000');
+      expect(media).toBeNull();
+    });
+
+    test('自動生成UUIDでも取得できる', () => {
+      const input: MediaInput = {
+        title: '自動UUID取得テスト',
+        media_type: 'comic',
+      };
+
+      const created = db.createMedia(input);
+      const retrieved = db.getMediaByUuid(created.uuid);
+
+      expect(retrieved?.id).toBe(created.id);
+      expect(retrieved?.title).toBe('自動UUID取得テスト');
+    });
+  });
+
   describe('updateMedia', () => {
     test('メディアの情報を更新できる', () => {
       const input: MediaInput = {

@@ -851,6 +851,17 @@ export class RemoteKijukuDB {
   }
 
   /**
+   * UUIDでメディアを取得（uuidカラムはUNIQUEのため単一取得）
+   */
+  async getMediaByUuid(uuid: string): Promise<Media | null> {
+    const response = await this.executeRemoteCommand({
+      operation: 'getMediaByUuid',
+      params: { uuid },
+    });
+    return this.checkResponse(response);
+  }
+
+  /**
    * メディアを更新
    */
   async updateMedia(id: number, data: Partial<MediaInput>): Promise<void> {

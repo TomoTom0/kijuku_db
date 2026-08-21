@@ -46,6 +46,7 @@ pub struct MediaQuery {
     artist: Option<String>,
     media_type: Option<String>,
     series: Option<String>,
+    uuid: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
     #[serde(rename = "orderBy")]
@@ -89,6 +90,7 @@ pub async fn start_server(db: KijukuDB, options: ServerOptions) {
     // Protected routes that require authentication
     let protected_routes = Router::new()
         .route("/api/media", get(get_media_list))
+        .route("/api/media/uuid/:uuid", get(get_media_detail_by_uuid))
         .route("/api/media/:id", get(get_media_detail))
         .layer(middleware::from_fn(auth_middleware));
 
@@ -236,6 +238,7 @@ async fn get_media_list(
         artist: params.artist,
         media_type,
         series: params.series,
+        uuid: params.uuid,
         ..Default::default()
     };
 
@@ -283,6 +286,28 @@ async fn get_media_detail(
         Some(media) => {
             let tags = db.get_media_tags(id).unwrap_or_default();
             let attributes = db.get_media_attributes(id).unwrap_or_default();
+
+            Ok(Json(serde_json::json!({
+                "media": media,
+                "tags": tags,
+                "attributes": attributes,
+            })))
+        }
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+/// UUIDでメディア詳細を取得（uuidカラムはUNIQUE）
+async fn get_media_detail_by_uuid(
+    State(state): State<Arc<ServerState>>,
+    Path(uuid): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match db.get_media_by_uuid(&uuid) {
+        Some(media) => {
+            let tags = db.get_media_tags(media.id).unwrap_or_default();
+            let attributes = db.get_media_attributes(media.id).unwrap_or_default();
 
             Ok(Json(serde_json::json!({
                 "media": media,

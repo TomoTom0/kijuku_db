@@ -127,6 +127,10 @@ pub struct MediaFilter {
     pub magazine_id: Option<String>,
     pub extension: Option<String>,
     pub external_id: Option<String>,
+    /// UUIDの完全一致フィルタ（uuidカラムはUNIQUE）
+    pub uuid: Option<String>,
+    /// UUIDのIN句フィルタ（複数UUIDを一括フェッチする場合に使用）
+    pub uuid_in: Option<Vec<String>>,
     pub volume_title: Option<String>,
     pub title_en: Option<String>,
     pub artist_en: Option<String>,

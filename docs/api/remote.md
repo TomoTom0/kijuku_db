@@ -40,7 +40,7 @@ const remoteDb = new RemoteKijukuDB({
 | カテゴリ | メソッド | 備考 |
 |---------|---------|------|
 | **マイグレーション** | `migrate()`, `getSchemaVersion()`, `getTables()`, `getTableInfo()` | |
-| **メディアCRUD** | `createMedia()`, `getMedia()`, `updateMedia()`, `deleteMedia()` | |
+| **メディアCRUD** | `createMedia()`, `getMedia()`, `getMediaByUuid()`, `updateMedia()`, `deleteMedia()` | |
 | **メディア検索** | `findMedia()`, `getDistinctValues()` | |
 | **バルク操作** | `bulkCreateMedia()`, `bulkDeleteMedia()`, `bulkUpdateMedia()` | |
 | **タグ操作** | `createTag()`, `getTagByName()`, `getAllTags()`, `addTagToMedia()`, `removeTagFromMedia()`, `getMediaTags()`, `getTagUsageStats()`, `findUnusedTags()` | |

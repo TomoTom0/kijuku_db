@@ -96,6 +96,12 @@ struct GetMediaParams {
     id: i64,
 }
 
+/// UUIDでのメディア取得パラメータ
+#[derive(Debug, Deserialize)]
+struct GetMediaByUuidParams {
+    uuid: String,
+}
+
 /// メディア更新のパラメータ（部分更新）
 #[derive(Debug, Deserialize)]
 struct UpdateMediaParams {
@@ -2682,6 +2688,7 @@ async fn execute_command(backend: &mut Backend, request: &CommandRequest) -> Com
         "getTableInfo" => handle_get_table_info(backend.as_backend(), &request.params).await,
         "createMedia" => handle_create_media(backend.as_backend(), &request.params).await,
         "getMedia" => handle_get_media(backend.as_backend(), &request.params).await,
+        "getMediaByUuid" => handle_get_media_by_uuid(backend.as_backend(), &request.params).await,
         "updateMedia" => handle_update_media(backend.as_backend(), &request.params).await,
         "deleteMedia" => handle_delete_media(backend.as_backend(), &request.params).await,
         "findMedia" => handle_find_media(backend.as_backend(), &request.params).await,
@@ -2918,6 +2925,20 @@ async fn handle_get_media(db: &dyn KijukuBackend, params: &serde_json::Value) ->
         Ok(p) => p, Err(e) => return e,
     };
     match db.get_media(params.id).await {
+        Ok(Some(m)) => match serde_json::to_value(m) {
+            Ok(v) => CommandResponse::success(v),
+            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+        },
+        Ok(None) => CommandResponse::success(serde_json::Value::Null),
+        Err(e) => CommandResponse::error(format!("メディア取得エラー: {}", e)),
+    }
+}
+
+async fn handle_get_media_by_uuid(db: &dyn KijukuBackend, params: &serde_json::Value) -> CommandResponse {
+    let params = match deserialize_params::<GetMediaByUuidParams>(params) {
+        Ok(p) => p, Err(e) => return e,
+    };
+    match db.get_media_by_uuid(&params.uuid).await {
         Ok(Some(m)) => match serde_json::to_value(m) {
             Ok(v) => CommandResponse::success(v),
             Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),

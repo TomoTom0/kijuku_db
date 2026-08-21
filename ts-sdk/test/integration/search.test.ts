@@ -189,6 +189,55 @@ describe('Search and Filter', () => {
       expect(resultIds).not.toContain(allIds[0]);
       expect(resultIds).not.toContain(allIds[1]);
     });
+
+    test('uuidで完全一致フィルタできる', () => {
+      const all = db.findMedia({});
+      const targetUuid = all[0].uuid;
+      const results = db.findMedia({ uuid: targetUuid });
+      expect(results).toHaveLength(1);
+      expect(results[0].uuid).toBe(targetUuid);
+      expect(results[0].id).toBe(all[0].id);
+    });
+
+    test('uuidが一致しない場合、空配列を返す', () => {
+      const results = db.findMedia({ uuid: '00000000-0000-0000-0000-000000000000' });
+      expect(results).toHaveLength(0);
+    });
+
+    test('uuid_inで複数UUIDを一括取得できる', () => {
+      const all = db.findMedia({});
+      const results = db.findMedia({ uuid_in: [all[0].uuid, all[2].uuid] });
+      expect(results).toHaveLength(2);
+      const resultUuids = results.map((m) => m.uuid);
+      expect(resultUuids).toContain(all[0].uuid);
+      expect(resultUuids).toContain(all[2].uuid);
+    });
+
+    test('uuid_inに重複UUIDが含まれていても重複なく取得できる', () => {
+      const all = db.findMedia({});
+      const results = db.findMedia({
+        uuid_in: [all[0].uuid, all[0].uuid, all[1].uuid],
+      });
+      expect(results).toHaveLength(2);
+    });
+
+    test('uuid_inが空配列の場合、全件取得になる', () => {
+      const results = db.findMedia({ uuid_in: [] });
+      expect(results).toHaveLength(4);
+    });
+
+    test('uuid_inと他のフィルタを組み合わせられる', () => {
+      const all = db.findMedia({});
+      // uuid_in=全UUID + media_type=comic → コミック2件のみ
+      const results = db.findMedia({
+        uuid_in: all.map((m) => m.uuid),
+        media_type: 'comic',
+      });
+      expect(results).toHaveLength(2);
+      results.forEach((media) => {
+        expect(media.media_type).toBe('comic');
+      });
+    });
   });
 
   describe('findMedia - ソート', () => {

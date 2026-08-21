@@ -107,6 +107,7 @@ Press Ctrl+C to stop the server
 | `artist` | `string` | 作者で検索（部分一致） |
 | `series` | `string` | シリーズで検索（部分一致） |
 | `media_type` | `string` | メディアタイプ（comic/video/music） |
+| `uuid` | `string` | UUID完全一致（uuidカラムはUNIQUE） |
 | `limit` | `number` | 取得件数（デフォルト: 20） |
 | `offset` | `number` | オフセット（デフォルト: 0） |
 | `orderBy` | `string` | ソートフィールド |
@@ -144,6 +145,32 @@ Press Ctrl+C to stop the server
 | 名前 | 型 | 説明 |
 |------|-----|------|
 | `id` | `number` | メディアID |
+
+**レスポンス:**
+```json
+{
+  "media": {/* Mediaオブジェクト */},
+  "tags": [/* Tag配列 */],
+  "attributes": [/* MediaAttribute配列 */]
+}
+```
+
+**HTTPステータス:**
+- 200: 成功
+- 401: 未認証
+- 404: メディアが見つからない
+
+---
+
+### `GET /api/media/uuid/:uuid`
+
+UUIDでメディア詳細を取得します（認証必須。uuidカラムはUNIQUE）。
+
+**パスパラメータ:**
+
+| 名前 | 型 | 説明 |
+|------|-----|------|
+| `uuid` | `string` | メディアUUID |
 
 **レスポンス:**
 ```json

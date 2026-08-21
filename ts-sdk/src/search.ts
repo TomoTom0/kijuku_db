@@ -155,6 +155,30 @@ function buildFilterConditions(filter: MediaFilter, counter: ParamCounter): Filt
     whereClauses.push(`m.external_id = @${paramName}`);
     params[paramName] = filter.external_id;
   }
+  if (filter.uuid !== undefined) {
+    const paramName = getUniqueParamName('uuid', counter);
+    whereClauses.push(`m.uuid = @${paramName}`);
+    params[paramName] = filter.uuid;
+  }
+
+  // uuid_inフィルタの処理（id_inと同様にチャンク分割）
+  if (filter.uuid_in && filter.uuid_in.length > 0) {
+    // 重複UUIDを排除（IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+    // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+    const uniqueUuids = Array.from(new Set(filter.uuid_in));
+    const CHUNK_SIZE = 999;
+    const orClauses: string[] = [];
+    for (let i = 0; i < uniqueUuids.length; i += CHUNK_SIZE) {
+      const chunk = uniqueUuids.slice(i, i + CHUNK_SIZE);
+      const uuidParamNames = chunk.map((uuid) => {
+        const paramName = getUniqueParamName('uuid_in', counter);
+        params[paramName] = uuid;
+        return `@${paramName}`;
+      });
+      orClauses.push(`m.uuid IN (${uuidParamNames.join(', ')})`);
+    }
+    whereClauses.push(`(${orClauses.join(' OR ')})`);
+  }
 
   // 部分一致フィルタ
   if (filter.volume_title !== undefined) {

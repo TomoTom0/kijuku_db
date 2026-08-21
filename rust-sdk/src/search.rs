@@ -98,6 +98,28 @@ fn build_filter_conditions(filter: &MediaFilter) -> FilterConditions {
         where_clauses.push("m.external_id = ?".to_string());
         params.push(Box::new(external_id.clone()));
     }
+    if let Some(ref uuid) = filter.uuid {
+        where_clauses.push("m.uuid = ?".to_string());
+        params.push(Box::new(uuid.clone()));
+    }
+    // uuid_inフィルタの処理（id_inと同様にチャンク分割）
+    if let Some(ref uuids) = filter.uuid_in {
+        if !uuids.is_empty() {
+            // 重複UUIDを排除（IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
+            // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+            let mut unique_uuids = uuids.clone();
+            unique_uuids.sort_unstable();
+            unique_uuids.dedup();
+            const CHUNK_SIZE: usize = 999;
+            let in_clauses: Vec<String> = unique_uuids.chunks(CHUNK_SIZE).map(|chunk| {
+                format!("m.uuid IN ({})", vec!["?"; chunk.len()].join(", "))
+            }).collect();
+            where_clauses.push(format!("({})", in_clauses.join(" OR ")));
+            for uuid in unique_uuids {
+                params.push(Box::new(uuid));
+            }
+        }
+    }
     add_like_filter(&mut where_clauses, &mut params, "volume_title", &filter.volume_title);
     add_like_filter(&mut where_clauses, &mut params, "title_en", &filter.title_en);
     add_like_filter(&mut where_clauses, &mut params, "artist_en", &filter.artist_en);
@@ -423,6 +445,24 @@ fn build_filter_conditions_sql(filter: &MediaFilter) -> FilterConditionsSql {
     if let Some(ref external_id) = filter.external_id {
         where_clauses.push("m.external_id = ?".to_string());
         params.push(SqlParam::Text(external_id.clone()));
+    }
+    if let Some(ref uuid) = filter.uuid {
+        where_clauses.push("m.uuid = ?".to_string());
+        params.push(SqlParam::Text(uuid.clone()));
+    }
+    // uuid_in（id_inと同様に SQLite のパラメータ数上限 999 を考慮してチャンク分割）
+    if let Some(ref uuids) = filter.uuid_in {
+        if !uuids.is_empty() {
+            const CHUNK_SIZE: usize = 999;
+            let in_clauses: Vec<String> = uuids
+                .chunks(CHUNK_SIZE)
+                .map(|chunk| format!("m.uuid IN ({})", vec!["?"; chunk.len()].join(", ")))
+                .collect();
+            where_clauses.push(format!("({})", in_clauses.join(" OR ")));
+            for uuid in uuids {
+                params.push(SqlParam::Text(uuid.clone()));
+            }
+        }
     }
     add_like_filter_sql(&mut where_clauses, &mut params, "volume_title", &filter.volume_title);
     add_like_filter_sql(&mut where_clauses, &mut params, "title_en", &filter.title_en);
@@ -823,6 +863,88 @@ mod tests {
         assert_eq!(results[0].title, "A");
         assert_eq!(results[1].title, "B");
         assert_eq!(results[2].title, "C");
+    }
+
+    #[test]
+    fn test_find_by_uuid() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let target_uuid = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        create_media(&conn, &MediaInput {
+            title: "対象".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(target_uuid.clone()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "その他".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }).unwrap();
+
+        // UUID完全一致で1件のみ取得
+        let filter = MediaFilter {
+            uuid: Some(target_uuid.clone()),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].uuid, target_uuid);
+
+        // 存在しないUUIDは0件
+        let filter = MediaFilter {
+            uuid: Some("00000000-0000-0000-0000-000000000000".to_string()),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_find_by_uuid_in() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let uuid1 = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        let uuid2 = "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string();
+        create_media(&conn, &MediaInput {
+            title: "作品1".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(uuid1.clone()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品2".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(uuid2.clone()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "自動UUID".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }).unwrap();
+
+        // uuid_inで2件取得（重複指定は結果に影響しない）
+        let filter = MediaFilter {
+            uuid_in: Some(vec![uuid1.clone(), uuid2.clone(), uuid1.clone()]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let uuids: Vec<&str> = results.iter().map(|m| m.uuid.as_str()).collect();
+        assert!(uuids.contains(&uuid1.as_str()));
+        assert!(uuids.contains(&uuid2.as_str()));
+
+        // 空のuuid_inは条件なしと同様（全件取得）
+        let filter = MediaFilter {
+            uuid_in: Some(vec![]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 3);
     }
 
     #[test]
