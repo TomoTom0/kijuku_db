@@ -156,6 +156,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", media.title);
     }
 
+    // UUIDで1件取得（uuidカラムはUNIQUEのため単一取得）
+    if let Some(media) = db.get_media_by_uuid("550e8400-e29b-41d4-a716-446655440000") {
+        println!("{}", media.title);
+    }
+
     // 部分更新（指定フィールドのみ更新）
     db.update_media(1, &MediaUpdateInput {
         artist: Some(Some("新しい作者名".to_string())),
@@ -258,7 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### 特定IDの除外（exclude_ids）
 
-`exclude_ids` を使うと、指定したIDを NOT IN で除外して検索できます。`id_in` の逆で、未視聴メディア取得などで「既知のIDを差し引く」用途に使います。999件超は `id_in` と同様にチャンク分割されます。
+`exclude_ids` を使うと、指定したIDを NOT IN で除外して検索できます。`id_in` の逆で、未視聴メディア取得などで「既知のIDを差し引く」用途に使います。`id_in` と同様に `json_each` による1パラメータ化のため件数の上限はありません。
 
 ```rust
 use kijuku_db::{KijukuDB, MediaFilter, MediaType, QueryOptions, SortKey, SortOrder};
@@ -1025,11 +1030,13 @@ pub struct MediaFilter {
     pub magazine_id: Option<String>,
     pub extension: Option<String>,
     pub external_id: Option<String>,
+    pub uuid: Option<String>,       // UUIDの完全一致フィルタ（uuidカラムはUNIQUE）
+    pub uuid_in: Option<Vec<String>>,  // UUIDのIN句フィルタ（json_eachで1パラメータ化・件数上限なし）
     pub volume_title: Option<String>,
     pub title_en: Option<String>,
     pub artist_en: Option<String>,
-    pub id_in: Option<Vec<i64>>,  // IDのIN句フィルタ（999件超は自動チャンク分割）
-    pub exclude_ids: Option<Vec<i64>>,  // 除外IDのNOT IN句フィルタ（999件超は自動チャンク分割）
+    pub id_in: Option<Vec<i64>>,  // IDのIN句フィルタ（json_eachで1パラメータ化・件数上限なし）
+    pub exclude_ids: Option<Vec<i64>>,  // 除外IDのNOT IN句フィルタ（json_eachで1パラメータ化・件数上限なし）
     pub or_filters: Option<Vec<MediaFilter>>,  // OR条件（ネスト可能）
 }
 

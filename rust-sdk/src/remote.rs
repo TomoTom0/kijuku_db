@@ -1030,6 +1030,16 @@ impl RemoteKijukuDB {
         self.check_response(response)
     }
 
+    /// UUIDでメディアを取得（uuidカラムはUNIQUEのため単一取得）
+    pub fn get_media_by_uuid(&self, uuid: &str) -> Result<Option<Media>> {
+        let response = self.execute_remote_command(CommandRequest {
+            operation: "getMediaByUuid".to_string(),
+            params: serde_json::json!({ "uuid": uuid }),
+        })?;
+
+        self.check_response(response)
+    }
+
     /// メディアを更新（部分更新）
     ///
     /// 指定されたフィールドのみ更新します。
@@ -1737,6 +1747,11 @@ impl KijukuBackend for RemoteKijukuDB {
 
     async fn get_media(&self, id: i64) -> Result<Option<Media>> {
         spawn_remote(self.clone(), move |this| this.get_media(id)).await
+    }
+
+    async fn get_media_by_uuid(&self, uuid: &str) -> Result<Option<Media>> {
+        let uuid = uuid.to_string();
+        spawn_remote(self.clone(), move |this| this.get_media_by_uuid(&uuid)).await
     }
 
     async fn update_media(&self, id: i64, input: &MediaUpdateInput) -> Result<()> {

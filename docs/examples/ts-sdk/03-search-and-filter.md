@@ -103,10 +103,17 @@ const byTitleId = db.findMedia({ title_id: 'one-piece-vol1' });
 const byArtistId = db.findMedia({ artist_id: 'oda-eiichiro' });
 
 // 複数IDを一括取得（N+1クエリ回避に有効）
-// 999件超のIDも自動的にチャンク分割して処理される
+// 件数の上限なし（json_eachによる1パラメータ化）
 const ids = [1, 2, 3, 10, 20];
 const byIds = db.findMedia({ id_in: ids });
 console.log(`${ids.length}件のIDで${byIds.length}件取得`);
+
+// UUIDで1件取得（uuidカラムはUNIQUE）
+const byUuid = db.getMediaByUuid('550e8400-e29b-41d4-a716-446655440000');
+
+// UUIDで検索（完全一致）/ 複数UUIDを一括取得
+const byUuidFilter = db.findMedia({ uuid: '550e8400-e29b-41d4-a716-446655440000' });
+const byUuids = db.findMedia({ uuid_in: ['550e8400-...', '6ba7b810-...'] });
 ```
 
 ## ソート

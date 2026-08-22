@@ -89,6 +89,9 @@ if (media) {
   console.log(media.title);
 }
 
+// UUIDで1件取得（uuidカラムはUNIQUEのため単一取得）
+const mediaByUuid = db.getMediaByUuid('550e8400-e29b-41d4-a716-446655440000');
+
 // 部分更新（指定フィールドのみ更新）
 db.updateMedia(1, { artist: '新しい作者名', flag_exist: false });
 
@@ -155,7 +158,7 @@ const nested = db.findMedia({
 
 #### 特定IDの除外（exclude_ids）
 
-`exclude_ids` を使うと、指定したIDを NOT IN で除外して検索できます。`id_in` の逆で、未視聴メディア取得などで「既知のIDを差し引く」用途に使います。999件超は `id_in` と同様にチャンク分割されます。
+`exclude_ids` を使うと、指定したIDを NOT IN で除外して検索できます。`id_in` の逆で、未視聴メディア取得などで「既知のIDを差し引く」用途に使います。`id_in` と同様に `json_each` による1パラメータ化のため件数の上限はありません。
 
 ```typescript
 // 視聴済みIDを除外して未視聴メディアを取得
@@ -795,7 +798,9 @@ const filter: MediaFilter = {
   media_type: 'comic',
   series: 'ワンピース',
   tag_ids: [1, 2],       // タグIDで絞り込む場合
-  id_in: [1, 2, 3],      // 複数IDを一括取得（999件超は自動チャンク分割）
+  id_in: [1, 2, 3],      // 複数IDを一括取得（件数上限なし・json_eachによる1パラメータ化）
+  uuid: '550e8400-e29b-41d4-a716-446655440000',  // UUID完全一致
+  uuid_in: ['550e8400-...', '6ba7b810-...'],      // 複数UUIDを一括取得（件数上限なし・json_eachによる1パラメータ化）
 };
 
 const options: QueryOptions = {

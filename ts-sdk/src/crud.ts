@@ -140,6 +140,20 @@ export function getMedia(db: Database.Database, id: number): Media | null {
 }
 
 /**
+ * UUIDでメディアを取得（uuidカラムはUNIQUEのため単一取得）
+ */
+export function getMediaByUuid(db: Database.Database, uuid: string): Media | null {
+  const stmt = db.prepare('SELECT * FROM media WHERE uuid = ?');
+  const row = stmt.get(uuid);
+
+  if (!row) {
+    return null;
+  }
+
+  return rowToMedia(row);
+}
+
+/**
  * メディアを更新
  */
 export function updateMedia(

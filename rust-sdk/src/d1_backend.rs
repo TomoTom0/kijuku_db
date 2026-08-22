@@ -78,6 +78,10 @@ impl KijukuBackend for D1KijukuDB {
         crate::crud::get_media_async(&self.exec, id).await
     }
 
+    async fn get_media_by_uuid(&self, uuid: &str) -> Result<Option<Media>> {
+        crate::crud::get_media_by_uuid_async(&self.exec, uuid).await
+    }
+
     async fn update_media(&self, id: i64, input: &MediaUpdateInput) -> Result<()> {
         crate::crud::update_media_async(&self.exec, id, input).await
     }

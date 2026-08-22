@@ -227,6 +227,31 @@ if (media) {
 
 ---
 
+### `getMediaByUuid(uuid: string): Media | null`
+
+UUIDでメディアを取得します（uuidカラムはUNIQUEのため単一取得）。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `uuid` | `string` | 必須 | メディアUUID |
+
+**戻り値:** `Media | null` - メディア情報。存在しない場合は`null`
+
+**使用例:**
+
+```typescript
+const media = db.getMediaByUuid('550e8400-e29b-41d4-a716-446655440000');
+if (media) {
+  console.log(`Title: ${media.title}`);
+} else {
+  console.log('Media not found');
+}
+```
+
+---
+
 ### `updateMedia(id: number, data: Partial<MediaInput>): void`
 
 メディア情報を更新します。
@@ -325,11 +350,13 @@ console.log(media === null); // true
 | `magazine_id` | `string` | 雑誌ID完全一致 |
 | `extension` | `string` | 拡張子完全一致 |
 | `external_id` | `string` | 外部ID完全一致 |
+| `uuid` | `string` | UUID完全一致（uuidカラムはUNIQUE） |
+| `uuid_in` | `string[]` | UUIDのIN句フィルタ（複数UUIDを一括フェッチする場合に使用）。`json_each` で1つのパラメータにまとめるため件数の上限なし（SQLite/D1のバインドパラメータ上限の影響を受けない） |
 | `volume_title` | `string` | 巻タイトル部分一致検索 |
 | `title_en` | `string` | タイトル（英語）部分一致検索 |
 | `artist_en` | `string` | 作者名（英語）部分一致検索 |
-| `id_in` | `number[]` | IDのIN句フィルタ（複数IDを一括フェッチする場合に使用）。999件超の場合は自動的にチャンク分割して処理 |
-| `exclude_ids` | `number[]` | IDのNOT IN句フィルタ（指定IDを除外）。`id_in` の逆。999件超の場合は自動的にチャンク分割（NOT IN 句は AND で結合） |
+| `id_in` | `number[]` | IDのIN句フィルタ（複数IDを一括フェッチする場合に使用）。`uuid_in` と同様に件数の上限なし |
+| `exclude_ids` | `number[]` | IDのNOT IN句フィルタ（指定IDを除外）。`id_in` の逆。`uuid_in` と同様に件数の上限なし |
 | `or_filters` | `MediaFilter[]` | OR条件で結合する追加フィルタ（ネスト可能） |
 
 **QueryOptions:**
@@ -360,6 +387,9 @@ const results = db.findMedia({ title: 'ワンピース' });
 
 // メディアタイプでフィルタ
 const comics = db.findMedia({ media_type: 'comic' });
+
+// UUIDで検索
+const byUuid = db.findMedia({ uuid: '550e8400-e29b-41d4-a716-446655440000' });
 
 // 複数条件を組み合わせ
 const results = db.findMedia({

@@ -41,6 +41,15 @@ fn add_like_filter(
     }
 }
 
+/// `json_each` 用にプリミティブ配列をJSON配列文字列へ変換する。
+///
+/// IN 句の値リストを1つのパラメータにまとめることで、SQLite のパラメータ数上限
+/// （デフォルト999）や D1 のバインドパラメータ上限（100）を件数の制約にしない。
+/// String / i64 配列のシリアライズ失敗は起こり得ないため expect を使う。
+fn to_json_each_param<T: serde::Serialize>(values: &T) -> String {
+    serde_json::to_string(values).expect("JSON serialization of primitive array cannot fail")
+}
+
 /// フィルタ条件の構築結果
 struct FilterConditions {
     /// WHERE句の条件（AND結合済み）
@@ -98,60 +107,56 @@ fn build_filter_conditions(filter: &MediaFilter) -> FilterConditions {
         where_clauses.push("m.external_id = ?".to_string());
         params.push(Box::new(external_id.clone()));
     }
+    if let Some(ref uuid) = filter.uuid {
+        where_clauses.push("m.uuid = ?".to_string());
+        params.push(Box::new(uuid.clone()));
+    }
+    // uuid_inフィルタの処理
+    // json_each で1つのパラメータにまとめる（件数によるパラメータ上限の回避）
+    if let Some(ref uuids) = filter.uuid_in {
+        if !uuids.is_empty() {
+            // 重複UUIDを排除（IN句は集合扱いで結果の重複は生じない。json_each の走査行数も抑える）
+            let mut unique_uuids = uuids.clone();
+            unique_uuids.sort_unstable();
+            unique_uuids.dedup();
+            where_clauses.push("m.uuid IN (SELECT value FROM json_each(?))".to_string());
+            params.push(Box::new(to_json_each_param(&unique_uuids)));
+        }
+    }
     add_like_filter(&mut where_clauses, &mut params, "volume_title", &filter.volume_title);
     add_like_filter(&mut where_clauses, &mut params, "title_en", &filter.title_en);
     add_like_filter(&mut where_clauses, &mut params, "artist_en", &filter.artist_en);
 
-    // id_inフィルタの処理
-    // SQLiteのパラメータ数上限（デフォルト999）を考慮してチャンク分割
+    // id_inフィルタの処理（json_each で1つのパラメータにまとめる）
     if let Some(ref ids) = filter.id_in {
         if !ids.is_empty() {
-            // 重複IDを排除（IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
-            // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+            // 重複IDを排除（IN句は集合扱いで結果の重複は生じない。json_each の走査行数も抑える）
             let mut unique_ids = ids.clone();
             unique_ids.sort_unstable();
             unique_ids.dedup();
-            const CHUNK_SIZE: usize = 999;
-            let in_clauses: Vec<String> = unique_ids.chunks(CHUNK_SIZE).map(|chunk| {
-                format!("m.id IN ({})", vec!["?"; chunk.len()].join(", "))
-            }).collect();
-            where_clauses.push(format!("({})", in_clauses.join(" OR ")));
-            for id in unique_ids {
-                params.push(Box::new(id));
-            }
+            where_clauses.push("m.id IN (SELECT value FROM json_each(?))".to_string());
+            params.push(Box::new(to_json_each_param(&unique_ids)));
         }
     }
 
-    // exclude_idsフィルタの処理（id_in の逆: NOT IN）
-    // チャンク分割された NOT IN 句は AND で結合する
-    // （いずれのチャンクにも含まれない = 全体の NOT IN と同義）
+    // exclude_idsフィルタの処理（id_in の逆: NOT IN。json_each で1つのパラメータにまとめる）
     if let Some(ref ids) = filter.exclude_ids {
         if !ids.is_empty() {
-            // 重複IDを排除（NOT IN句は集合扱いで結果の重複は生じないが、プレースホルダーの
-            // 無駄な増加と999件チャンク制限への早期到達を防ぐ）
+            // 重複IDを排除（NOT IN句は集合扱いで結果の重複は生じない）
             let mut unique_ids = ids.clone();
             unique_ids.sort_unstable();
             unique_ids.dedup();
-            const CHUNK_SIZE: usize = 999;
-            let not_in_clauses: Vec<String> = unique_ids.chunks(CHUNK_SIZE).map(|chunk| {
-                format!("m.id NOT IN ({})", vec!["?"; chunk.len()].join(", "))
-            }).collect();
-            where_clauses.push(format!("({})", not_in_clauses.join(" AND ")));
-            for id in unique_ids {
-                params.push(Box::new(id));
-            }
+            where_clauses.push("m.id NOT IN (SELECT value FROM json_each(?))".to_string());
+            params.push(Box::new(to_json_each_param(&unique_ids)));
         }
     }
 
-    // タグフィルタの処理
+    // タグフィルタの処理（json_each で1つのパラメータにまとめる）
     if let Some(ref tag_ids) = filter.tag_ids {
         if !tag_ids.is_empty() {
             needs_tag_join = true;
-            let placeholders: Vec<String> = tag_ids.iter().map(|_| "?".to_string()).collect();
-            where_clauses.push(format!("mt.tag_id IN ({})", placeholders.join(", ")));
-            for tag_id in tag_ids {
-                params.push(Box::new(*tag_id));
-            }
+            where_clauses.push("mt.tag_id IN (SELECT value FROM json_each(?))".to_string());
+            params.push(Box::new(to_json_each_param(tag_ids)));
         }
     }
 
@@ -424,49 +429,43 @@ fn build_filter_conditions_sql(filter: &MediaFilter) -> FilterConditionsSql {
         where_clauses.push("m.external_id = ?".to_string());
         params.push(SqlParam::Text(external_id.clone()));
     }
+    if let Some(ref uuid) = filter.uuid {
+        where_clauses.push("m.uuid = ?".to_string());
+        params.push(SqlParam::Text(uuid.clone()));
+    }
+    // uuid_in（json_each で1つのパラメータにまとめ、件数によるパラメータ上限を回避）
+    if let Some(ref uuids) = filter.uuid_in {
+        if !uuids.is_empty() {
+            where_clauses.push("m.uuid IN (SELECT value FROM json_each(?))".to_string());
+            params.push(SqlParam::Text(to_json_each_param(uuids)));
+        }
+    }
     add_like_filter_sql(&mut where_clauses, &mut params, "volume_title", &filter.volume_title);
     add_like_filter_sql(&mut where_clauses, &mut params, "title_en", &filter.title_en);
     add_like_filter_sql(&mut where_clauses, &mut params, "artist_en", &filter.artist_en);
 
-    // id_in（SQLite のパラメータ数上限 999 を考慮してチャンク分割）
+    // id_in（json_each で1つのパラメータにまとめる）
     if let Some(ref ids) = filter.id_in {
         if !ids.is_empty() {
-            const CHUNK_SIZE: usize = 999;
-            let in_clauses: Vec<String> = ids
-                .chunks(CHUNK_SIZE)
-                .map(|chunk| format!("m.id IN ({})", vec!["?"; chunk.len()].join(", ")))
-                .collect();
-            where_clauses.push(format!("({})", in_clauses.join(" OR ")));
-            for id in ids {
-                params.push(SqlParam::Int(*id));
-            }
+            where_clauses.push("m.id IN (SELECT value FROM json_each(?))".to_string());
+            params.push(SqlParam::Text(to_json_each_param(ids)));
         }
     }
 
-    // exclude_ids（id_in の逆: NOT IN。チャンク分割された NOT IN 句は AND で結合）
+    // exclude_ids（id_in の逆: NOT IN。json_each で1つのパラメータにまとめる）
     if let Some(ref ids) = filter.exclude_ids {
         if !ids.is_empty() {
-            const CHUNK_SIZE: usize = 999;
-            let not_in_clauses: Vec<String> = ids
-                .chunks(CHUNK_SIZE)
-                .map(|chunk| format!("m.id NOT IN ({})", vec!["?"; chunk.len()].join(", ")))
-                .collect();
-            where_clauses.push(format!("({})", not_in_clauses.join(" AND ")));
-            for id in ids {
-                params.push(SqlParam::Int(*id));
-            }
+            where_clauses.push("m.id NOT IN (SELECT value FROM json_each(?))".to_string());
+            params.push(SqlParam::Text(to_json_each_param(ids)));
         }
     }
 
-    // タグフィルタ
+    // タグフィルタ（json_each で1つのパラメータにまとめる）
     if let Some(ref tag_ids) = filter.tag_ids {
         if !tag_ids.is_empty() {
             needs_tag_join = true;
-            let placeholders: Vec<String> = tag_ids.iter().map(|_| "?".to_string()).collect();
-            where_clauses.push(format!("mt.tag_id IN ({})", placeholders.join(", ")));
-            for tag_id in tag_ids {
-                params.push(SqlParam::Int(*tag_id));
-            }
+            where_clauses.push("mt.tag_id IN (SELECT value FROM json_each(?))".to_string());
+            params.push(SqlParam::Text(to_json_each_param(tag_ids)));
         }
     }
 
@@ -826,6 +825,121 @@ mod tests {
     }
 
     #[test]
+    fn test_find_by_uuid() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let target_uuid = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        create_media(&conn, &MediaInput {
+            title: "対象".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(target_uuid.clone()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "その他".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }).unwrap();
+
+        // UUID完全一致で1件のみ取得
+        let filter = MediaFilter {
+            uuid: Some(target_uuid.clone()),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].uuid, target_uuid);
+
+        // 存在しないUUIDは0件
+        let filter = MediaFilter {
+            uuid: Some("00000000-0000-0000-0000-000000000000".to_string()),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_find_by_uuid_in() {
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        let uuid1 = "550e8400-e29b-41d4-a716-446655440000".to_string();
+        let uuid2 = "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string();
+        create_media(&conn, &MediaInput {
+            title: "作品1".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(uuid1.clone()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "作品2".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(uuid2.clone()),
+            ..Default::default()
+        }).unwrap();
+        create_media(&conn, &MediaInput {
+            title: "自動UUID".to_string(),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        }).unwrap();
+
+        // uuid_inで2件取得（重複指定は結果に影響しない）
+        let filter = MediaFilter {
+            uuid_in: Some(vec![uuid1.clone(), uuid2.clone(), uuid1.clone()]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let uuids: Vec<&str> = results.iter().map(|m| m.uuid.as_str()).collect();
+        assert!(uuids.contains(&uuid1.as_str()));
+        assert!(uuids.contains(&uuid2.as_str()));
+
+        // 空のuuid_inは条件なしと同様（全件取得）
+        let filter = MediaFilter {
+            uuid_in: Some(vec![]),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_find_by_uuid_in_over_param_limit() {
+        // SQLite のパラメータ数上限（999）を超える uuid_in が動作することを確認
+        // （json_each による1パラメータ化の回帰テスト）
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        const COUNT: usize = 1200;
+        let mut uuids = Vec::with_capacity(COUNT);
+        for i in 0..COUNT {
+            let uuid = format!("{:08x}-0000-4000-8000-{:012x}", i, i);
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                uuid: Some(uuid.clone()),
+                ..Default::default()
+            }).unwrap();
+            uuids.push(uuid);
+        }
+
+        let filter = MediaFilter {
+            uuid_in: Some(uuids.clone()),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), COUNT);
+
+        let got: std::collections::HashSet<&str> =
+            results.iter().map(|m| m.uuid.as_str()).collect();
+        assert!(got.contains(uuids[0].as_str()));
+        assert!(got.contains(uuids[COUNT - 1].as_str()));
+    }
+
+    #[test]
     fn test_find_by_id_in() {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
@@ -852,6 +966,44 @@ mod tests {
         assert!(ids.contains(&5));
         assert!(!ids.contains(&2));
         assert!(!ids.contains(&4));
+    }
+
+    #[test]
+    fn test_find_by_id_in_over_param_limit() {
+        // SQLite のパラメータ数上限（999）を超える id_in が動作することを確認
+        // （json_each による1パラメータ化の回帰テスト）
+        let conn = Connection::open_in_memory().unwrap();
+        migration::migrate(&conn).unwrap();
+
+        const COUNT: usize = 1200;
+        for i in 0..COUNT {
+            create_media(&conn, &MediaInput {
+                title: format!("作品{}", i),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            }).unwrap();
+        }
+        let all_ids: Vec<i64> = find_media(&conn, &MediaFilter::default(), None)
+            .unwrap()
+            .iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(all_ids.len(), COUNT);
+
+        let filter = MediaFilter {
+            id_in: Some(all_ids.clone()),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert_eq!(results.len(), COUNT);
+
+        // exclude_ids で全件除外すると0件になることも確認
+        let filter = MediaFilter {
+            exclude_ids: Some(all_ids),
+            ..Default::default()
+        };
+        let results = find_media(&conn, &filter, None).unwrap();
+        assert!(results.is_empty());
     }
 
     #[test]

@@ -48,7 +48,7 @@ TypeScript SDKの `RemoteKijukuDB` はこのモードを使用してSSH経由で
 echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.db
 ```
 
-**stdin操作一覧（62種類）:**
+**stdin操作一覧（63種類）:**
 
 | カテゴリ | 操作名 | 説明 | 主なパラメータ |
 |---------|--------|------|--------------|
@@ -59,6 +59,7 @@ echo '{"operation":"listBackups","params":{}}' | kijuku-cli --db ./data/kijuku.d
 | | `getTableInfo` | テーブル定義取得 | `table_name` |
 | **メディアCRUD** | `createMedia` | メディア作成 | `data: MediaInput` |
 | | `getMedia` | メディア取得 | `id` |
+| | `getMediaByUuid` | UUIDでメディア取得 | `uuid` |
 | | `updateMedia` | メディア更新 | `id`, `data` |
 | | `deleteMedia` | メディア削除 | `id` |
 | **メディア検索** | `findMedia` | メディア検索 | `filter`, `options?` |

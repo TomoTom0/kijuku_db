@@ -398,6 +398,13 @@ export class KijukuDB {
   }
 
   /**
+   * UUIDでメディアを取得（uuidカラムはUNIQUEのため単一取得）
+   */
+  getMediaByUuid(uuid: string): Media | null {
+    return crud.getMediaByUuid(this.db, uuid);
+  }
+
+  /**
    * メディアを更新
    */
   updateMedia(id: number, data: Partial<MediaInput>): void {
