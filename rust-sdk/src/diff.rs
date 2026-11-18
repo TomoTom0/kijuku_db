@@ -159,7 +159,11 @@ impl BackupSnapshot {
 }
 
 /// 現在DBとバックアップのスナップショットから差分を計算する
-pub fn compute_diff(current: &BackupSnapshot, backup: &BackupSnapshot, options: &DiffOptions) -> BackupDiff {
+pub fn compute_diff(
+    current: &BackupSnapshot,
+    backup: &BackupSnapshot,
+    options: &DiffOptions,
+) -> BackupDiff {
     let (media, media_counts) = diff_media(&current.media, &backup.media);
     let (tags, tag_counts) = diff_tag(&current.tags, &backup.tags);
     let (media_tags, mt_counts) = diff_assoc(&current.media_tags, &backup.media_tags);
@@ -196,7 +200,10 @@ fn diff_media(
     for (id, b) in backup {
         match current.get(id) {
             None => added.push(b.clone()),
-            Some(c) if c != b => changed.push(MediaChange { current: c.clone(), backup: b.clone() }),
+            Some(c) if c != b => changed.push(MediaChange {
+                current: c.clone(),
+                backup: b.clone(),
+            }),
             _ => {}
         }
     }
@@ -211,7 +218,14 @@ fn diff_media(
         removed: removed.len(),
         changed: changed.len(),
     };
-    (MediaDiff { added, removed, changed }, counts)
+    (
+        MediaDiff {
+            added,
+            removed,
+            changed,
+        },
+        counts,
+    )
 }
 
 fn diff_tag(current: &BTreeMap<i64, Tag>, backup: &BTreeMap<i64, Tag>) -> (TagDiff, DiffCounts) {
@@ -222,7 +236,10 @@ fn diff_tag(current: &BTreeMap<i64, Tag>, backup: &BTreeMap<i64, Tag>) -> (TagDi
     for (id, b) in backup {
         match current.get(id) {
             None => added.push(b.clone()),
-            Some(c) if c != b => changed.push(TagChange { current: c.clone(), backup: b.clone() }),
+            Some(c) if c != b => changed.push(TagChange {
+                current: c.clone(),
+                backup: b.clone(),
+            }),
             _ => {}
         }
     }
@@ -237,7 +254,14 @@ fn diff_tag(current: &BTreeMap<i64, Tag>, backup: &BTreeMap<i64, Tag>) -> (TagDi
         removed: removed.len(),
         changed: changed.len(),
     };
-    (TagDiff { added, removed, changed }, counts)
+    (
+        TagDiff {
+            added,
+            removed,
+            changed,
+        },
+        counts,
+    )
 }
 
 fn diff_assoc(
@@ -246,11 +270,17 @@ fn diff_assoc(
 ) -> (MediaTagAssocDiff, DiffCounts) {
     let added: Vec<MediaTagAssoc> = backup
         .difference(current)
-        .map(|(m, t)| MediaTagAssoc { media_id: *m, tag_id: *t })
+        .map(|(m, t)| MediaTagAssoc {
+            media_id: *m,
+            tag_id: *t,
+        })
         .collect();
     let removed: Vec<MediaTagAssoc> = current
         .difference(backup)
-        .map(|(m, t)| MediaTagAssoc { media_id: *m, tag_id: *t })
+        .map(|(m, t)| MediaTagAssoc {
+            media_id: *m,
+            tag_id: *t,
+        })
         .collect();
 
     let counts = DiffCounts {
@@ -272,7 +302,10 @@ fn diff_attribute(
     for (key, b) in backup {
         match current.get(key) {
             None => added.push(b.clone()),
-            Some(c) if c != b => changed.push(AttributeChange { current: c.clone(), backup: b.clone() }),
+            Some(c) if c != b => changed.push(AttributeChange {
+                current: c.clone(),
+                backup: b.clone(),
+            }),
             _ => {}
         }
     }
@@ -287,7 +320,14 @@ fn diff_attribute(
         removed: removed.len(),
         changed: changed.len(),
     };
-    (AttributeDiff { added, removed, changed }, counts)
+    (
+        AttributeDiff {
+            added,
+            removed,
+            changed,
+        },
+        counts,
+    )
 }
 
 fn diff_hash(
@@ -301,7 +341,10 @@ fn diff_hash(
     for (key, b) in backup {
         match current.get(key) {
             None => added.push(b.clone()),
-            Some(c) if c != b => changed.push(HashChange { current: c.clone(), backup: b.clone() }),
+            Some(c) if c != b => changed.push(HashChange {
+                current: c.clone(),
+                backup: b.clone(),
+            }),
             _ => {}
         }
     }
@@ -316,7 +359,14 @@ fn diff_hash(
         removed: removed.len(),
         changed: changed.len(),
     };
-    (HashDiff { added, removed, changed }, counts)
+    (
+        HashDiff {
+            added,
+            removed,
+            changed,
+        },
+        counts,
+    )
 }
 
 /// 詳細度に応じて各リストを切り詰める（summary の件数は維持）
@@ -621,7 +671,11 @@ pub fn evaluate_gate(
             .take(5)
             .map(|v| format!("{} rowid={}", v.table, v.rowid))
             .collect();
-        format!("{} violation(s): {}", fk_violations.len(), sample.join(", "))
+        format!(
+            "{} violation(s): {}",
+            fk_violations.len(),
+            sample.join(", ")
+        )
     };
     checks.push(GateCheck {
         name: "foreign_key_check".to_string(),
@@ -667,7 +721,10 @@ pub fn evaluate_gate(
                     (None, Some(hi)) => format!("<= {}", hi),
                     (None, None) => "no bound".to_string(),
                 };
-                (min_ok && max_ok, format!("count={} (expected {})", count, bound))
+                (
+                    min_ok && max_ok,
+                    format!("count={} (expected {})", count, bound),
+                )
             }
             None => (false, "no result (assertion/result mismatch)".to_string()),
         };
@@ -719,19 +776,31 @@ fn summarize_media(media: &MediaDiff) -> MediaDistribution {
 
     for m in &media.added {
         bump(&mut by_type, m.media_type.as_str(), "added");
-        bump(&mut by_artist, m.artist.as_deref().unwrap_or("unknown"), "added");
+        bump(
+            &mut by_artist,
+            m.artist.as_deref().unwrap_or("unknown"),
+            "added",
+        );
         bump(&mut by_flag_exist, flag_exist_key(m.flag_exist), "added");
     }
     for m in &media.removed {
         bump(&mut by_type, m.media_type.as_str(), "removed");
-        bump(&mut by_artist, m.artist.as_deref().unwrap_or("unknown"), "removed");
+        bump(
+            &mut by_artist,
+            m.artist.as_deref().unwrap_or("unknown"),
+            "removed",
+        );
         bump(&mut by_flag_exist, flag_exist_key(m.flag_exist), "removed");
     }
     // changed は prod 側（current）で分類（promote で上書きされる prod レコードの観点）
     for c in &media.changed {
         let m = &c.current;
         bump(&mut by_type, m.media_type.as_str(), "changed");
-        bump(&mut by_artist, m.artist.as_deref().unwrap_or("unknown"), "changed");
+        bump(
+            &mut by_artist,
+            m.artist.as_deref().unwrap_or("unknown"),
+            "changed",
+        );
         bump(&mut by_flag_exist, flag_exist_key(m.flag_exist), "changed");
     }
 
@@ -830,11 +899,27 @@ pub fn build_diff_explanation_prompt(
         writeln!(out, "コンテキスト: {}", ctx).unwrap();
         writeln!(out).unwrap();
     }
-    writeln!(out, "あなたはメディアDBの変更レビュアーです。stg（作業用コピー）で行われた編集を").unwrap();
-    writeln!(out, "prod（本番）へ promote してよいか判断しています。以下の差分データを元に、").unwrap();
-    writeln!(out, "変更内容・影響・リスク・promote 可否の根拠を簡潔に説明してください。").unwrap();
+    writeln!(
+        out,
+        "あなたはメディアDBの変更レビュアーです。stg（作業用コピー）で行われた編集を"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "prod（本番）へ promote してよいか判断しています。以下の差分データを元に、"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "変更内容・影響・リスク・promote 可否の根拠を簡潔に説明してください。"
+    )
+    .unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "> セマンティクス注記: added=stg新規（promote で prod に追加）・").unwrap();
+    writeln!(
+        out,
+        "> セマンティクス注記: added=stg新規（promote で prod に追加）・"
+    )
+    .unwrap();
     writeln!(out, "> removed=prod のみ（promote で prod から削除）・").unwrap();
     writeln!(out, "> changed=両方で異なる（promote で prod が上書き）").unwrap();
     writeln!(out).unwrap();
@@ -845,13 +930,43 @@ pub fn build_diff_explanation_prompt(
     writeln!(out).unwrap();
     writeln!(out, "| テーブル | added | removed | changed |").unwrap();
     writeln!(out, "|----------|-------|---------|---------|").unwrap();
-    writeln!(out, "| media    | {} | {} | {} |", c.media.added, c.media.removed, c.media.changed).unwrap();
-    writeln!(out, "| tags     | {} | {} | {} |", c.tags.added, c.tags.removed, c.tags.changed).unwrap();
-    writeln!(out, "| media_tags | {} | {} | {} |", c.media_tags.added, c.media_tags.removed, c.media_tags.changed).unwrap();
-    writeln!(out, "| attributes | {} | {} | {} |", c.attributes.added, c.attributes.removed, c.attributes.changed).unwrap();
-    writeln!(out, "| hashes   | {} | {} | {} |", c.hashes.added, c.hashes.removed, c.hashes.changed).unwrap();
+    writeln!(
+        out,
+        "| media    | {} | {} | {} |",
+        c.media.added, c.media.removed, c.media.changed
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "| tags     | {} | {} | {} |",
+        c.tags.added, c.tags.removed, c.tags.changed
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "| media_tags | {} | {} | {} |",
+        c.media_tags.added, c.media_tags.removed, c.media_tags.changed
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "| attributes | {} | {} | {} |",
+        c.attributes.added, c.attributes.removed, c.attributes.changed
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "| hashes   | {} | {} | {} |",
+        c.hashes.added, c.hashes.removed, c.hashes.changed
+    )
+    .unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "合計: +{} -{} ~{}", summary.totals.added, summary.totals.removed, summary.totals.changed).unwrap();
+    writeln!(
+        out,
+        "合計: +{} -{} ~{}",
+        summary.totals.added, summary.totals.removed, summary.totals.changed
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     // 2. 代表サンプル
@@ -875,7 +990,11 @@ pub fn build_diff_explanation_prompt(
     // 4. 説明指示
     writeln!(out, "## {}. 説明指示", section_no).unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "以下の4項目を Markdown 見出し（###）で説明してください:").unwrap();
+    writeln!(
+        out,
+        "以下の4項目を Markdown 見出し（###）で説明してください:"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     writeln!(out, "### 変更内容の要約").unwrap();
     writeln!(out, "（何が起きるかを1-2段落で）").unwrap();
@@ -884,10 +1003,18 @@ pub fn build_diff_explanation_prompt(
     writeln!(out, "（どのデータ範囲・機能に影響するか）").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "### リスク").unwrap();
-    writeln!(out, "（データ整合性・FK・意図しない削除・異常な大量変動等。特に分布の偏りに注意）").unwrap();
+    writeln!(
+        out,
+        "（データ整合性・FK・意図しない削除・異常な大量変動等。特に分布の偏りに注意）"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     writeln!(out, "### promote 可否の根拠").unwrap();
-    writeln!(out, "（実施すべきか・保留すべきか・その理由。promote 不可なら必須条件を明示）").unwrap();
+    writeln!(
+        out,
+        "（実施すべきか・保留すべきか・その理由。promote 不可なら必須条件を明示）"
+    )
+    .unwrap();
 
     out
 }
@@ -909,12 +1036,24 @@ fn write_media_samples(out: &mut String, media: &MediaDiff, max: usize) {
     writeln!(out).unwrap();
     writeln!(out, "### media (removed: 最大{}件)", max).unwrap();
     for m in media.removed.iter().take(max) {
-        writeln!(out, "- id={} title=\"{}\" type={}", m.id, m.title, m.media_type.as_str()).unwrap();
+        writeln!(
+            out,
+            "- id={} title=\"{}\" type={}",
+            m.id,
+            m.title,
+            m.media_type.as_str()
+        )
+        .unwrap();
     }
     writeln!(out).unwrap();
     writeln!(out, "### media (changed: 最大{}件)", max).unwrap();
     for c in media.changed.iter().take(max) {
-        writeln!(out, "- id={} title: \"{}\" -> \"{}\"", c.current.id, c.current.title, c.backup.title).unwrap();
+        writeln!(
+            out,
+            "- id={} title: \"{}\" -> \"{}\"",
+            c.current.id, c.current.title, c.backup.title
+        )
+        .unwrap();
     }
     writeln!(out).unwrap();
 }
@@ -933,7 +1072,12 @@ fn write_tag_samples(out: &mut String, tags: &TagDiff, max: usize) {
     writeln!(out).unwrap();
     writeln!(out, "### tags (changed: 最大{}件)", max).unwrap();
     for c in tags.changed.iter().take(max) {
-        writeln!(out, "- id={} name: \"{}\" -> \"{}\"", c.current.id, c.current.name, c.backup.name).unwrap();
+        writeln!(
+            out,
+            "- id={} name: \"{}\" -> \"{}\"",
+            c.current.id, c.current.name, c.backup.name
+        )
+        .unwrap();
     }
     writeln!(out).unwrap();
 }
@@ -956,7 +1100,12 @@ fn write_attribute_samples(out: &mut String, attributes: &AttributeDiff, max: us
     use std::fmt::Write;
     writeln!(out, "### attributes (added: 最大{}件)", max).unwrap();
     for a in attributes.added.iter().take(max) {
-        writeln!(out, "- media_id={} key=\"{}\" value={:?}", a.media_id, a.key, a.value).unwrap();
+        writeln!(
+            out,
+            "- media_id={} key=\"{}\" value={:?}",
+            a.media_id, a.key, a.value
+        )
+        .unwrap();
     }
     writeln!(out).unwrap();
     writeln!(out, "### attributes (removed: 最大{}件)", max).unwrap();
@@ -980,24 +1129,43 @@ fn write_hash_samples(out: &mut String, hashes: &HashDiff, max: usize) {
     use std::fmt::Write;
     writeln!(out, "### hashes (added: 最大{}件)", max).unwrap();
     for h in hashes.added.iter().take(max) {
-        writeln!(out, "- item_uuid={} filename=\"{}\"", h.item_uuid, h.filename).unwrap();
+        writeln!(
+            out,
+            "- item_uuid={} filename=\"{}\"",
+            h.item_uuid, h.filename
+        )
+        .unwrap();
     }
     writeln!(out).unwrap();
     writeln!(out, "### hashes (removed: 最大{}件)", max).unwrap();
     for h in hashes.removed.iter().take(max) {
-        writeln!(out, "- item_uuid={} filename=\"{}\"", h.item_uuid, h.filename).unwrap();
+        writeln!(
+            out,
+            "- item_uuid={} filename=\"{}\"",
+            h.item_uuid, h.filename
+        )
+        .unwrap();
     }
     writeln!(out).unwrap();
     writeln!(out, "### hashes (changed: 最大{}件)", max).unwrap();
     for c in hashes.changed.iter().take(max) {
-        writeln!(out, "- item_uuid={} filename=\"{}\"", c.current.item_uuid, c.current.filename).unwrap();
+        writeln!(
+            out,
+            "- item_uuid={} filename=\"{}\"",
+            c.current.item_uuid, c.current.filename
+        )
+        .unwrap();
     }
     writeln!(out).unwrap();
 }
 
 fn write_counts_line(out: &mut String, label: &str, counts: &DiffCounts) {
     use std::fmt::Write;
-    let _ = writeln!(out, "- {}: +{} -{} ~{}", label, counts.added, counts.removed, counts.changed);
+    let _ = writeln!(
+        out,
+        "- {}: +{} -{} ~{}",
+        label, counts.added, counts.removed, counts.changed
+    );
 }
 
 fn write_distribution(out: &mut String, dist: &DiffDistribution) {
@@ -1039,7 +1207,10 @@ mod tests {
     use super::*;
 
     fn tag(id: i64, name: &str) -> Tag {
-        Tag { id, name: name.to_string() }
+        Tag {
+            id,
+            name: name.to_string(),
+        }
     }
 
     #[test]
@@ -1063,7 +1234,9 @@ mod tests {
         backup.tags.insert(1, tag(1, "A-backup")); // changed
         backup.tags.insert(3, tag(3, "C")); // added (バックアップにのみ)
 
-        let opts = DiffOptions { detail: Some(DiffDetail::Full) };
+        let opts = DiffOptions {
+            detail: Some(DiffDetail::Full),
+        };
         let diff = compute_diff(&current, &backup, &opts);
         assert_eq!(diff.summary.tags.added, 1);
         assert_eq!(diff.summary.tags.removed, 1);
@@ -1083,7 +1256,9 @@ mod tests {
         backup.media_tags.insert((2, 20));
         backup.media_tags.insert((3, 30));
 
-        let opts = DiffOptions { detail: Some(DiffDetail::Full) };
+        let opts = DiffOptions {
+            detail: Some(DiffDetail::Full),
+        };
         let diff = compute_diff(&current, &backup, &opts);
         assert_eq!(diff.summary.media_tags.added, 1); // (3,30)
         assert_eq!(diff.summary.media_tags.removed, 1); // (1,10)
@@ -1095,7 +1270,9 @@ mod tests {
         let mut current = BackupSnapshot::default();
         current.tags.insert(1, tag(1, "A"));
         let backup = BackupSnapshot::default();
-        let opts = DiffOptions { detail: Some(DiffDetail::SummaryOnly) };
+        let opts = DiffOptions {
+            detail: Some(DiffDetail::SummaryOnly),
+        };
         let diff = compute_diff(&current, &backup, &opts);
         // summary は件数を保持するが、リストは空
         assert_eq!(diff.summary.tags.removed, 1);
@@ -1109,7 +1286,9 @@ mod tests {
             current.tags.insert(i, tag(i, "x"));
         }
         let backup = BackupSnapshot::default();
-        let opts = DiffOptions { detail: Some(DiffDetail::Limited { n: 3 }) };
+        let opts = DiffOptions {
+            detail: Some(DiffDetail::Limited { n: 3 }),
+        };
         let diff = compute_diff(&current, &backup, &opts);
         assert_eq!(diff.summary.tags.removed, 10);
         assert_eq!(diff.tags.removed.len(), 3); // 上位3件
@@ -1170,11 +1349,20 @@ mod tests {
         // prod 空、stg に media 3件（Comic x2 / Video x1）→ compute_diff(current=prod, backup=stg) で added
         let prod = BackupSnapshot::default();
         let mut stg = BackupSnapshot::default();
-        stg.media.insert(1, media(1, "c1", MediaType::Comic, Some("A"), true));
-        stg.media.insert(2, media(2, "c2", MediaType::Comic, Some("A"), false));
-        stg.media.insert(3, media(3, "v1", MediaType::Video, None, true));
+        stg.media
+            .insert(1, media(1, "c1", MediaType::Comic, Some("A"), true));
+        stg.media
+            .insert(2, media(2, "c2", MediaType::Comic, Some("A"), false));
+        stg.media
+            .insert(3, media(3, "v1", MediaType::Video, None, true));
 
-        let diff = compute_diff(&prod, &stg, &DiffOptions { detail: Some(DiffDetail::Full) });
+        let diff = compute_diff(
+            &prod,
+            &stg,
+            &DiffOptions {
+                detail: Some(DiffDetail::Full),
+            },
+        );
         let summary = summarize_diff(&diff);
 
         // totals: media added=3 のみ（他テーブル空）
@@ -1183,8 +1371,26 @@ mod tests {
         assert_eq!(summary.totals.changed, 0);
 
         // by_type: comic=2, video=1
-        assert_eq!(summary.distribution.media.by_type.get("comic").unwrap().added, 2);
-        assert_eq!(summary.distribution.media.by_type.get("video").unwrap().added, 1);
+        assert_eq!(
+            summary
+                .distribution
+                .media
+                .by_type
+                .get("comic")
+                .unwrap()
+                .added,
+            2
+        );
+        assert_eq!(
+            summary
+                .distribution
+                .media
+                .by_type
+                .get("video")
+                .unwrap()
+                .added,
+            1
+        );
 
         // by_artist: A=2（上位 N に含まれる）
         let artist_a = summary
@@ -1197,8 +1403,26 @@ mod tests {
         assert_eq!(artist_a.1.added, 2);
 
         // by_flag_exist: true=2, false=1
-        assert_eq!(summary.distribution.media.by_flag_exist.get("true").unwrap().added, 2);
-        assert_eq!(summary.distribution.media.by_flag_exist.get("false").unwrap().added, 1);
+        assert_eq!(
+            summary
+                .distribution
+                .media
+                .by_flag_exist
+                .get("true")
+                .unwrap()
+                .added,
+            2
+        );
+        assert_eq!(
+            summary
+                .distribution
+                .media
+                .by_flag_exist
+                .get("false")
+                .unwrap()
+                .added,
+            1
+        );
     }
 
     #[test]
@@ -1217,11 +1441,35 @@ mod tests {
                 },
             );
         }
-        let diff = compute_diff(&prod, &stg, &DiffOptions { detail: Some(DiffDetail::Full) });
+        let diff = compute_diff(
+            &prod,
+            &stg,
+            &DiffOptions {
+                detail: Some(DiffDetail::Full),
+            },
+        );
         let summary = summarize_diff(&diff);
 
-        assert_eq!(summary.distribution.attributes.by_key.get("rating").unwrap().added, 2);
-        assert_eq!(summary.distribution.attributes.by_key.get("source").unwrap().added, 1);
+        assert_eq!(
+            summary
+                .distribution
+                .attributes
+                .by_key
+                .get("rating")
+                .unwrap()
+                .added,
+            2
+        );
+        assert_eq!(
+            summary
+                .distribution
+                .attributes
+                .by_key
+                .get("source")
+                .unwrap()
+                .added,
+            1
+        );
     }
 
     #[test]
@@ -1229,11 +1477,16 @@ mod tests {
         use crate::types::MediaType;
         let prod = BackupSnapshot::default();
         let mut stg = BackupSnapshot::default();
-        stg.media.insert(1, media(1, "new", MediaType::Comic, None, true));
+        stg.media
+            .insert(1, media(1, "new", MediaType::Comic, None, true));
 
         let diff = compute_diff(&prod, &stg, &DiffOptions::default());
         let summary = summarize_diff(&diff);
-        let prompt = build_diff_explanation_prompt(&diff, &summary, &DiffExplanationPromptOptions::default());
+        let prompt = build_diff_explanation_prompt(
+            &diff,
+            &summary,
+            &DiffExplanationPromptOptions::default(),
+        );
 
         assert!(prompt.contains("# メディアDB変更レビュー"));
         assert!(prompt.contains("## 1. 変更サマリ"));
@@ -1251,7 +1504,11 @@ mod tests {
         let snap = BackupSnapshot::default();
         let diff = compute_diff(&snap, &snap, &DiffOptions::default());
         let summary = summarize_diff(&diff);
-        let prompt = build_diff_explanation_prompt(&diff, &summary, &DiffExplanationPromptOptions::default());
+        let prompt = build_diff_explanation_prompt(
+            &diff,
+            &summary,
+            &DiffExplanationPromptOptions::default(),
+        );
 
         assert!(prompt.contains("合計: +0 -0 ~0"));
     }
@@ -1261,7 +1518,11 @@ mod tests {
         let snap = BackupSnapshot::default();
         let diff = compute_diff(&snap, &snap, &DiffOptions::default());
         let summary = summarize_diff(&diff);
-        let prompt = build_diff_explanation_prompt(&diff, &summary, &DiffExplanationPromptOptions::default());
+        let prompt = build_diff_explanation_prompt(
+            &diff,
+            &summary,
+            &DiffExplanationPromptOptions::default(),
+        );
 
         assert!(prompt.contains("added=stg新規"));
         assert!(prompt.contains("removed=prod のみ"));
@@ -1274,9 +1535,16 @@ mod tests {
         let prod = BackupSnapshot::default();
         let mut stg = BackupSnapshot::default();
         for i in 1..=15i64 {
-            stg.media.insert(i, media(i, "m", MediaType::Comic, None, true));
+            stg.media
+                .insert(i, media(i, "m", MediaType::Comic, None, true));
         }
-        let diff = compute_diff(&prod, &stg, &DiffOptions { detail: Some(DiffDetail::Full) });
+        let diff = compute_diff(
+            &prod,
+            &stg,
+            &DiffOptions {
+                detail: Some(DiffDetail::Full),
+            },
+        );
         let summary = summarize_diff(&diff);
         let prompt = build_diff_explanation_prompt(
             &diff,
@@ -1300,7 +1568,8 @@ mod tests {
         use crate::types::MediaType;
         let prod = BackupSnapshot::default();
         let mut stg = BackupSnapshot::default();
-        stg.media.insert(1, media(1, "new", MediaType::Comic, None, true));
+        stg.media
+            .insert(1, media(1, "new", MediaType::Comic, None, true));
 
         let diff = compute_diff(&prod, &stg, &DiffOptions::default());
         let summary = summarize_diff(&diff);

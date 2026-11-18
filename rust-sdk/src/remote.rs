@@ -1,15 +1,21 @@
-use crate::{AttributeValueType, AuditLogFilter, AuditRecord, BackupInfo, BulkUpdateItem, CheckThumbnailResult, KijukuBackend, KijukuError, Media, MediaAttribute, MediaFilter, MediaHash, MediaHashInput, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo, Tag, TagUsageStats, ThumbnailOptions, UpdateExistOptions, UpdateExistResult, UpdateThumbnailResult};
+use crate::{
+    AttributeValueType, AuditLogFilter, AuditRecord, BackupInfo, BulkUpdateItem,
+    CheckThumbnailResult, KijukuBackend, KijukuError, Media, MediaAttribute, MediaFilter,
+    MediaHash, MediaHashInput, MediaInput, MediaUpdateInput, QueryOptions, Result, TableColumnInfo,
+    Tag, TagUsageStats, ThumbnailOptions, UpdateExistOptions, UpdateExistResult,
+    UpdateThumbnailResult,
+};
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
 use ssh2_config::{ParseRule, SshConfig};
+use std::env;
 use std::io::Read;
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::env;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use parking_lot::Mutex;
+use std::sync::Arc;
 
 use crate::config::Target;
 
@@ -279,9 +285,9 @@ fn parse_semver(s: &str) -> Result<[u64; 3]> {
     }
     let mut nums = [0u64; 3];
     for (i, part) in parts.iter().enumerate() {
-        nums[i] = part.parse::<u64>().map_err(|_| {
-            KijukuError::Other(format!("invalid semver (non-numeric part): {}", s))
-        })?;
+        nums[i] = part
+            .parse::<u64>()
+            .map_err(|_| KijukuError::Other(format!("invalid semver (non-numeric part): {}", s)))?;
     }
     Ok(nums)
 }
@@ -323,7 +329,8 @@ impl RemoteKijukuDB {
 
     /// SSH設定を読み込む
     fn load_ssh_config(&self) -> Result<(String, u16, String, Option<PathBuf>)> {
-        let home = env::var("HOME").map_err(|_| KijukuError::Other("HOME environment variable not set".to_string()))?;
+        let home = env::var("HOME")
+            .map_err(|_| KijukuError::Other("HOME environment variable not set".to_string()))?;
         let ssh_config_path = PathBuf::from(&home).join(".ssh").join("config");
 
         // SSH configが存在しない場合はデフォルト値を使用
@@ -354,7 +361,9 @@ impl RemoteKijukuDB {
         let params = ssh_config.query(&self.config.ssh_host);
 
         // 各フィールドを取得（明示的な設定が優先）
-        let hostname = params.host_name.unwrap_or_else(|| self.config.ssh_host.clone());
+        let hostname = params
+            .host_name
+            .unwrap_or_else(|| self.config.ssh_host.clone());
         let port = self.config.port.or(params.port).unwrap_or(22);
         let username = self.config.username.clone()
             .or(params.user)
@@ -569,19 +578,28 @@ impl RemoteKijukuDB {
         channel
             .write_all(json_input.as_bytes())
             .map_err(|e| KijukuError::Ssh(format!("Failed to write to channel stdin: {}", e)))?;
-        channel.send_eof().map_err(|e| KijukuError::Ssh(format!("Failed to send EOF to channel: {}", e)))?;
+        channel
+            .send_eof()
+            .map_err(|e| KijukuError::Ssh(format!("Failed to send EOF to channel: {}", e)))?;
 
         let mut output = String::new();
-        channel
-            .read_to_string(&mut output)
-            .map_err(|e| KijukuError::Ssh(format!("Failed to read command stdout (timeout={}ms): {}", effective_timeout, e)))?;
+        channel.read_to_string(&mut output).map_err(|e| {
+            KijukuError::Ssh(format!(
+                "Failed to read command stdout (timeout={}ms): {}",
+                effective_timeout, e
+            ))
+        })?;
 
         let mut stderr = String::new();
-        channel.stderr().read_to_string(&mut stderr).map_err(|e| KijukuError::Ssh(format!("Failed to read command stderr: {}", e)))?;
+        channel
+            .stderr()
+            .read_to_string(&mut stderr)
+            .map_err(|e| KijukuError::Ssh(format!("Failed to read command stderr: {}", e)))?;
 
         channel.wait_close().ok();
 
-        let exit_status = channel.exit_status()
+        let exit_status = channel
+            .exit_status()
             .map_err(|e| KijukuError::Ssh(format!("Failed to get exit status: {}", e)))?;
 
         if exit_status != 0 {
@@ -591,8 +609,12 @@ impl RemoteKijukuDB {
             )));
         }
 
-        serde_json::from_str(&output)
-            .map_err(|e| KijukuError::Other(format!("Failed to parse response from stdout: {}. Raw output: {}", e, output)))
+        serde_json::from_str(&output).map_err(|e| {
+            KijukuError::Other(format!(
+                "Failed to parse response from stdout: {}. Raw output: {}",
+                e, output
+            ))
+        })
     }
 
     // --- リモートバイナリ自動デプロイ（TASK-69・バージョン比較ベース） ---
@@ -641,7 +663,10 @@ impl RemoteKijukuDB {
         channel.wait_close().ok();
         let home = output.trim().to_string();
         if home.is_empty() || !home.starts_with('/') {
-            return Err(KijukuError::Other(format!("invalid remote $HOME: {:?}", home)));
+            return Err(KijukuError::Other(format!(
+                "invalid remote $HOME: {:?}",
+                home
+            )));
         }
         Ok(home)
     }
@@ -650,7 +675,10 @@ impl RemoteKijukuDB {
     fn local_binary_path() -> Result<PathBuf> {
         let home = std::env::var("HOME")
             .map_err(|_| KijukuError::Other("HOME env not set".to_string()))?;
-        Ok(PathBuf::from(home).join(".local").join("bin").join("kijuku-cli"))
+        Ok(PathBuf::from(home)
+            .join(".local")
+            .join("bin")
+            .join("kijuku-cli"))
     }
 
     /// リモート CLI バイナリのバージョンを取得（TASK-69・`getServerVersion` operation）。
@@ -782,13 +810,12 @@ impl RemoteKijukuDB {
     }
 
     /// レスポンスのエラーチェック（データあり）
-    fn check_response<T: for<'de> Deserialize<'de>>(
-        &self,
-        response: CommandResponse,
-    ) -> Result<T> {
+    fn check_response<T: for<'de> Deserialize<'de>>(&self, response: CommandResponse) -> Result<T> {
         if !response.success {
             return Err(KijukuError::Other(
-                response.error.unwrap_or_else(|| "Unknown error".to_string()),
+                response
+                    .error
+                    .unwrap_or_else(|| "Unknown error".to_string()),
             ));
         }
 
@@ -800,7 +827,9 @@ impl RemoteKijukuDB {
     fn check_unit_response(&self, response: CommandResponse) -> Result<()> {
         if !response.success {
             return Err(KijukuError::Other(
-                response.error.unwrap_or_else(|| "Unknown error".to_string()),
+                response
+                    .error
+                    .unwrap_or_else(|| "Unknown error".to_string()),
             ));
         }
         Ok(())
@@ -1276,10 +1305,13 @@ impl RemoteKijukuDB {
 
     /// 手動バックアップを実行
     pub fn backup(&self, label: Option<&str>, timeout_ms: Option<u32>) -> Result<Option<String>> {
-        let response = self.execute_remote_command_timed(CommandRequest {
-            operation: "backup".to_string(),
-            params: serde_json::json!({ "label": label }),
-        }, timeout_ms)?;
+        let response = self.execute_remote_command_timed(
+            CommandRequest {
+                operation: "backup".to_string(),
+                params: serde_json::json!({ "label": label }),
+            },
+            timeout_ms,
+        )?;
 
         #[derive(Deserialize)]
         struct PathResponse {
@@ -1320,10 +1352,7 @@ impl RemoteKijukuDB {
     }
 
     /// listBackups / listPreStashes 共通: BackupInfo 配列レスポンスを `BackupInfo` へ変換。
-    fn backup_info_list_from_response(
-        &self,
-        response: CommandResponse,
-    ) -> Result<Vec<BackupInfo>> {
+    fn backup_info_list_from_response(&self, response: CommandResponse) -> Result<Vec<BackupInfo>> {
         #[derive(Deserialize)]
         struct BackupInfoRaw {
             id: String,
@@ -1365,7 +1394,8 @@ impl RemoteKijukuDB {
                     id: item.id,
                     name: item.name,
                     path: std::path::PathBuf::from(item.path),
-                    created_at: std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(item.created_at),
+                    created_at: std::time::UNIX_EPOCH
+                        + std::time::Duration::from_secs_f64(item.created_at),
                     scope,
                     kind,
                     label: item.label,
@@ -1408,10 +1438,13 @@ impl RemoteKijukuDB {
 
     /// バックアップを復元
     pub fn restore(&self, selector: &serde_json::Value, timeout_ms: Option<u32>) -> Result<String> {
-        let response = self.execute_remote_command_timed(CommandRequest {
-            operation: "restore".to_string(),
-            params: serde_json::json!({ "selector": selector }),
-        }, timeout_ms)?;
+        let response = self.execute_remote_command_timed(
+            CommandRequest {
+                operation: "restore".to_string(),
+                params: serde_json::json!({ "selector": selector }),
+            },
+            timeout_ms,
+        )?;
 
         #[derive(Deserialize)]
         struct PathResponse {
@@ -1429,14 +1462,17 @@ impl RemoteKijukuDB {
         options: &crate::diff::DiffOptions,
         timeout_ms: Option<u32>,
     ) -> Result<crate::diff::BackupDiff> {
-        let response = self.execute_remote_command_timed(CommandRequest {
-            operation: "diffBackup".to_string(),
-            params: serde_json::json!({
-                "selector": selector,
-                "options": serde_json::to_value(options)
-                    .map_err(|e| KijukuError::Other(e.to_string()))?,
-            }),
-        }, timeout_ms)?;
+        let response = self.execute_remote_command_timed(
+            CommandRequest {
+                operation: "diffBackup".to_string(),
+                params: serde_json::json!({
+                    "selector": selector,
+                    "options": serde_json::to_value(options)
+                        .map_err(|e| KijukuError::Other(e.to_string()))?,
+                }),
+            },
+            timeout_ms,
+        )?;
         self.check_response(response)
     }
 
@@ -1450,14 +1486,17 @@ impl RemoteKijukuDB {
         options: &crate::diff::DiffOptions,
         timeout_ms: Option<u32>,
     ) -> Result<crate::diff::BackupDiff> {
-        let response = self.execute_remote_command_timed(CommandRequest {
-            operation: "diffProdStg".to_string(),
-            params: serde_json::json!({
-                "prodDbPath": prod_db_path,
-                "options": serde_json::to_value(options)
-                    .map_err(|e| KijukuError::Other(e.to_string()))?,
-            }),
-        }, timeout_ms)?;
+        let response = self.execute_remote_command_timed(
+            CommandRequest {
+                operation: "diffProdStg".to_string(),
+                params: serde_json::json!({
+                    "prodDbPath": prod_db_path,
+                    "options": serde_json::to_value(options)
+                        .map_err(|e| KijukuError::Other(e.to_string()))?,
+                }),
+            },
+            timeout_ms,
+        )?;
         self.check_response(response)
     }
 
@@ -1470,14 +1509,17 @@ impl RemoteKijukuDB {
         options: &crate::diff::ObserveOptions,
         timeout_ms: Option<u32>,
     ) -> Result<crate::diff::ObserveResult> {
-        let response = self.execute_remote_command_timed(CommandRequest {
-            operation: "observe".to_string(),
-            params: serde_json::json!({
-                "prodDbPath": prod_db_path,
-                "options": serde_json::to_value(options)
-                    .map_err(|e| KijukuError::Other(e.to_string()))?,
-            }),
-        }, timeout_ms)?;
+        let response = self.execute_remote_command_timed(
+            CommandRequest {
+                operation: "observe".to_string(),
+                params: serde_json::json!({
+                    "prodDbPath": prod_db_path,
+                    "options": serde_json::to_value(options)
+                        .map_err(|e| KijukuError::Other(e.to_string()))?,
+                }),
+            },
+            timeout_ms,
+        )?;
         self.check_response(response)
     }
 
@@ -1491,15 +1533,18 @@ impl RemoteKijukuDB {
         backup_opts: Option<&crate::BackupOptions>,
         timeout_ms: Option<u32>,
     ) -> Result<crate::PromoteOutcome> {
-        let response = self.execute_remote_command_timed(CommandRequest {
-            operation: "promote".to_string(),
-            params: serde_json::json!({
-                "prodDbPath": prod_db_path,
-                "options": serde_json::to_value(options)
-                    .map_err(|e| KijukuError::Other(e.to_string()))?,
-                "backupOpts": backup_opts,
-            }),
-        }, timeout_ms)?;
+        let response = self.execute_remote_command_timed(
+            CommandRequest {
+                operation: "promote".to_string(),
+                params: serde_json::json!({
+                    "prodDbPath": prod_db_path,
+                    "options": serde_json::to_value(options)
+                        .map_err(|e| KijukuError::Other(e.to_string()))?,
+                    "backupOpts": backup_opts,
+                }),
+            },
+            timeout_ms,
+        )?;
         self.check_response(response)
     }
 
@@ -1509,10 +1554,13 @@ impl RemoteKijukuDB {
     /// なったため、null を送ると環境変数設定がない限り失敗する。
     fn run_prod_to_stg(&self, operation: &str, timeout_ms: Option<u32>) -> Result<SyncResult> {
         let (from, to) = resolve_sync_paths_from_config(&self.config);
-        let response = self.execute_remote_command_timed(CommandRequest {
-            operation: operation.to_string(),
-            params: serde_json::json!({ "from": from, "to": to }),
-        }, timeout_ms)?;
+        let response = self.execute_remote_command_timed(
+            CommandRequest {
+                operation: operation.to_string(),
+                params: serde_json::json!({ "from": from, "to": to }),
+            },
+            timeout_ms,
+        )?;
         self.check_response(response)
     }
 
@@ -1635,8 +1683,7 @@ impl RemoteKijukuDB {
         items
             .into_iter()
             .map(|item| {
-                crate::hash::hex_to_bytes(&item.content_hash)
-                    .map(|bytes| (bytes, item.count))
+                crate::hash::hex_to_bytes(&item.content_hash).map(|bytes| (bytes, item.count))
             })
             .collect()
     }
@@ -1820,11 +1867,17 @@ impl KijukuBackend for RemoteKijukuDB {
     }
 
     async fn add_tag_to_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
-        spawn_remote(self.clone(), move |this| this.add_tag_to_media(media_id, tag_id)).await
+        spawn_remote(self.clone(), move |this| {
+            this.add_tag_to_media(media_id, tag_id)
+        })
+        .await
     }
 
     async fn remove_tag_from_media(&self, media_id: i64, tag_id: i64) -> Result<()> {
-        spawn_remote(self.clone(), move |this| this.remove_tag_from_media(media_id, tag_id)).await
+        spawn_remote(self.clone(), move |this| {
+            this.remove_tag_from_media(media_id, tag_id)
+        })
+        .await
     }
 
     async fn get_media_tags(&self, media_id: i64) -> Result<Vec<Tag>> {
@@ -1836,7 +1889,10 @@ impl KijukuBackend for RemoteKijukuDB {
         media_ids: &[i64],
     ) -> Result<std::collections::HashMap<i64, Vec<Tag>>> {
         let media_ids = media_ids.to_vec();
-        spawn_remote(self.clone(), move |this| this.get_media_tags_bulk(&media_ids)).await
+        spawn_remote(self.clone(), move |this| {
+            this.get_media_tags_bulk(&media_ids)
+        })
+        .await
     }
 
     async fn get_tag_usage_stats(&self) -> Result<Vec<TagUsageStats>> {
@@ -1858,27 +1914,48 @@ impl KijukuBackend for RemoteKijukuDB {
         let value = value.map(|s| s.to_string());
         spawn_remote(self.clone(), move |this| {
             // RemoteKijukuDB::set_media_attribute は value_type を文字列で受け取るため変換
-            this.set_media_attribute(media_id, &key, value.as_deref(), value_type.map(|t| t.as_str()))
+            this.set_media_attribute(
+                media_id,
+                &key,
+                value.as_deref(),
+                value_type.map(|t| t.as_str()),
+            )
         })
         .await
     }
 
-    async fn get_media_attribute(&self, media_id: i64, key: &str) -> Result<Option<MediaAttribute>> {
+    async fn get_media_attribute(
+        &self,
+        media_id: i64,
+        key: &str,
+    ) -> Result<Option<MediaAttribute>> {
         let key = key.to_string();
-        spawn_remote(self.clone(), move |this| this.get_media_attribute(media_id, &key)).await
+        spawn_remote(self.clone(), move |this| {
+            this.get_media_attribute(media_id, &key)
+        })
+        .await
     }
 
     async fn get_media_attributes(&self, media_id: i64) -> Result<Vec<MediaAttribute>> {
-        spawn_remote(self.clone(), move |this| this.get_media_attributes(media_id)).await
+        spawn_remote(self.clone(), move |this| {
+            this.get_media_attributes(media_id)
+        })
+        .await
     }
 
     async fn delete_media_attribute(&self, media_id: i64, key: &str) -> Result<()> {
         let key = key.to_string();
-        spawn_remote(self.clone(), move |this| this.delete_media_attribute(media_id, &key)).await
+        spawn_remote(self.clone(), move |this| {
+            this.delete_media_attribute(media_id, &key)
+        })
+        .await
     }
 
     async fn delete_all_media_attributes(&self, media_id: i64) -> Result<()> {
-        spawn_remote(self.clone(), move |this| this.delete_all_media_attributes(media_id)).await
+        spawn_remote(self.clone(), move |this| {
+            this.delete_all_media_attributes(media_id)
+        })
+        .await
     }
 
     async fn add_media_hash(&self, input: &MediaHashInput) -> Result<MediaHash> {
@@ -1933,7 +2010,10 @@ impl KijukuBackend for RemoteKijukuDB {
 
     async fn delete_media_hashes(&self, item_uuid: &str) -> Result<()> {
         let item_uuid = item_uuid.to_string();
-        spawn_remote(self.clone(), move |this| this.delete_media_hashes(&item_uuid)).await
+        spawn_remote(self.clone(), move |this| {
+            this.delete_media_hashes(&item_uuid)
+        })
+        .await
     }
 
     async fn find_duplicate_hashes(&self) -> Result<Vec<(Vec<u8>, i64)>> {
@@ -1963,7 +2043,8 @@ impl MediaHashRemote {
             time_range: self.time_range,
             content_hash: crate::hash::hex_to_bytes(&self.content_hash)?,
             alternative_of: self.alternative_of,
-            embedding: self.embedding
+            embedding: self
+                .embedding
                 .map(|e| crate::hash::hex_to_bytes(&e))
                 .transpose()?,
             created_at: self.created_at,
@@ -1988,7 +2069,11 @@ struct ComputeHashResultRemote {
 
 impl ComputeHashResultRemote {
     fn to_compute_result(self) -> Result<crate::hash::ComputeHashResult> {
-        let hashes = self.hashes.into_iter().map(|r| r.to_media_hash()).collect::<Result<Vec<_>>>()?;
+        let hashes = self
+            .hashes
+            .into_iter()
+            .map(|r| r.to_media_hash())
+            .collect::<Result<Vec<_>>>()?;
         Ok(crate::hash::ComputeHashResult {
             item_uuid: self.item_uuid,
             hashes,
@@ -2081,13 +2166,22 @@ mod tests {
 
     #[test]
     fn derive_stg_db_path_inserts_stg_before_extension() {
-        assert_eq!(derive_stg_db_path("~/.local/share/kijuku/kijuku.db"), "~/.local/share/kijuku/kijuku.stg.db");
+        assert_eq!(
+            derive_stg_db_path("~/.local/share/kijuku/kijuku.db"),
+            "~/.local/share/kijuku/kijuku.stg.db"
+        );
         assert_eq!(derive_stg_db_path("kijuku.db"), "kijuku.stg.db");
         assert_eq!(derive_stg_db_path("/var/db/my.db"), "/var/db/my.stg.db");
         // 拡張子無し
-        assert_eq!(derive_stg_db_path("/var/db/kijulu"), "/var/db/kijulu.stg.db");
+        assert_eq!(
+            derive_stg_db_path("/var/db/kijulu"),
+            "/var/db/kijulu.stg.db"
+        );
         // ディレクトリ名のドットは拡張子と誤認しない
-        assert_eq!(derive_stg_db_path("/foo.bar/kijuku.db"), "/foo.bar/kijuku.stg.db");
+        assert_eq!(
+            derive_stg_db_path("/foo.bar/kijuku.db"),
+            "/foo.bar/kijuku.stg.db"
+        );
     }
 
     #[test]
@@ -2098,7 +2192,10 @@ mod tests {
             db_path: Some("~/.local/share/kijuku/kijuku.db".to_string()),
             ..Default::default()
         };
-        assert_eq!(resolve_remote_db_path(&prod), "~/.local/share/kijuku/kijuku.db");
+        assert_eq!(
+            resolve_remote_db_path(&prod),
+            "~/.local/share/kijuku/kijuku.db"
+        );
 
         // stg: stg_db_path があればそれを優先
         let stg_explicit = RemoteConfig {
@@ -2116,7 +2213,10 @@ mod tests {
             stg_db_path: None,
             ..Default::default()
         };
-        assert_eq!(resolve_remote_db_path(&stg_derived), "~/.local/share/kijuku/kijuku.stg.db");
+        assert_eq!(
+            resolve_remote_db_path(&stg_derived),
+            "~/.local/share/kijuku/kijuku.stg.db"
+        );
 
         // stg: 両方無し → stg デフォルト
         let stg_default = RemoteConfig {
@@ -2125,7 +2225,10 @@ mod tests {
             stg_db_path: None,
             ..Default::default()
         };
-        assert_eq!(resolve_remote_db_path(&stg_default), "~/.local/share/kijuku/kijuku.stg.db");
+        assert_eq!(
+            resolve_remote_db_path(&stg_default),
+            "~/.local/share/kijuku/kijuku.stg.db"
+        );
     }
 
     /// sync/discard の from/to は必ず具象パスに解決される（サーバ側 resolve_sync_paths は

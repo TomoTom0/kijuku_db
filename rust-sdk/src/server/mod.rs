@@ -139,7 +139,9 @@ async fn auth_middleware(
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // CookieJarを取得（Infallibleなのでunwrap()が安全）
-    let jar = CookieJar::from_request_parts(&mut parts, &()).await.unwrap();
+    let jar = CookieJar::from_request_parts(&mut parts, &())
+        .await
+        .unwrap();
 
     let request = axum::http::Request::from_parts(parts, body);
 
@@ -179,10 +181,7 @@ async fn serve_static(axum::extract::Path(path): axum::extract::Path<String>) ->
                 "application/octet-stream"
             };
 
-            (
-                [(header::CONTENT_TYPE, mime_type)],
-                file.contents(),
-            ).into_response()
+            ([(header::CONTENT_TYPE, mime_type)], file.contents()).into_response()
         }
         None => (StatusCode::NOT_FOUND, "File not found").into_response(),
     }
@@ -224,7 +223,10 @@ async fn get_media_list(
     State(state): State<Arc<ServerState>>,
     Query(params): Query<MediaQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let media_type = params.media_type.and_then(|s| match s.as_str() {
         "comic" => Some(MediaType::Comic),
@@ -247,7 +249,10 @@ async fn get_media_list(
             Some("DESC") => SortOrder::Desc,
             _ => SortOrder::Asc,
         };
-        vec![SortKey { field: order_by.clone(), order }]
+        vec![SortKey {
+            field: order_by.clone(),
+            order,
+        }]
     } else {
         vec![]
     };
@@ -280,7 +285,10 @@ async fn get_media_detail(
     State(state): State<Arc<ServerState>>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     match db.get_media(id) {
         Some(media) => {
@@ -302,7 +310,10 @@ async fn get_media_detail_by_uuid(
     State(state): State<Arc<ServerState>>,
     Path(uuid): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let db = state.db.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let db = state
+        .db
+        .lock()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     match db.get_media_by_uuid(&uuid) {
         Some(media) => {

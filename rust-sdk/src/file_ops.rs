@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{KijukuError, Result};
-use crate::media_path::{is_protected, resolve_destination_within_root, resolve_existing_within_root};
+use crate::media_path::{
+    is_protected, resolve_destination_within_root, resolve_existing_within_root,
+};
 use crate::trash::{move_to_trash, TrashOperation};
 
 /// ファイル操作のオプション
@@ -136,7 +138,10 @@ pub fn media_cp(
         move_to_trash(root, dst_rel, TrashOperation::Overwrite, Some("media_cp"))?;
     }
     copy_recursive(&src, &dst)?;
-    Ok(FileOpResult { steps, applied: true })
+    Ok(FileOpResult {
+        steps,
+        applied: true,
+    })
 }
 
 /// `src_rel` を `dst_rel` へ移動する。
@@ -178,7 +183,10 @@ pub fn media_mv(
         fs::create_dir_all(parent)?;
     }
     fs::rename(&src, &dst)?;
-    Ok(FileOpResult { steps, applied: true })
+    Ok(FileOpResult {
+        steps,
+        applied: true,
+    })
 }
 
 /// ディレクトリ配下の相対ファイルパス一覧を収集する。
@@ -282,7 +290,12 @@ pub fn media_sync(
                 dst_rel.trim_end_matches('/'),
                 rel.to_string_lossy()
             );
-            move_to_trash(root, &target_rel, TrashOperation::SyncExtra, Some("media_sync"))?;
+            move_to_trash(
+                root,
+                &target_rel,
+                TrashOperation::SyncExtra,
+                Some("media_sync"),
+            )?;
         }
     }
     for rel in &src_files {
@@ -301,12 +314,20 @@ pub fn media_sync(
                 dst_rel.trim_end_matches('/'),
                 rel.to_string_lossy()
             );
-            move_to_trash(root, &target_rel, TrashOperation::Overwrite, Some("media_sync"))?;
+            move_to_trash(
+                root,
+                &target_rel,
+                TrashOperation::Overwrite,
+                Some("media_sync"),
+            )?;
         }
         copy_recursive(&from, &to)?;
     }
 
-    Ok(FileOpResult { steps, applied: true })
+    Ok(FileOpResult {
+        steps,
+        applied: true,
+    })
 }
 
 #[cfg(test)]
@@ -338,7 +359,10 @@ mod tests {
     fn cp_apply_copies_file() {
         let dir = setup();
         let root = dir.path();
-        let opts = FileOpOptions { apply: true, ..Default::default() };
+        let opts = FileOpOptions {
+            apply: true,
+            ..Default::default()
+        };
         let r = media_cp(root, "lonely.txt", "copied.txt", &opts).unwrap();
         assert!(r.applied);
         assert!(root.join("copied.txt").exists());
@@ -351,7 +375,10 @@ mod tests {
         let dir = setup();
         let root = dir.path();
         fs::write(root.join("dst.txt"), "OLD").unwrap();
-        let opts = FileOpOptions { apply: true, ..Default::default() };
+        let opts = FileOpOptions {
+            apply: true,
+            ..Default::default()
+        };
         media_cp(root, "lonely.txt", "dst.txt", &opts).unwrap();
         // 新内容で上書き
         assert_eq!(fs::read_to_string(root.join("dst.txt")).unwrap(), "L");
@@ -363,7 +390,10 @@ mod tests {
     fn mv_apply_moves_file() {
         let dir = setup();
         let root = dir.path();
-        let opts = FileOpOptions { apply: true, ..Default::default() };
+        let opts = FileOpOptions {
+            apply: true,
+            ..Default::default()
+        };
         media_mv(root, "lonely.txt", "moved.txt", &opts).unwrap();
         assert!(root.join("moved.txt").exists());
         assert!(!root.join("lonely.txt").exists());
@@ -374,7 +404,10 @@ mod tests {
         let dir = setup();
         let root = dir.path();
         fs::write(root.join("dst.txt"), "OLD").unwrap();
-        let opts = FileOpOptions { apply: true, ..Default::default() };
+        let opts = FileOpOptions {
+            apply: true,
+            ..Default::default()
+        };
         media_mv(root, "lonely.txt", "dst.txt", &opts).unwrap();
         assert_eq!(fs::read_to_string(root.join("dst.txt")).unwrap(), "L");
         assert_eq!(crate::trash::list_trash(root).unwrap().len(), 1);
@@ -389,7 +422,10 @@ mod tests {
         fs::write(root.join("dst/a.txt"), "OLD-A").unwrap();
         fs::write(root.join("dst/extra.txt"), "EXTRA").unwrap();
 
-        let opts = FileOpOptions { apply: true, ..Default::default() };
+        let opts = FileOpOptions {
+            apply: true,
+            ..Default::default()
+        };
         let r = media_sync(root, "src", "dst", &opts).unwrap();
         assert!(r.applied);
 
@@ -408,7 +444,10 @@ mod tests {
         let dir = setup();
         let root = dir.path();
         // dst に .trash を指定すると保護パスで拒否
-        let opts = FileOpOptions { apply: true, ..Default::default() };
+        let opts = FileOpOptions {
+            apply: true,
+            ..Default::default()
+        };
         assert!(media_cp(root, "lonely.txt", ".trash", &opts).is_err());
     }
 
@@ -435,7 +474,10 @@ mod tests {
         // dst = link/x は lexical には root 配下だが symlink 先は root 外 → 拒否（dry-run/apply 両方）
         assert!(media_cp(root, "lonely.txt", "link/x", &opts).is_err());
         assert!(media_mv(root, "lonely.txt", "link/x", &opts).is_err());
-        let apply = FileOpOptions { apply: true, ..Default::default() };
+        let apply = FileOpOptions {
+            apply: true,
+            ..Default::default()
+        };
         assert!(media_cp(root, "lonely.txt", "link/x", &apply).is_err());
         // 外部へ書き込まれていないことを確認
         assert!(!outside.path().join("x").exists());

@@ -92,11 +92,7 @@ fn test_observe_prod_sync_revision_pass_when_unchanged() {
         .iter()
         .find(|c| c.name == "prod_sync_revision")
         .expect("prod_sync_revision check exists");
-    assert!(
-        rev.passed,
-        "prod 不変更 -> revision 一致: {:?}",
-        rev.detail
-    );
+    assert!(rev.passed, "prod 不変更 -> revision 一致: {:?}", rev.detail);
 }
 
 /// observe: prod が sync 後に更新されると `prod_sync_revision` 不合格・再 sync で復帰（設計 §15-11）
@@ -128,11 +124,7 @@ fn test_observe_prod_sync_revision_fails_on_drift_then_resync() {
         .iter()
         .find(|c| c.name == "prod_sync_revision")
         .expect("check exists");
-    assert!(
-        !rev.passed,
-        "prod drifted -> gate 不合格: {:?}",
-        rev.detail
-    );
+    assert!(!rev.passed, "prod drifted -> gate 不合格: {:?}", rev.detail);
 
     // 再 sync で revision 更新 -> 合格に復帰
     drop(stg_db);
@@ -146,9 +138,5 @@ fn test_observe_prod_sync_revision_fails_on_drift_then_resync() {
         .iter()
         .find(|c| c.name == "prod_sync_revision")
         .expect("check exists");
-    assert!(
-        rev2.passed,
-        "再 sync で合格に復帰: {:?}",
-        rev2.detail
-    );
+    assert!(rev2.passed, "再 sync で合格に復帰: {:?}", rev2.detail);
 }

@@ -278,15 +278,14 @@ pub fn resolve_target(
     env: &dyn EnvProvider,
 ) -> Result<TargetResolution> {
     // read-source 解決（設計 §3.5/§13）。
-    let read_source = cli_read_source
-        .or_else(|| env.get("KIJUKU_READ_SOURCE").and_then(|s| Target::parse(&s)));
+    let read_source = cli_read_source.or_else(|| {
+        env.get("KIJUKU_READ_SOURCE")
+            .and_then(|s| Target::parse(&s))
+    });
 
     // target 解決: read-source（Some なら優先・target に折り畳む） > --target > KIJUKU_TARGET > デフォルト Stg。
     let target = read_source
-        .or_else(|| {
-            cli_target
-                .or_else(|| env.get("KIJUKU_TARGET").and_then(|s| Target::parse(&s)))
-        })
+        .or_else(|| cli_target.or_else(|| env.get("KIJUKU_TARGET").and_then(|s| Target::parse(&s))))
         .unwrap_or_default();
 
     // db_path 解決: --db > target 別 env。未指定はエラー（DB配置は明示指定必須・暗黙の既定パスなし・TASK-94）。

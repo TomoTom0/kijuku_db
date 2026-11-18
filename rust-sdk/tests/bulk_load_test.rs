@@ -41,16 +41,35 @@ async fn make_source() -> KijukuDB {
 
     let tag_shared = backend.create_tag("共通タグ").await.unwrap();
     let tag_m1_only = backend.create_tag("m1専用タグ").await.unwrap();
-    backend.add_tag_to_media(m1.id, tag_shared.id).await.unwrap();
-    backend.add_tag_to_media(m1.id, tag_m1_only.id).await.unwrap();
-    backend.add_tag_to_media(m2.id, tag_shared.id).await.unwrap();
-
     backend
-        .set_media_attribute(m1.id, "rating", Some("5"), Some(AttributeValueType::Integer))
+        .add_tag_to_media(m1.id, tag_shared.id)
         .await
         .unwrap();
     backend
-        .set_media_attribute(m2.id, "note", Some("メモ"), Some(AttributeValueType::String))
+        .add_tag_to_media(m1.id, tag_m1_only.id)
+        .await
+        .unwrap();
+    backend
+        .add_tag_to_media(m2.id, tag_shared.id)
+        .await
+        .unwrap();
+
+    backend
+        .set_media_attribute(
+            m1.id,
+            "rating",
+            Some("5"),
+            Some(AttributeValueType::Integer),
+        )
+        .await
+        .unwrap();
+    backend
+        .set_media_attribute(
+            m2.id,
+            "note",
+            Some("メモ"),
+            Some(AttributeValueType::String),
+        )
         .await
         .unwrap();
 

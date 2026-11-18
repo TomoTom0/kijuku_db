@@ -95,8 +95,8 @@ fn canonicalize_root(root: &Path) -> PathBuf {
 /// ベースを置き換える挙動に対する defense in depth）。`purge_trash` の呼出し側提供 ID 検証に使用。
 fn ensure_safe_trash_id(id: &str, trash: &Path) -> Result<()> {
     let mut components = Path::new(id).components();
-    let is_single_normal = matches!(components.next(), Some(Component::Normal(_)))
-        && components.next().is_none();
+    let is_single_normal =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
     let directly_beneath = trash.join(id).parent() == Some(trash);
     if is_single_normal && directly_beneath {
         Ok(())
@@ -180,9 +180,8 @@ pub fn list_trash(root: &Path) -> Result<Vec<TrashEntry>> {
             continue;
         }
         let data = fs::read(&meta_path)?;
-        let meta: TrashMeta = serde_json::from_slice(&data).map_err(|e| {
-            KijukuError::Parse(format!("failed to parse trash meta: {e}"))
-        })?;
+        let meta: TrashMeta = serde_json::from_slice(&data)
+            .map_err(|e| KijukuError::Parse(format!("failed to parse trash meta: {e}")))?;
         entries.push(TrashEntry {
             id: entry.file_name().to_string_lossy().to_string(),
             meta,
@@ -206,9 +205,8 @@ pub fn restore_from_trash(root: &Path, id: &str) -> Result<PathBuf> {
         )));
     }
     let data = fs::read(&meta_path)?;
-    let meta: TrashMeta = serde_json::from_slice(&data).map_err(|e| {
-        KijukuError::Parse(format!("failed to parse trash meta: {e}"))
-    })?;
+    let meta: TrashMeta = serde_json::from_slice(&data)
+        .map_err(|e| KijukuError::Parse(format!("failed to parse trash meta: {e}")))?;
 
     let dest = root_c.join(&meta.original_path);
     if dest.exists() {
@@ -233,11 +231,7 @@ pub fn restore_from_trash(root: &Path, id: &str) -> Result<PathBuf> {
 ///
 /// `ids` が Some ならその ID のみ、None なら全エントリを対象とする。
 /// これが trash からファイルを完全に消す唯一の経路である。
-pub fn purge_trash(
-    root: &Path,
-    ids: Option<&[String]>,
-    dry_run: bool,
-) -> Result<Vec<String>> {
+pub fn purge_trash(root: &Path, ids: Option<&[String]>, dry_run: bool) -> Result<Vec<String>> {
     let root_c = canonicalize_root(root);
     let trash = trash_dir(&root_c);
 

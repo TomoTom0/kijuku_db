@@ -5,7 +5,7 @@
 //! セマンティクス反転（`diff_with_backup` と逆）の担保が目的。
 
 use kijuku_db::diff::{DiffDetail, DiffOptions};
-use kijuku_db::{KijukuDB, MediaInput, MediaUpdateInput, MediaType};
+use kijuku_db::{KijukuDB, MediaInput, MediaType, MediaUpdateInput};
 use tempfile::TempDir;
 
 use std::path::PathBuf;
@@ -70,7 +70,9 @@ fn test_diff_with_prod_semantics_inverted() {
     let options = DiffOptions {
         detail: Some(DiffDetail::Full),
     };
-    let diff = stg_db.diff_with_prod(&prod, &options).expect("diff_with_prod");
+    let diff = stg_db
+        .diff_with_prod(&prod, &options)
+        .expect("diff_with_prod");
 
     // セマンティクス（stg 編集視点）
     assert_eq!(diff.summary.media.added, 1, "stg 新規 = added");

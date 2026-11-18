@@ -23,7 +23,10 @@ fn temp_file_path(suffix: &str) -> String {
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = process::id();
     std::env::temp_dir()
-        .join(format!("kijuku-update-exist-{}-{}-{}{}", pid, ts, seq, suffix))
+        .join(format!(
+            "kijuku-update-exist-{}-{}-{}{}",
+            pid, ts, seq, suffix
+        ))
         .to_string_lossy()
         .into_owned()
 }
@@ -123,7 +126,10 @@ fn find_dominant_extension_in_dir(dir: &Path) -> Option<String> {
             }
         }
     }
-    ext_counts.into_iter().max_by_key(|(_, v)| *v).map(|(k, _)| k)
+    ext_counts
+        .into_iter()
+        .max_by_key(|(_, v)| *v)
+        .map(|(k, _)| k)
 }
 
 /// ファイルパスのディレクトリ内で {uuid}.* 形式の代替拡張子を探す
@@ -364,14 +370,20 @@ mod tests {
     #[test]
     fn test_path_none_returns_false() {
         let conn = setup_db();
-        let media = create_media(&conn, &MediaInput {
-            title: "pathなし".to_string(),
-            media_type: MediaType::Music,
-            flag_exist: Some(true),
-            ..Default::default()
-        }).unwrap();
+        let media = create_media(
+            &conn,
+            &MediaInput {
+                title: "pathなし".to_string(),
+                media_type: MediaType::Music,
+                flag_exist: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let filter = MediaFilter { ..Default::default() };
+        let filter = MediaFilter {
+            ..Default::default()
+        };
         let result = update_exist(&conn, &filter, None, &UpdateExistOptions::default()).unwrap();
         let items = read_detail_file(&result);
         assert_eq!(items[0].flag_exist_after, false);
@@ -387,16 +399,26 @@ mod tests {
         let file_path = tmp.path().join(format!("{}.m4a", uuid));
         fs::write(&file_path, b"dummy").unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "music".to_string(),
-            media_type: MediaType::Music,
-            uuid: Some(uuid.to_string()),
-            path: Some(file_path.to_str().unwrap().to_string()),
-            extension: Some("m4a".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "music".to_string(),
+                media_type: MediaType::Music,
+                uuid: Some(uuid.to_string()),
+                path: Some(file_path.to_str().unwrap().to_string()),
+                extension: Some("m4a".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        let result = update_exist(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &UpdateExistOptions::default(),
+        )
+        .unwrap();
         let items = read_detail_file(&result);
         assert_eq!(items[0].flag_exist_after, true);
     }
@@ -409,16 +431,26 @@ mod tests {
         let file_path = tmp.path().join(format!("{}.m4a", uuid));
         // ファイルは作成しない
 
-        create_media(&conn, &MediaInput {
-            title: "music missing".to_string(),
-            media_type: MediaType::Music,
-            uuid: Some(uuid.to_string()),
-            path: Some(file_path.to_str().unwrap().to_string()),
-            extension: Some("m4a".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "music missing".to_string(),
+                media_type: MediaType::Music,
+                uuid: Some(uuid.to_string()),
+                path: Some(file_path.to_str().unwrap().to_string()),
+                extension: Some("m4a".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        let result = update_exist(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &UpdateExistOptions::default(),
+        )
+        .unwrap();
         let items = read_detail_file(&result);
         assert_eq!(items[0].flag_exist_after, false);
     }
@@ -433,16 +465,26 @@ mod tests {
         fs::write(&alt_file_path, b"dummy").unwrap();
 
         let expected_path = tmp.path().join(format!("{}.m4a", uuid));
-        create_media(&conn, &MediaInput {
-            title: "music alt ext".to_string(),
-            media_type: MediaType::Music,
-            uuid: Some(uuid.to_string()),
-            path: Some(expected_path.to_str().unwrap().to_string()),
-            extension: Some("m4a".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "music alt ext".to_string(),
+                media_type: MediaType::Music,
+                uuid: Some(uuid.to_string()),
+                path: Some(expected_path.to_str().unwrap().to_string()),
+                extension: Some("m4a".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        let result = update_exist(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &UpdateExistOptions::default(),
+        )
+        .unwrap();
         let items = read_detail_file(&result);
         assert_eq!(items[0].found_extension, Some("mp3".to_string()));
         assert_eq!(items[0].flag_exist_after, true);
@@ -458,15 +500,25 @@ mod tests {
         fs::write(dir.join("002.jpg"), b"dummy").unwrap();
         fs::write(dir.join("003.jpg"), b"dummy").unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "comic".to_string(),
-            media_type: MediaType::Comic,
-            path: Some(dir.to_str().unwrap().to_string()),
-            extension: Some("jpg".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "comic".to_string(),
+                media_type: MediaType::Comic,
+                path: Some(dir.to_str().unwrap().to_string()),
+                extension: Some("jpg".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        let result = update_exist(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &UpdateExistOptions::default(),
+        )
+        .unwrap();
         let items = read_detail_file(&result);
         assert_eq!(items[0].flag_exist_after, true);
         assert_eq!(items[0].page_count_set, Some(3));
@@ -481,16 +533,26 @@ mod tests {
         fs::write(dir.join("001.jpg"), b"dummy").unwrap();
         fs::write(dir.join("002.jpg"), b"dummy").unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "comic warn".to_string(),
-            media_type: MediaType::Comic,
-            path: Some(dir.to_str().unwrap().to_string()),
-            extension: Some("jpg".to_string()),
-            page_count: Some(5), // 実際は2ページ
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "comic warn".to_string(),
+                media_type: MediaType::Comic,
+                path: Some(dir.to_str().unwrap().to_string()),
+                extension: Some("jpg".to_string()),
+                page_count: Some(5), // 実際は2ページ
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        let result = update_exist(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &UpdateExistOptions::default(),
+        )
+        .unwrap();
         let items = read_detail_file(&result);
         assert!(items[0].page_count_warning.is_some());
         assert!(items[0].page_count_warning.as_ref().unwrap().contains("5"));
@@ -507,15 +569,25 @@ mod tests {
         fs::write(dir.join("001.png"), b"dummy").unwrap();
         fs::write(dir.join("002.png"), b"dummy").unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "comic alt".to_string(),
-            media_type: MediaType::Comic,
-            path: Some(dir.to_str().unwrap().to_string()),
-            extension: Some("jpg".to_string()), // jpgとして登録されているがpngで存在
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "comic alt".to_string(),
+                media_type: MediaType::Comic,
+                path: Some(dir.to_str().unwrap().to_string()),
+                extension: Some("jpg".to_string()), // jpgとして登録されているがpngで存在
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        let result = update_exist(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &UpdateExistOptions::default(),
+        )
+        .unwrap();
         let items = read_detail_file(&result);
         assert_eq!(items[0].found_extension, Some("png".to_string()));
         assert_eq!(items[0].flag_exist_after, true);
@@ -524,19 +596,24 @@ mod tests {
     #[test]
     fn test_dry_run_does_not_update_db() {
         let conn = setup_db();
-        let media = create_media(&conn, &MediaInput {
-            title: "dry run test".to_string(),
-            media_type: MediaType::Music,
-            flag_exist: Some(true),
-            ..Default::default()
-        }).unwrap();
+        let media = create_media(
+            &conn,
+            &MediaInput {
+                title: "dry run test".to_string(),
+                media_type: MediaType::Music,
+                flag_exist: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let result = update_exist(
             &conn,
             &MediaFilter::default(),
             None,
             &UpdateExistOptions { dry_run: true },
-        ).unwrap();
+        )
+        .unwrap();
         let items = read_detail_file(&result);
         assert_eq!(items[0].flag_exist_after, false);
 
@@ -554,16 +631,26 @@ mod tests {
         fs::write(&file_path, b"dummy").unwrap();
 
         // extensionをNoneで登録（デフォルトm4aが使われるはず）
-        create_media(&conn, &MediaInput {
-            title: "music default ext".to_string(),
-            media_type: MediaType::Music,
-            uuid: Some(uuid.to_string()),
-            path: Some(file_path.to_str().unwrap().to_string()),
-            extension: None,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "music default ext".to_string(),
+                media_type: MediaType::Music,
+                uuid: Some(uuid.to_string()),
+                path: Some(file_path.to_str().unwrap().to_string()),
+                extension: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        let result = update_exist(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &UpdateExistOptions::default(),
+        )
+        .unwrap();
         let items = read_detail_file(&result);
         assert_eq!(items[0].flag_exist_after, true);
         assert_eq!(items[0].extension_used, Some("m4a".to_string()));
@@ -577,17 +664,27 @@ mod tests {
         let file_path = tmp.path().join(format!("{}.m4a", uuid));
         fs::write(&file_path, b"dummy").unwrap();
 
-        let media = create_media(&conn, &MediaInput {
-            title: "music inline ids".to_string(),
-            media_type: MediaType::Music,
-            uuid: Some(uuid.to_string()),
-            path: Some(file_path.to_str().unwrap().to_string()),
-            extension: Some("m4a".to_string()),
-            flag_exist: Some(false),
-            ..Default::default()
-        }).unwrap();
+        let media = create_media(
+            &conn,
+            &MediaInput {
+                title: "music inline ids".to_string(),
+                media_type: MediaType::Music,
+                uuid: Some(uuid.to_string()),
+                path: Some(file_path.to_str().unwrap().to_string()),
+                extension: Some("m4a".to_string()),
+                flag_exist: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        let result = update_exist(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &UpdateExistOptions::default(),
+        )
+        .unwrap();
         assert!(result.updated_ids.is_some());
         assert!(result.updated_ids_file.is_none());
         assert!(result.updated_ids.as_ref().unwrap().contains(&media.id));
@@ -597,13 +694,23 @@ mod tests {
     #[test]
     fn test_detail_file_always_written() {
         let conn = setup_db();
-        create_media(&conn, &MediaInput {
-            title: "detail file test".to_string(),
-            media_type: MediaType::Music,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "detail file test".to_string(),
+                media_type: MediaType::Music,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        let result = update_exist(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &UpdateExistOptions::default(),
+        )
+        .unwrap();
         assert!(std::path::Path::new(&result.detail_file).exists());
         let items = read_detail_file(&result);
         assert_eq!(items.len(), 1);
@@ -619,18 +726,28 @@ mod tests {
             let uuid = format!("test-uuid-many-{}", i);
             let file_path = tmp.path().join(format!("{}.m4a", uuid));
             fs::write(&file_path, b"dummy").unwrap();
-            create_media(&conn, &MediaInput {
-                title: format!("music {}", i),
-                media_type: MediaType::Music,
-                uuid: Some(uuid),
-                path: Some(file_path.to_str().unwrap().to_string()),
-                extension: Some("m4a".to_string()),
-                flag_exist: Some(false),
-                ..Default::default()
-            }).unwrap();
+            create_media(
+                &conn,
+                &MediaInput {
+                    title: format!("music {}", i),
+                    media_type: MediaType::Music,
+                    uuid: Some(uuid),
+                    path: Some(file_path.to_str().unwrap().to_string()),
+                    extension: Some("m4a".to_string()),
+                    flag_exist: Some(false),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
 
-        let result = update_exist(&conn, &MediaFilter::default(), None, &UpdateExistOptions::default()).unwrap();
+        let result = update_exist(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &UpdateExistOptions::default(),
+        )
+        .unwrap();
         assert!(result.updated_ids.is_none());
         assert!(result.updated_ids_file.is_some());
         let ids = read_ids_file(result.updated_ids_file.as_ref().unwrap());

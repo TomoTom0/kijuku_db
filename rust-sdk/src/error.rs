@@ -74,37 +74,25 @@ mod tests {
     #[test]
     fn test_not_found_error() {
         let error = KijukuError::NotFound("メディアが見つかりません".to_string());
-        assert_eq!(
-            error.to_string(),
-            "Not found: メディアが見つかりません"
-        );
+        assert_eq!(error.to_string(), "Not found: メディアが見つかりません");
     }
 
     #[test]
     fn test_validation_error() {
         let error = KijukuError::Validation("タイトルは必須です".to_string());
-        assert_eq!(
-            error.to_string(),
-            "Validation error: タイトルは必須です"
-        );
+        assert_eq!(error.to_string(), "Validation error: タイトルは必須です");
     }
 
     #[test]
     fn test_parse_error() {
         let error = KijukuError::Parse("無効なJSONフォーマット".to_string());
-        assert_eq!(
-            error.to_string(),
-            "Parse error: 無効なJSONフォーマット"
-        );
+        assert_eq!(error.to_string(), "Parse error: 無効なJSONフォーマット");
     }
 
     #[test]
     fn test_other_error() {
         let error = KijukuError::Other("予期しないエラー".to_string());
-        assert_eq!(
-            error.to_string(),
-            "Error: 予期しないエラー"
-        );
+        assert_eq!(error.to_string(), "Error: 予期しないエラー");
     }
 
     #[test]

@@ -9,8 +9,8 @@
 #![cfg(feature = "d1-integration")]
 
 use kijuku_db::{
-    AttributeValueType, D1Config, D1KijukuDB, KijukuBackend, MediaFilter, MediaHashInput,
-    MediaInput, MediaType, TransferOptions, transfer,
+    transfer, AttributeValueType, D1Config, D1KijukuDB, KijukuBackend, MediaFilter, MediaHashInput,
+    MediaInput, MediaType, TransferOptions,
 };
 use std::env;
 use uuid::Uuid;
@@ -40,7 +40,9 @@ async fn setup() -> D1KijukuDB {
 async fn wipe(db: &D1KijukuDB) {
     db.execute_raw("DELETE FROM media_hashes").await.unwrap();
     db.execute_raw("DELETE FROM media_tags").await.unwrap();
-    db.execute_raw("DELETE FROM media_attributes").await.unwrap();
+    db.execute_raw("DELETE FROM media_attributes")
+        .await
+        .unwrap();
     db.execute_raw("DELETE FROM tags").await.unwrap();
     db.execute_raw("DELETE FROM media").await.unwrap();
 }

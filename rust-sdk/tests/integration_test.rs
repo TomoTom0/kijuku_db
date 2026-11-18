@@ -1,7 +1,10 @@
 // 結合テストは意図的に deprecated 同期 API を検証（後方互換の保証）
 #![allow(deprecated)]
 
-use kijuku_db::{KijukuDB, KijukuBackend, KijukuError, MediaInput, MediaUpdateInput, MediaType, MediaFilter, QueryOptions, SortKey, SortOrder};
+use kijuku_db::{
+    KijukuBackend, KijukuDB, KijukuError, MediaFilter, MediaInput, MediaType, MediaUpdateInput,
+    QueryOptions, SortKey, SortOrder,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
@@ -29,20 +32,24 @@ fn test_full_workflow() {
     assert!(tables.contains(&"tags".to_string()));
 
     // メディア作成
-    let media1 = db.create_media(&MediaInput {
-        title: "テストコミック1".to_string(),
-        media_type: MediaType::Comic,
-        artist: Some("作者A".to_string()),
-        series: Some("人気シリーズ".to_string()),
-        ..Default::default()
-    }).unwrap();
+    let media1 = db
+        .create_media(&MediaInput {
+            title: "テストコミック1".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("作者A".to_string()),
+            series: Some("人気シリーズ".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
 
-    let media2 = db.create_media(&MediaInput {
-        title: "テストコミック2".to_string(),
-        media_type: MediaType::Comic,
-        artist: Some("作者B".to_string()),
-        ..Default::default()
-    }).unwrap();
+    let media2 = db
+        .create_media(&MediaInput {
+            title: "テストコミック2".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("作者B".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
 
     // メディア取得
     let fetched = db.get_media(media1.id).unwrap();
@@ -51,11 +58,15 @@ fn test_full_workflow() {
 
     // メディア更新（部分更新: 指定したフィールドのみ更新）
     // Option<Option<T>>パターン: Some(Some(val))で値を設定
-    db.update_media(media1.id, &MediaUpdateInput {
-        title: Some("更新されたタイトル".to_string()),
-        description: Some(Some("説明追加".to_string())),
-        ..Default::default()
-    }).unwrap();
+    db.update_media(
+        media1.id,
+        &MediaUpdateInput {
+            title: Some("更新されたタイトル".to_string()),
+            description: Some(Some("説明追加".to_string())),
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let updated = db.get_media(media1.id).unwrap();
     assert_eq!(updated.title, "更新されたタイトル");
@@ -98,12 +109,17 @@ fn test_full_workflow() {
 
     // 検索: ソートとページネーション
     let options = QueryOptions {
-        sort_keys: vec![SortKey { field: "title".to_string(), order: SortOrder::Asc }],
+        sort_keys: vec![SortKey {
+            field: "title".to_string(),
+            order: SortOrder::Asc,
+        }],
         limit: Some(1),
         offset: Some(0),
         ..Default::default()
     };
-    let results = db.find_media(&MediaFilter::default(), Some(&options)).unwrap();
+    let results = db
+        .find_media(&MediaFilter::default(), Some(&options))
+        .unwrap();
     assert_eq!(results.len(), 1);
 
     // タグを削除
@@ -140,34 +156,47 @@ fn test_update_nullable_fields() {
     db.migrate().unwrap();
 
     // nullableフィールド付きでメディア作成
-    let media = db.create_media(&MediaInput {
-        title: "Nullable Test".to_string(),
-        media_type: MediaType::Comic,
-        artist: Some("Original Artist".to_string()),
-        series: Some("Original Series".to_string()),
-        description: Some("Original Description".to_string()),
-        ..Default::default()
-    }).unwrap();
+    let media = db
+        .create_media(&MediaInput {
+            title: "Nullable Test".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Original Artist".to_string()),
+            series: Some("Original Series".to_string()),
+            description: Some("Original Description".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
     assert_eq!(media.artist, Some("Original Artist".to_string()));
     assert_eq!(media.series, Some("Original Series".to_string()));
 
     // Case 1: 値の更新 (Some(Some(value)))
-    db.update_media(media.id, &MediaUpdateInput {
-        artist: Some(Some("Updated Artist".to_string())),
-        ..Default::default()
-    }).unwrap();
+    db.update_media(
+        media.id,
+        &MediaUpdateInput {
+            artist: Some(Some("Updated Artist".to_string())),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let updated = db.get_media(media.id).unwrap();
     assert_eq!(updated.artist, Some("Updated Artist".to_string()));
     // 他のフィールドは変更されない
     assert_eq!(updated.series, Some("Original Series".to_string()));
-    assert_eq!(updated.description, Some("Original Description".to_string()));
+    assert_eq!(
+        updated.description,
+        Some("Original Description".to_string())
+    );
 
     // Case 2: NULL設定 (Some(None))
-    db.update_media(media.id, &MediaUpdateInput {
-        artist: Some(None),
-        description: Some(None),
-        ..Default::default()
-    }).unwrap();
+    db.update_media(
+        media.id,
+        &MediaUpdateInput {
+            artist: Some(None),
+            description: Some(None),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let updated = db.get_media(media.id).unwrap();
     assert_eq!(updated.artist, None);
     assert_eq!(updated.description, None);
@@ -175,28 +204,40 @@ fn test_update_nullable_fields() {
     assert_eq!(updated.series, Some("Original Series".to_string()));
 
     // Case 3: 更新なし (None)
-    db.update_media(media.id, &MediaUpdateInput {
-        ..Default::default()
-    }).unwrap();
+    db.update_media(
+        media.id,
+        &MediaUpdateInput {
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let updated = db.get_media(media.id).unwrap();
     assert_eq!(updated.artist, None);
     assert_eq!(updated.series, Some("Original Series".to_string()));
 
     // Case 4: 整数nullableフィールドのNULL設定
-    db.update_media(media.id, &MediaUpdateInput {
-        file_size: Some(Some(1024)),
-        page_count: Some(Some(100)),
-        ..Default::default()
-    }).unwrap();
+    db.update_media(
+        media.id,
+        &MediaUpdateInput {
+            file_size: Some(Some(1024)),
+            page_count: Some(Some(100)),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let updated = db.get_media(media.id).unwrap();
     assert_eq!(updated.file_size, Some(1024));
     assert_eq!(updated.page_count, Some(100));
 
-    db.update_media(media.id, &MediaUpdateInput {
-        file_size: Some(None),
-        page_count: Some(None),
-        ..Default::default()
-    }).unwrap();
+    db.update_media(
+        media.id,
+        &MediaUpdateInput {
+            file_size: Some(None),
+            page_count: Some(None),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let updated = db.get_media(media.id).unwrap();
     assert_eq!(updated.file_size, None);
     assert_eq!(updated.page_count, None);
@@ -208,12 +249,14 @@ fn test_update_media_json_deserialization() {
     let db = KijukuDB::open(temp_file.path()).unwrap();
     db.migrate().unwrap();
 
-    let media = db.create_media(&MediaInput {
-        title: "JSON Deser Test".to_string(),
-        media_type: MediaType::Comic,
-        artist: Some("Original".to_string()),
-        ..Default::default()
-    }).unwrap();
+    let media = db
+        .create_media(&MediaInput {
+            title: "JSON Deser Test".to_string(),
+            media_type: MediaType::Comic,
+            artist: Some("Original".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
 
     // JSONからdeserialization: artist = null → Some(None)
     let json = serde_json::json!({
@@ -264,10 +307,13 @@ fn test_error_handling() {
     assert!(db.get_media(9999).is_none());
 
     // 存在しないメディアの更新
-    let result = db.update_media(9999, &MediaUpdateInput {
-        title: Some("存在しない".to_string()),
-        ..Default::default()
-    });
+    let result = db.update_media(
+        9999,
+        &MediaUpdateInput {
+            title: Some("存在しない".to_string()),
+            ..Default::default()
+        },
+    );
     assert!(result.is_err());
 
     // 存在しないメディアの削除
@@ -347,18 +393,20 @@ fn test_transaction_with_tags() {
     db.migrate().unwrap();
 
     // トランザクション内でメディアとタグを作成し、関連付ける
-    let (media_id, tag_id) = db.transaction(|db| {
-        let media = db.create_media(&MediaInput {
-            title: "タグ付きメディア".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        })?;
+    let (media_id, tag_id) = db
+        .transaction(|db| {
+            let media = db.create_media(&MediaInput {
+                title: "タグ付きメディア".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            })?;
 
-        let tag = db.create_tag("アクション")?;
-        db.add_tag_to_media(media.id, tag.id)?;
+            let tag = db.create_tag("アクション")?;
+            db.add_tag_to_media(media.id, tag.id)?;
 
-        Ok((media.id, tag.id))
-    }).unwrap();
+            Ok((media.id, tag.id))
+        })
+        .unwrap();
 
     // メディアとタグが正しく作成され、関連付けられていることを確認
     let media = db.get_media(media_id).unwrap();
@@ -382,7 +430,8 @@ fn test_close_method() {
         title: "テストメディア".to_string(),
         media_type: MediaType::Comic,
         ..Default::default()
-    }).unwrap();
+    })
+    .unwrap();
 
     // 明示的にクローズ
     db.close();
@@ -544,12 +593,14 @@ fn test_get_media_by_uuid() {
     db.migrate().unwrap();
 
     let manual_uuid = "550e8400-e29b-41d4-a716-446655440000".to_string();
-    let media = db.create_media(&MediaInput {
-        title: "UUID取得テスト".to_string(),
-        media_type: MediaType::Comic,
-        uuid: Some(manual_uuid.clone()),
-        ..Default::default()
-    }).unwrap();
+    let media = db
+        .create_media(&MediaInput {
+            title: "UUID取得テスト".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(manual_uuid.clone()),
+            ..Default::default()
+        })
+        .unwrap();
 
     // UUIDで取得（sync deprecated API）
     let fetched = db.get_media_by_uuid(&manual_uuid).unwrap();
@@ -557,7 +608,9 @@ fn test_get_media_by_uuid() {
     assert_eq!(fetched.uuid, manual_uuid);
 
     // 存在しないUUIDはNone
-    assert!(db.get_media_by_uuid("00000000-0000-0000-0000-000000000000").is_none());
+    assert!(db
+        .get_media_by_uuid("00000000-0000-0000-0000-000000000000")
+        .is_none());
 }
 
 #[tokio::test]
@@ -567,20 +620,30 @@ async fn test_get_media_by_uuid_async() {
     db.migrate().unwrap();
 
     let manual_uuid = "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string();
-    let media = db.create_media(&MediaInput {
-        title: "UUID取得テスト（async）".to_string(),
-        media_type: MediaType::Comic,
-        uuid: Some(manual_uuid.clone()),
-        ..Default::default()
-    }).unwrap();
+    let media = db
+        .create_media(&MediaInput {
+            title: "UUID取得テスト（async）".to_string(),
+            media_type: MediaType::Comic,
+            uuid: Some(manual_uuid.clone()),
+            ..Default::default()
+        })
+        .unwrap();
 
     // UUIDで取得（KijukuBackend async API）
-    let fetched = KijukuBackend::get_media_by_uuid(&db, &manual_uuid).await.unwrap().unwrap();
+    let fetched = KijukuBackend::get_media_by_uuid(&db, &manual_uuid)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(fetched.id, media.id);
     assert_eq!(fetched.uuid, manual_uuid);
 
     // 存在しないUUIDはNone
-    assert!(KijukuBackend::get_media_by_uuid(&db, "00000000-0000-0000-0000-000000000000").await.unwrap().is_none());
+    assert!(
+        KijukuBackend::get_media_by_uuid(&db, "00000000-0000-0000-0000-000000000000")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -597,29 +660,41 @@ async fn test_find_media_by_uuid_filter() {
             media_type: MediaType::Comic,
             uuid: Some(uuid),
             ..Default::default()
-        }).unwrap();
+        })
+        .unwrap();
     }
     db.create_media(&MediaInput {
         title: "自動UUID".to_string(),
         media_type: MediaType::Comic,
         ..Default::default()
-    }).unwrap();
+    })
+    .unwrap();
 
     // uuid完全一致
     let results = KijukuBackend::find_media(
         &db,
-        &MediaFilter { uuid: Some(uuid1.clone()), ..Default::default() },
+        &MediaFilter {
+            uuid: Some(uuid1.clone()),
+            ..Default::default()
+        },
         None,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].uuid, uuid1);
 
     // uuid_in（重複指定を含む）
     let results = KijukuBackend::find_media(
         &db,
-        &MediaFilter { uuid_in: Some(vec![uuid1.clone(), uuid2.clone(), uuid1.clone()]), ..Default::default() },
+        &MediaFilter {
+            uuid_in: Some(vec![uuid1.clone(), uuid2.clone(), uuid1.clone()]),
+            ..Default::default()
+        },
         None,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(results.len(), 2);
 }
 
@@ -641,19 +716,24 @@ async fn test_find_media_by_uuid_in_over_param_limit_async() {
             media_type: MediaType::Comic,
             uuid: Some(uuid.clone()),
             ..Default::default()
-        }).unwrap();
+        })
+        .unwrap();
         uuids.push(uuid);
     }
 
     let results = KijukuBackend::find_media(
         &db,
-        &MediaFilter { uuid_in: Some(uuids.clone()), ..Default::default() },
+        &MediaFilter {
+            uuid_in: Some(uuids.clone()),
+            ..Default::default()
+        },
         None,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     assert_eq!(results.len(), COUNT);
 
-    let got: std::collections::HashSet<&str> =
-        results.iter().map(|m| m.uuid.as_str()).collect();
+    let got: std::collections::HashSet<&str> = results.iter().map(|m| m.uuid.as_str()).collect();
     assert!(got.contains(uuids[0].as_str()));
     assert!(got.contains(uuids[COUNT - 1].as_str()));
 }

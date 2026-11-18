@@ -66,7 +66,16 @@ fn execute_cli_command_full(
 /// CLIサブコマンド（file/trash等）を --media-root 付きで実行し、1行JSONレスポンスを取得する。
 fn execute_cli_subcommand(db_path: &str, media_root: &str, sub_args: &[&str]) -> Value {
     let output = Command::new("cargo")
-        .args(["run", "--bin", "kijuku-cli", "--", "--db", db_path, "--media-root", media_root])
+        .args([
+            "run",
+            "--bin",
+            "kijuku-cli",
+            "--",
+            "--db",
+            db_path,
+            "--media-root",
+            media_root,
+        ])
         .args(sub_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -117,10 +126,13 @@ fn test_cli_get_schema_version() {
     let db_path = db_path.to_str().unwrap();
 
     // まずマイグレーション
-    execute_cli_command(db_path, json!({
-        "operation": "migrate",
-        "params": {}
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "migrate",
+            "params": {}
+        }),
+    );
 
     // スキーマバージョン取得
     let command = json!({
@@ -142,10 +154,13 @@ fn test_cli_get_server_version() {
     let db_path = dir.path().join("test.db");
     let db_path = db_path.to_str().unwrap();
 
-    execute_cli_command(db_path, json!({
-        "operation": "migrate",
-        "params": {}
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "migrate",
+            "params": {}
+        }),
+    );
 
     let response = execute_cli_command(
         db_path,
@@ -168,10 +183,13 @@ fn test_cli_create_media() {
     let db_path = db_path.to_str().unwrap();
 
     // マイグレーション
-    execute_cli_command(db_path, json!({
-        "operation": "migrate",
-        "params": {}
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "migrate",
+            "params": {}
+        }),
+    );
 
     // メディア作成
     let command = json!({
@@ -201,30 +219,39 @@ fn test_cli_get_media() {
     let db_path = db_path.to_str().unwrap();
 
     // マイグレーション
-    execute_cli_command(db_path, json!({
-        "operation": "migrate",
-        "params": {}
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "migrate",
+            "params": {}
+        }),
+    );
 
     // メディア作成
-    let create_response = execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": {
-            "data": {
-                "title": "テストコミック",
-                "media_type": "comic"
+    let create_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": {
+                "data": {
+                    "title": "テストコミック",
+                    "media_type": "comic"
+                }
             }
-        }
-    }));
+        }),
+    );
     let media_id = create_response["data"]["id"].as_i64().unwrap();
 
     // メディア取得
-    let get_response = execute_cli_command(db_path, json!({
-        "operation": "getMedia",
-        "params": {
-            "id": media_id
-        }
-    }));
+    let get_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getMedia",
+            "params": {
+                "id": media_id
+            }
+        }),
+    );
 
     assert_eq!(get_response["success"], true);
     assert_eq!(get_response["data"]["id"], media_id);
@@ -240,43 +267,55 @@ fn test_cli_get_media_by_uuid() {
     let db_path = db_path.to_str().unwrap();
 
     // マイグレーション
-    execute_cli_command(db_path, json!({
-        "operation": "migrate",
-        "params": {}
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "migrate",
+            "params": {}
+        }),
+    );
 
     // UUID手動指定でメディア作成
     let manual_uuid = "550e8400-e29b-41d4-a716-446655440000";
-    execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": {
-            "data": {
-                "title": "UUID取得テスト",
-                "media_type": "comic",
-                "uuid": manual_uuid
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": {
+                "data": {
+                    "title": "UUID取得テスト",
+                    "media_type": "comic",
+                    "uuid": manual_uuid
+                }
             }
-        }
-    }));
+        }),
+    );
 
     // UUIDでメディア取得
-    let get_response = execute_cli_command(db_path, json!({
-        "operation": "getMediaByUuid",
-        "params": {
-            "uuid": manual_uuid
-        }
-    }));
+    let get_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getMediaByUuid",
+            "params": {
+                "uuid": manual_uuid
+            }
+        }),
+    );
 
     assert_eq!(get_response["success"], true);
     assert_eq!(get_response["data"]["uuid"], manual_uuid);
     assert_eq!(get_response["data"]["title"], "UUID取得テスト");
 
     // 存在しないUUIDは data: null
-    let not_found = execute_cli_command(db_path, json!({
-        "operation": "getMediaByUuid",
-        "params": {
-            "uuid": "00000000-0000-0000-0000-000000000000"
-        }
-    }));
+    let not_found = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getMediaByUuid",
+            "params": {
+                "uuid": "00000000-0000-0000-0000-000000000000"
+            }
+        }),
+    );
 
     assert_eq!(not_found["success"], true);
     assert!(not_found["data"].is_null());
@@ -291,42 +330,54 @@ fn test_cli_find_media() {
     let db_path = db_path.to_str().unwrap();
 
     // マイグレーション
-    execute_cli_command(db_path, json!({
-        "operation": "migrate",
-        "params": {}
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "migrate",
+            "params": {}
+        }),
+    );
 
     // メディアを複数作成
-    execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": {
-            "data": {
-                "title": "コミック1",
-                "media_type": "comic"
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": {
+                "data": {
+                    "title": "コミック1",
+                    "media_type": "comic"
+                }
             }
-        }
-    }));
+        }),
+    );
 
-    execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": {
-            "data": {
-                "title": "ビデオ1",
-                "media_type": "video"
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": {
+                "data": {
+                    "title": "ビデオ1",
+                    "media_type": "video"
+                }
             }
-        }
-    }));
+        }),
+    );
 
     // メディア検索（comicのみ）
-    let find_response = execute_cli_command(db_path, json!({
-        "operation": "findMedia",
-        "params": {
-            "filter": {
-                "media_type": "comic"
-            },
-            "options": null
-        }
-    }));
+    let find_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "findMedia",
+            "params": {
+                "filter": {
+                    "media_type": "comic"
+                },
+                "options": null
+            }
+        }),
+    );
 
     assert_eq!(find_response["success"], true);
     assert_eq!(find_response["data"].as_array().unwrap().len(), 1);
@@ -342,29 +393,38 @@ fn test_cli_create_and_get_tag() {
     let db_path = db_path.to_str().unwrap();
 
     // マイグレーション
-    execute_cli_command(db_path, json!({
-        "operation": "migrate",
-        "params": {}
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "migrate",
+            "params": {}
+        }),
+    );
 
     // タグ作成
-    let create_response = execute_cli_command(db_path, json!({
-        "operation": "createTag",
-        "params": {
-            "name": "アクション"
-        }
-    }));
+    let create_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createTag",
+            "params": {
+                "name": "アクション"
+            }
+        }),
+    );
 
     assert_eq!(create_response["success"], true);
     assert_eq!(create_response["data"]["name"], "アクション");
 
     // タグ取得
-    let get_response = execute_cli_command(db_path, json!({
-        "operation": "getTagByName",
-        "params": {
-            "name": "アクション"
-        }
-    }));
+    let get_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getTagByName",
+            "params": {
+                "name": "アクション"
+            }
+        }),
+    );
 
     assert_eq!(get_response["success"], true);
     assert_eq!(get_response["data"]["name"], "アクション");
@@ -379,18 +439,24 @@ fn test_cli_error_handling() {
     let db_path = db_path.to_str().unwrap();
 
     // マイグレーション
-    execute_cli_command(db_path, json!({
-        "operation": "migrate",
-        "params": {}
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "migrate",
+            "params": {}
+        }),
+    );
 
     // 存在しないメディアを取得（null が返る）
-    let response = execute_cli_command(db_path, json!({
-        "operation": "getMedia",
-        "params": {
-            "id": 9999
-        }
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getMedia",
+            "params": {
+                "id": 9999
+            }
+        }),
+    );
 
     assert_eq!(response["success"], true);
     assert!(response["data"].is_null());
@@ -406,10 +472,13 @@ fn test_cli_backup() {
 
     execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
 
-    let response = execute_cli_command(db_path, json!({
-        "operation": "backup",
-        "params": {}
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "backup",
+            "params": {}
+        }),
+    );
 
     assert_eq!(response["success"], true);
     assert!(response["data"]["path"].as_str().is_some());
@@ -425,10 +494,13 @@ fn test_cli_backup_with_label() {
 
     execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
 
-    let response = execute_cli_command(db_path, json!({
-        "operation": "backup",
-        "params": { "label": "テストバックアップ" }
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "backup",
+            "params": { "label": "テストバックアップ" }
+        }),
+    );
 
     assert_eq!(response["success"], true);
     assert!(response["data"]["path"].as_str().is_some());
@@ -445,10 +517,13 @@ fn test_cli_list_backups() {
     execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
     execute_cli_command(db_path, json!({"operation": "backup", "params": {}}));
 
-    let response = execute_cli_command(db_path, json!({
-        "operation": "listBackups",
-        "params": {}
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "listBackups",
+            "params": {}
+        }),
+    );
 
     assert_eq!(response["success"], true);
     let backups = response["data"].as_array().unwrap();
@@ -470,10 +545,13 @@ fn test_cli_diff_backup() {
     execute_cli_command(db_path, json!({"operation": "backup", "params": {}}));
 
     // backup直後は差分なし
-    let response = execute_cli_command(db_path, json!({
-        "operation": "diffBackup",
-        "params": {}
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "diffBackup",
+            "params": {}
+        }),
+    );
     assert_eq!(response["success"], true);
     let media = &response["data"]["summary"]["media"];
     assert_eq!(media["added"], 0);
@@ -496,16 +574,22 @@ fn test_cli_set_backup_label_and_note() {
     let id = list["data"][0]["id"].as_str().unwrap();
 
     // ラベル・メモ付与
-    let r1 = execute_cli_command(db_path, json!({
-        "operation": "setBackupLabel",
-        "params": { "id": id, "label": "重要" }
-    }));
+    let r1 = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "setBackupLabel",
+            "params": { "id": id, "label": "重要" }
+        }),
+    );
     assert_eq!(r1["success"], true);
 
-    let r2 = execute_cli_command(db_path, json!({
-        "operation": "setBackupNote",
-        "params": { "id": id, "note": "作業前の状態" }
-    }));
+    let r2 = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "setBackupNote",
+            "params": { "id": id, "note": "作業前の状態" }
+        }),
+    );
     assert_eq!(r2["success"], true);
 
     // listBackups で label/note/labelSource を確認（サイドカー優先マージ）。
@@ -522,10 +606,13 @@ fn test_cli_set_backup_label_and_note() {
     assert_eq!(entry["labelSource"], "sidecar");
 
     // getBackupMeta で取得
-    let meta = execute_cli_command(db_path, json!({
-        "operation": "getBackupMeta",
-        "params": { "id": id }
-    }));
+    let meta = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getBackupMeta",
+            "params": { "id": id }
+        }),
+    );
     assert_eq!(meta["data"]["label"], "重要");
     assert_eq!(meta["data"]["note"], "作業前の状態");
 }
@@ -541,33 +628,46 @@ fn test_cli_restore() {
     execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
 
     // メディアを作成してからバックアップ
-    let create_response = execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": { "data": { "title": "復元テスト作品", "media_type": "comic" } }
-    }));
+    let create_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": { "data": { "title": "復元テスト作品", "media_type": "comic" } }
+        }),
+    );
     let media_id = create_response["data"]["id"].as_i64().unwrap();
 
     // ラベル付きで手動バックアップを作成
-    execute_cli_command(db_path, json!({
-        "operation": "backup",
-        "params": { "label": "pre-delete" }
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "backup",
+            "params": { "label": "pre-delete" }
+        }),
+    );
 
     // メディアを削除
-    execute_cli_command(db_path, json!({
-        "operation": "deleteMedia",
-        "params": { "id": media_id }
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "deleteMedia",
+            "params": { "id": media_id }
+        }),
+    );
 
     // バックアップ一覧を取得して手動バックアップを探す
-    let list_response = execute_cli_command(db_path, json!({
-        "operation": "listBackups",
-        "params": {}
-    }));
+    let list_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "listBackups",
+            "params": {}
+        }),
+    );
     let backups = list_response["data"].as_array().unwrap();
-    let backup_index = backups.iter().position(|b| {
-        b["label"].as_str() == Some("pre-delete")
-    }).unwrap();
+    let backup_index = backups
+        .iter()
+        .position(|b| b["label"].as_str() == Some("pre-delete"))
+        .unwrap();
 
     // 特定バックアップから復元。restore は (b) 制限操作（設計 §9.2）なので prod 直接経路
     // （--target prod・ProdRwScope + pre-stash gate）で実行。
@@ -624,15 +724,21 @@ fn test_cli_prod_b_restore_dry_run() {
     execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
 
     // media A 作成 → バックアップ（1件時点）→ media B 追加（prod 現状 = 2件）
-    execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": { "data": { "title": "A", "media_type": "comic" } }
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": { "data": { "title": "A", "media_type": "comic" } }
+        }),
+    );
     execute_cli_command(db_path, json!({"operation": "backup", "params": {}}));
-    let second = execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": { "data": { "title": "B", "media_type": "comic" } }
-    }));
+    let second = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": { "data": { "title": "B", "media_type": "comic" } }
+        }),
+    );
     let second_id = second["data"]["id"].as_i64().unwrap();
 
     // prod 直接で restore dryRun（最新バックアップ＝1件時点）→ 差分返却・prod 不変
@@ -650,7 +756,11 @@ fn test_cli_prod_b_restore_dry_run() {
         json!({"operation": "getMedia", "params": {"id": second_id}}),
         &[("KIJUKU_TARGET", "prod")],
     );
-    assert_eq!(after["success"], true, "dryRun 後も prod は変更なしのべき: {:?}", after);
+    assert_eq!(
+        after["success"], true,
+        "dryRun 後も prod は変更なしのべき: {:?}",
+        after
+    );
 
     // (b) restore dryRun が監査ログに記録される（operation=b-restore, result=dryRun・設計 §10）。
     let audit_resp = execute_cli_command_with_env(
@@ -658,7 +768,11 @@ fn test_cli_prod_b_restore_dry_run() {
         json!({"operation": "listAuditLogs", "params": {"operation": "b-restore"}}),
         &[("KIJUKU_TARGET", "prod")],
     );
-    assert_eq!(audit_resp["success"], true, "listAuditLogs: {:?}", audit_resp);
+    assert_eq!(
+        audit_resp["success"], true,
+        "listAuditLogs: {:?}",
+        audit_resp
+    );
     let logs = audit_resp["data"].as_array().expect("audit logs array");
     assert!(
         logs.iter().any(|r| r["result"] == "dryRun"),
@@ -685,9 +799,17 @@ fn test_cli_prod_b_purge_trash_dry_run() {
         json!({"operation": "purgeTrash", "params": {"dryRun": true}}),
         &[("KIJUKU_TARGET", "prod")],
     );
-    assert_eq!(resp["success"], true, "prod 直接 dryRun は成功するべき: {:?}", resp);
+    assert_eq!(
+        resp["success"], true,
+        "prod 直接 dryRun は成功するべき: {:?}",
+        resp
+    );
     // dryRun は削除対象一覧（配列）を返す
-    assert!(resp["data"].is_array(), "dryRun は対象一覧（配列）を返すべき: {:?}", resp);
+    assert!(
+        resp["data"].is_array(),
+        "dryRun は対象一覧（配列）を返すべき: {:?}",
+        resp
+    );
 }
 
 #[test]
@@ -701,15 +823,21 @@ fn test_cli_check_thumbnail_skipped_no_path() {
     execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
 
     // pathなしのメディアを作成
-    execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": { "data": { "title": "pathなし", "media_type": "comic" } }
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": { "data": { "title": "pathなし", "media_type": "comic" } }
+        }),
+    );
 
-    let response = execute_cli_command(db_path, json!({
-        "operation": "checkThumbnail",
-        "params": {}
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "checkThumbnail",
+            "params": {}
+        }),
+    );
 
     assert_eq!(response["success"], true);
     assert_eq!(response["data"]["total"], 1);
@@ -730,22 +858,28 @@ fn test_cli_check_thumbnail_missing() {
     execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
 
     // contentありのpathを持つメディア（thumbnail_pathなし）
-    execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": {
-            "data": {
-                "title": "サムネなし",
-                "media_type": "comic",
-                "path": "/media/onepiece/vol1/content",
-                "uuid": "test-uuid-missing-thumb"
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": {
+                "data": {
+                    "title": "サムネなし",
+                    "media_type": "comic",
+                    "path": "/media/onepiece/vol1/content",
+                    "uuid": "test-uuid-missing-thumb"
+                }
             }
-        }
-    }));
+        }),
+    );
 
-    let response = execute_cli_command(db_path, json!({
-        "operation": "checkThumbnail",
-        "params": {}
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "checkThumbnail",
+            "params": {}
+        }),
+    );
 
     assert_eq!(response["success"], true);
     assert_eq!(response["data"]["total"], 1);
@@ -764,27 +898,36 @@ fn test_cli_check_thumbnail_with_filter() {
     execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
 
     // comicとvideo各1件を作成
-    execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": {
-            "data": {
-                "title": "コミック",
-                "media_type": "comic",
-                "path": "/media/onepiece/content",
-                "uuid": "uuid-comic-filter"
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": {
+                "data": {
+                    "title": "コミック",
+                    "media_type": "comic",
+                    "path": "/media/onepiece/content",
+                    "uuid": "uuid-comic-filter"
+                }
             }
-        }
-    }));
-    execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": { "data": { "title": "ビデオ", "media_type": "video" } }
-    }));
+        }),
+    );
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": { "data": { "title": "ビデオ", "media_type": "video" } }
+        }),
+    );
 
     // comicのみを対象にフィルタ
-    let response = execute_cli_command(db_path, json!({
-        "operation": "checkThumbnail",
-        "params": { "filter": { "media_type": "comic" } }
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "checkThumbnail",
+            "params": { "filter": { "media_type": "comic" } }
+        }),
+    );
 
     assert_eq!(response["success"], true);
     assert_eq!(response["data"]["total"], 1);
@@ -801,22 +944,28 @@ fn test_cli_update_thumbnail_skip_no_content() {
     execute_cli_command(db_path, json!({"operation": "migrate", "params": {}}));
 
     // contentなしのpathを持つメディア
-    execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": {
-            "data": {
-                "title": "contentなし",
-                "media_type": "comic",
-                "path": "/media/onepiece/vol1",
-                "uuid": "test-uuid-no-content-cli"
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": {
+                "data": {
+                    "title": "contentなし",
+                    "media_type": "comic",
+                    "path": "/media/onepiece/vol1",
+                    "uuid": "test-uuid-no-content-cli"
+                }
             }
-        }
-    }));
+        }),
+    );
 
-    let response = execute_cli_command(db_path, json!({
-        "operation": "updateThumbnail",
-        "params": {}
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "updateThumbnail",
+            "params": {}
+        }),
+    );
 
     assert_eq!(response["success"], true);
     assert_eq!(response["data"]["total"], 1);
@@ -840,33 +989,42 @@ fn test_cli_update_thumbnail_dry_run_no_db_update() {
     fs::create_dir(&content_dir).unwrap();
     fs::write(content_dir.join("001.jpg"), b"dummy").unwrap();
 
-    let create_response = execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": {
-            "data": {
-                "title": "dry_runテスト",
-                "media_type": "comic",
-                "path": content_dir.to_str().unwrap(),
-                "uuid": "test-uuid-dryrun-cli",
-                "extension": "jpg"
+    let create_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": {
+                "data": {
+                    "title": "dry_runテスト",
+                    "media_type": "comic",
+                    "path": content_dir.to_str().unwrap(),
+                    "uuid": "test-uuid-dryrun-cli",
+                    "extension": "jpg"
+                }
             }
-        }
-    }));
+        }),
+    );
     let media_id = create_response["data"]["id"].as_i64().unwrap();
 
-    let response = execute_cli_command(db_path, json!({
-        "operation": "updateThumbnail",
-        "params": { "thumbnail_options": { "dry_run": true, "force": false } }
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "updateThumbnail",
+            "params": { "thumbnail_options": { "dry_run": true, "force": false } }
+        }),
+    );
 
     assert_eq!(response["success"], true);
     assert_eq!(response["data"]["generated"], 1);
 
     // DBのthumbnail_pathは更新されていないことを確認
-    let get_response = execute_cli_command(db_path, json!({
-        "operation": "getMedia",
-        "params": { "id": media_id }
-    }));
+    let get_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getMedia",
+            "params": { "id": media_id }
+        }),
+    );
     assert_eq!(get_response["success"], true);
     assert!(get_response["data"]["thumbnail_path"].is_null());
 
@@ -908,18 +1066,21 @@ fn test_cli_update_thumbnail_success_generates_and_updates_db() {
     fs::write(content_dir.join("001.jpg"), b"dummy").unwrap();
 
     let uuid = "test-uuid-success-cli";
-    let create_response = execute_cli_command(db_path, json!({
-        "operation": "createMedia",
-        "params": {
-            "data": {
-                "title": "成功ケース",
-                "media_type": "comic",
-                "path": content_dir.to_str().unwrap(),
-                "uuid": uuid,
-                "extension": "jpg"
+    let create_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": {
+                "data": {
+                    "title": "成功ケース",
+                    "media_type": "comic",
+                    "path": content_dir.to_str().unwrap(),
+                    "uuid": uuid,
+                    "extension": "jpg"
+                }
             }
-        }
-    }));
+        }),
+    );
     let media_id = create_response["data"]["id"].as_i64().unwrap();
 
     let response = execute_cli_command_with_env(
@@ -936,10 +1097,13 @@ fn test_cli_update_thumbnail_success_generates_and_updates_db() {
     assert_eq!(response["data"]["errors"], 0);
 
     // DBにthumbnail_pathが保存されている
-    let get_response = execute_cli_command(db_path, json!({
-        "operation": "getMedia",
-        "params": { "id": media_id }
-    }));
+    let get_response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getMedia",
+            "params": { "id": media_id }
+        }),
+    );
     assert_eq!(get_response["success"], true);
     assert!(get_response["data"]["thumbnail_path"].as_str().is_some());
 
@@ -956,27 +1120,33 @@ fn test_cli_bulk_create() {
     let db_path = db_path.to_str().unwrap();
 
     // マイグレーション
-    execute_cli_command(db_path, json!({
-        "operation": "migrate",
-        "params": {}
-    }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "migrate",
+            "params": {}
+        }),
+    );
 
     // 一括作成
-    let response = execute_cli_command(db_path, json!({
-        "operation": "bulkCreateMedia",
-        "params": {
-            "data_list": [
-                {
-                    "title": "バルク1",
-                    "media_type": "comic"
-                },
-                {
-                    "title": "バルク2",
-                    "media_type": "video"
-                }
-            ]
-        }
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "bulkCreateMedia",
+            "params": {
+                "data_list": [
+                    {
+                        "title": "バルク1",
+                        "media_type": "comic"
+                    },
+                    {
+                        "title": "バルク2",
+                        "media_type": "video"
+                    }
+                ]
+            }
+        }),
+    );
 
     assert_eq!(response["success"], true);
     assert_eq!(response["data"].as_array().unwrap().len(), 2);
@@ -992,17 +1162,29 @@ fn test_cli_get_distinct_values_single_field() {
 
     execute_cli_command(db_path, json!({ "operation": "migrate", "params": {} }));
 
-    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "作品1", "media_type": "comic", "artist": "Author1" } } }));
-    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "作品2", "media_type": "comic", "artist": "Author2" } } }));
-    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "作品3", "media_type": "video", "artist": "Author1" } } }));
+    execute_cli_command(
+        db_path,
+        json!({ "operation": "createMedia", "params": { "data": { "title": "作品1", "media_type": "comic", "artist": "Author1" } } }),
+    );
+    execute_cli_command(
+        db_path,
+        json!({ "operation": "createMedia", "params": { "data": { "title": "作品2", "media_type": "comic", "artist": "Author2" } } }),
+    );
+    execute_cli_command(
+        db_path,
+        json!({ "operation": "createMedia", "params": { "data": { "title": "作品3", "media_type": "video", "artist": "Author1" } } }),
+    );
 
-    let response = execute_cli_command(db_path, json!({
-        "operation": "getDistinctValues",
-        "params": {
-            "fields": ["artist"],
-            "filter": {}
-        }
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getDistinctValues",
+            "params": {
+                "fields": ["artist"],
+                "filter": {}
+            }
+        }),
+    );
 
     assert_eq!(response["success"], true);
     let rows = response["data"].as_array().unwrap();
@@ -1021,17 +1203,29 @@ fn test_cli_get_distinct_values_with_filter() {
 
     execute_cli_command(db_path, json!({ "operation": "migrate", "params": {} }));
 
-    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "コミック1", "media_type": "comic", "artist": "AuthorA" } } }));
-    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "コミック2", "media_type": "comic", "artist": "AuthorB" } } }));
-    execute_cli_command(db_path, json!({ "operation": "createMedia", "params": { "data": { "title": "動画1", "media_type": "video", "artist": "AuthorC" } } }));
+    execute_cli_command(
+        db_path,
+        json!({ "operation": "createMedia", "params": { "data": { "title": "コミック1", "media_type": "comic", "artist": "AuthorA" } } }),
+    );
+    execute_cli_command(
+        db_path,
+        json!({ "operation": "createMedia", "params": { "data": { "title": "コミック2", "media_type": "comic", "artist": "AuthorB" } } }),
+    );
+    execute_cli_command(
+        db_path,
+        json!({ "operation": "createMedia", "params": { "data": { "title": "動画1", "media_type": "video", "artist": "AuthorC" } } }),
+    );
 
-    let response = execute_cli_command(db_path, json!({
-        "operation": "getDistinctValues",
-        "params": {
-            "fields": ["artist"],
-            "filter": { "media_type": "comic" }
-        }
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getDistinctValues",
+            "params": {
+                "fields": ["artist"],
+                "filter": { "media_type": "comic" }
+            }
+        }),
+    );
 
     assert_eq!(response["success"], true);
     let rows = response["data"].as_array().unwrap();
@@ -1052,13 +1246,16 @@ fn test_cli_get_distinct_values_invalid_field() {
 
     execute_cli_command(db_path, json!({ "operation": "migrate", "params": {} }));
 
-    let response = execute_cli_command(db_path, json!({
-        "operation": "getDistinctValues",
-        "params": {
-            "fields": ["id"],
-            "filter": {}
-        }
-    }));
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "getDistinctValues",
+            "params": {
+                "fields": ["id"],
+                "filter": {}
+            }
+        }),
+    );
 
     assert_eq!(response["success"], false);
 }
@@ -1106,7 +1303,11 @@ fn test_cli_file_cp_dry_run_and_apply() {
     assert!(!media_dir.path().join("b.txt").exists());
 
     // --apply: applied=true・ファイル作成
-    let resp = execute_cli_subcommand(db_path, media_root, &["file", "cp", "a.txt", "b.txt", "--apply"]);
+    let resp = execute_cli_subcommand(
+        db_path,
+        media_root,
+        &["file", "cp", "a.txt", "b.txt", "--apply"],
+    );
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["applied"], true);
     let copied = std::fs::read_to_string(media_dir.path().join("b.txt")).unwrap();
@@ -1125,10 +1326,19 @@ fn test_cli_file_rejects_traversal() {
     std::fs::write(media_dir.path().join("a.txt"), "hello").unwrap();
 
     // パストラバーサル: dst に ../ を含めると拒否
-    let resp = execute_cli_subcommand(db_path, media_root, &["file", "cp", "a.txt", "../escape.txt"]);
+    let resp = execute_cli_subcommand(
+        db_path,
+        media_root,
+        &["file", "cp", "a.txt", "../escape.txt"],
+    );
     assert_eq!(resp["success"], false);
     assert!(resp["error"].as_str().unwrap().contains("media_cpエラー"));
-    assert!(!media_dir.path().parent().unwrap().join("escape.txt").exists());
+    assert!(!media_dir
+        .path()
+        .parent()
+        .unwrap()
+        .join("escape.txt")
+        .exists());
 }
 
 #[test]
@@ -1143,7 +1353,11 @@ fn test_cli_trash_roundtrip() {
     std::fs::write(media_dir.path().join("target.txt"), "data").unwrap();
 
     // trash へ移動（論理削除）
-    let resp = execute_cli_subcommand(db_path, media_root, &["trash", "move", "target.txt", "--reason", "cleanup"]);
+    let resp = execute_cli_subcommand(
+        db_path,
+        media_root,
+        &["trash", "move", "target.txt", "--reason", "cleanup"],
+    );
     assert_eq!(resp["success"], true);
     let id = resp["data"].as_str().unwrap().to_string();
     assert!(!media_dir.path().join("target.txt").exists());
@@ -1174,36 +1388,48 @@ fn test_cli_sync_replicates_prod_to_stg() {
 
     // CLI 経由で prod を構築（migrate + データ）
     execute_cli_command(prod_path, json!({"operation": "migrate", "params": {}}));
-    execute_cli_command(prod_path, json!({
-        "operation": "createMedia",
-        "params": { "data": { "title": "prod作品", "media_type": "comic" } }
-    }));
+    execute_cli_command(
+        prod_path,
+        json!({
+            "operation": "createMedia",
+            "params": { "data": { "title": "prod作品", "media_type": "comic" } }
+        }),
+    );
     assert!(!stg.exists(), "sync 前は stg が存在しない");
 
     // sync 操作（stdin）: prod → stg を明示
-    let resp = execute_cli_command(prod_path, json!({
-        "operation": "sync",
-        "params": { "from": prod_path, "to": stg.to_str().unwrap() }
-    }));
+    let resp = execute_cli_command(
+        prod_path,
+        json!({
+            "operation": "sync",
+            "params": { "from": prod_path, "to": stg.to_str().unwrap() }
+        }),
+    );
     assert_eq!(resp["success"], true, "sync 成功: {:?}", resp);
     assert_eq!(resp["data"]["prodPath"], prod_path);
     assert_eq!(resp["data"]["stgPath"], stg.to_str().unwrap());
 
     // stg を開いて prod のデータ・スキーマが複製されているか
     assert!(stg.exists(), "sync 後は stg が存在する");
-    let find = execute_cli_command(stg.to_str().unwrap(), json!({
-        "operation": "findMedia",
-        "params": { "filter": {}, "options": null }
-    }));
+    let find = execute_cli_command(
+        stg.to_str().unwrap(),
+        json!({
+            "operation": "findMedia",
+            "params": { "filter": {}, "options": null }
+        }),
+    );
     assert_eq!(find["success"], true);
     let arr = find["data"].as_array().unwrap();
     assert_eq!(arr.len(), 1, "prod のメディアが1件複製される");
     assert_eq!(arr[0]["title"], "prod作品");
 
-    let ver = execute_cli_command(stg.to_str().unwrap(), json!({
-        "operation": "getSchemaVersion",
-        "params": {}
-    }));
+    let ver = execute_cli_command(
+        stg.to_str().unwrap(),
+        json!({
+            "operation": "getSchemaVersion",
+            "params": {}
+        }),
+    );
     assert_eq!(ver["data"]["version"], 6, "スキーマバージョンも一致する");
 }
 
@@ -1216,10 +1442,13 @@ fn test_cli_sync_rejects_same_path() {
     // DB を実在させる（migrate のみ）
     execute_cli_command(same_path, json!({"operation": "migrate", "params": {}}));
 
-    let resp = execute_cli_command(same_path, json!({
-        "operation": "sync",
-        "params": { "from": same_path, "to": same_path }
-    }));
+    let resp = execute_cli_command(
+        same_path,
+        json!({
+            "operation": "sync",
+            "params": { "from": same_path, "to": same_path }
+        }),
+    );
     assert_eq!(resp["success"], false);
     assert!(
         resp["error"].as_str().unwrap().contains("same path"),
@@ -1241,23 +1470,32 @@ fn test_cli_diff_prod_stg() {
 
     // prod 構築 + データ1件
     execute_cli_command(prod_path, json!({"operation": "migrate", "params": {}}));
-    execute_cli_command(prod_path, json!({
-        "operation": "createMedia",
-        "params": { "data": { "title": "prod作品", "media_type": "comic" } }
-    }));
+    execute_cli_command(
+        prod_path,
+        json!({
+            "operation": "createMedia",
+            "params": { "data": { "title": "prod作品", "media_type": "comic" } }
+        }),
+    );
 
     // sync prod → stg
-    let sync = execute_cli_command(prod_path, json!({
-        "operation": "sync",
-        "params": { "from": prod_path, "to": stg_path }
-    }));
+    let sync = execute_cli_command(
+        prod_path,
+        json!({
+            "operation": "sync",
+            "params": { "from": prod_path, "to": stg_path }
+        }),
+    );
     assert_eq!(sync["success"], true, "sync 成功: {:?}", sync);
 
     // sync 直後は差分なし（self=stg, prod を別途指定）
-    let zero = execute_cli_command(stg_path, json!({
-        "operation": "diffProdStg",
-        "params": { "prodDbPath": prod_path }
-    }));
+    let zero = execute_cli_command(
+        stg_path,
+        json!({
+            "operation": "diffProdStg",
+            "params": { "prodDbPath": prod_path }
+        }),
+    );
     assert_eq!(zero["success"], true, "diffProdStg（ゼロ差分）: {:?}", zero);
     let zm = &zero["data"]["summary"]["media"];
     assert_eq!(zm["added"], 0);
@@ -1265,15 +1503,21 @@ fn test_cli_diff_prod_stg() {
     assert_eq!(zm["changed"], 0);
 
     // stg で新規追加（promote 対象の added）
-    execute_cli_command(stg_path, json!({
-        "operation": "createMedia",
-        "params": { "data": { "title": "stg新規", "media_type": "comic" } }
-    }));
+    execute_cli_command(
+        stg_path,
+        json!({
+            "operation": "createMedia",
+            "params": { "data": { "title": "stg新規", "media_type": "comic" } }
+        }),
+    );
 
-    let resp = execute_cli_command(stg_path, json!({
-        "operation": "diffProdStg",
-        "params": { "prodDbPath": prod_path }
-    }));
+    let resp = execute_cli_command(
+        stg_path,
+        json!({
+            "operation": "diffProdStg",
+            "params": { "prodDbPath": prod_path }
+        }),
+    );
     assert_eq!(resp["success"], true, "diffProdStg 成功: {:?}", resp);
     let media = &resp["data"]["summary"]["media"];
     assert_eq!(media["added"], 1, "stg 新規1件が added として検出される");
@@ -1292,17 +1536,33 @@ fn test_cli_promote_gate_pass() {
 
     // prod 構築 + 1件 → sync prod→stg → stg に新規追加
     execute_cli_command(prod_path, json!({"operation": "migrate", "params": {}}));
-    execute_cli_command(prod_path, json!({"operation": "createMedia", "params": {"data": {"title": "prod", "media_type": "comic"}}}));
-    execute_cli_command(prod_path, json!({"operation": "sync", "params": {"from": prod_path, "to": stg_path}}));
-    execute_cli_command(stg_path, json!({"operation": "createMedia", "params": {"data": {"title": "stg新規", "media_type": "comic"}}}));
+    execute_cli_command(
+        prod_path,
+        json!({"operation": "createMedia", "params": {"data": {"title": "prod", "media_type": "comic"}}}),
+    );
+    execute_cli_command(
+        prod_path,
+        json!({"operation": "sync", "params": {"from": prod_path, "to": stg_path}}),
+    );
+    execute_cli_command(
+        stg_path,
+        json!({"operation": "createMedia", "params": {"data": {"title": "stg新規", "media_type": "comic"}}}),
+    );
 
     // promote stg→prod
-    let resp = execute_cli_command(stg_path, json!({
-        "operation": "promote",
-        "params": {"prodDbPath": prod_path}
-    }));
+    let resp = execute_cli_command(
+        stg_path,
+        json!({
+            "operation": "promote",
+            "params": {"prodDbPath": prod_path}
+        }),
+    );
     assert_eq!(resp["success"], true, "promote 成功: {:?}", resp);
-    assert_eq!(resp["data"]["observe"]["passed"], true, "gate passed: {:?}", resp);
+    assert_eq!(
+        resp["data"]["observe"]["passed"], true,
+        "gate passed: {:?}",
+        resp
+    );
     assert!(
         resp["data"]["preStashPath"].as_str().is_some(),
         "preStashPath 存在: {:?}",
@@ -1310,10 +1570,13 @@ fn test_cli_promote_gate_pass() {
     );
 
     // promote 後、prod と stg は同一（差分ゼロ）。
-    let diff = execute_cli_command(stg_path, json!({
-        "operation": "diffProdStg",
-        "params": {"prodDbPath": prod_path}
-    }));
+    let diff = execute_cli_command(
+        stg_path,
+        json!({
+            "operation": "diffProdStg",
+            "params": {"prodDbPath": prod_path}
+        }),
+    );
     let media = &diff["data"]["summary"]["media"];
     assert_eq!(media["added"], 0, "promote 後 added=0: {:?}", diff);
     assert_eq!(media["removed"], 0);
@@ -1334,20 +1597,36 @@ fn test_cli_promote_with_backup_opts() {
     let custom_backup_str = custom_backup_dir.to_str().unwrap();
 
     execute_cli_command(prod_path, json!({"operation": "migrate", "params": {}}));
-    execute_cli_command(prod_path, json!({"operation": "createMedia", "params": {"data": {"title": "prod", "media_type": "comic"}}}));
-    execute_cli_command(prod_path, json!({"operation": "sync", "params": {"from": prod_path, "to": stg_path}}));
-    execute_cli_command(stg_path, json!({"operation": "createMedia", "params": {"data": {"title": "stg新規", "media_type": "comic"}}}));
+    execute_cli_command(
+        prod_path,
+        json!({"operation": "createMedia", "params": {"data": {"title": "prod", "media_type": "comic"}}}),
+    );
+    execute_cli_command(
+        prod_path,
+        json!({"operation": "sync", "params": {"from": prod_path, "to": stg_path}}),
+    );
+    execute_cli_command(
+        stg_path,
+        json!({"operation": "createMedia", "params": {"data": {"title": "stg新規", "media_type": "comic"}}}),
+    );
 
     // promote with backupOpts（camelCase wire）。pre-stash 先を custom-backup/ に指定。
-    let resp = execute_cli_command(stg_path, json!({
-        "operation": "promote",
-        "params": {
-            "prodDbPath": prod_path,
-            "backupOpts": { "backupDir": custom_backup_str, "enabled": false }
-        }
-    }));
+    let resp = execute_cli_command(
+        stg_path,
+        json!({
+            "operation": "promote",
+            "params": {
+                "prodDbPath": prod_path,
+                "backupOpts": { "backupDir": custom_backup_str, "enabled": false }
+            }
+        }),
+    );
     assert_eq!(resp["success"], true, "promote 成功: {:?}", resp);
-    assert_eq!(resp["data"]["observe"]["passed"], true, "gate passed: {:?}", resp);
+    assert_eq!(
+        resp["data"]["observe"]["passed"], true,
+        "gate passed: {:?}",
+        resp
+    );
 
     // pre-stash は backupOpts.backupDir 配下に作られる（serde rename_all=camelCase で復号できた証拠）。
     let pre_stash = resp["data"]["preStashPath"]
@@ -1370,32 +1649,54 @@ fn test_cli_promote_gate_fail() {
     let stg_path = stg.to_str().unwrap();
 
     execute_cli_command(prod_path, json!({"operation": "migrate", "params": {}}));
-    execute_cli_command(prod_path, json!({"operation": "createMedia", "params": {"data": {"title": "prod", "media_type": "comic"}}}));
-    execute_cli_command(prod_path, json!({"operation": "sync", "params": {"from": prod_path, "to": stg_path}}));
-    execute_cli_command(stg_path, json!({"operation": "createMedia", "params": {"data": {"title": "stg新規", "media_type": "comic"}}}));
+    execute_cli_command(
+        prod_path,
+        json!({"operation": "createMedia", "params": {"data": {"title": "prod", "media_type": "comic"}}}),
+    );
+    execute_cli_command(
+        prod_path,
+        json!({"operation": "sync", "params": {"from": prod_path, "to": stg_path}}),
+    );
+    execute_cli_command(
+        stg_path,
+        json!({"operation": "createMedia", "params": {"data": {"title": "stg新規", "media_type": "comic"}}}),
+    );
 
     // gate 不合格（maxAdded=0 で stg の新規1件を拒否）
-    let resp = execute_cli_command(stg_path, json!({
-        "operation": "promote",
-        "params": {
-            "prodDbPath": prod_path,
-            "options": {"gateConfig": {"maxAdded": 0, "maxRemoved": 0, "maxChanged": 0}}
-        }
-    }));
+    let resp = execute_cli_command(
+        stg_path,
+        json!({
+            "operation": "promote",
+            "params": {
+                "prodDbPath": prod_path,
+                "options": {"gateConfig": {"maxAdded": 0, "maxRemoved": 0, "maxChanged": 0}}
+            }
+        }),
+    );
     assert_eq!(resp["success"], false, "promote gate 不合格: {:?}", resp);
     assert!(
-        resp["error"].as_str().unwrap_or("").contains("Promote gate failed"),
+        resp["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Promote gate failed"),
         "error 文字列: {:?}",
         resp["error"]
     );
 
     // prod は未更新（stg との差分 added=1 のまま）
-    let diff = execute_cli_command(stg_path, json!({
-        "operation": "diffProdStg",
-        "params": {"prodDbPath": prod_path}
-    }));
+    let diff = execute_cli_command(
+        stg_path,
+        json!({
+            "operation": "diffProdStg",
+            "params": {"prodDbPath": prod_path}
+        }),
+    );
     let media = &diff["data"]["summary"]["media"];
-    assert_eq!(media["added"], 1, "prod 未更新で added=1 のまま: {:?}", diff);
+    assert_eq!(
+        media["added"], 1,
+        "prod 未更新で added=1 のまま: {:?}",
+        diff
+    );
 }
 
 /// `sync-db` サブコマンドが prod→stg のフル複製を行う（設計 §4.2・TASK-50 C4）。
@@ -1408,10 +1709,13 @@ fn test_cli_sync_db_subcommand_replicates() {
 
     // CLI 経由で prod を構築
     execute_cli_command(prod_path, json!({"operation": "migrate", "params": {}}));
-    execute_cli_command(prod_path, json!({
-        "operation": "createMedia",
-        "params": { "data": { "title": "prod作品", "media_type": "comic" } }
-    }));
+    execute_cli_command(
+        prod_path,
+        json!({
+            "operation": "createMedia",
+            "params": { "data": { "title": "prod作品", "media_type": "comic" } }
+        }),
+    );
 
     let out = execute_cli_db_subcommand(&[
         "sync-db",
@@ -1424,10 +1728,13 @@ fn test_cli_sync_db_subcommand_replicates() {
     assert!(stg.exists(), "sync 後は stg が存在する");
 
     // stg の内容確認
-    let find = execute_cli_command(stg.to_str().unwrap(), json!({
-        "operation": "findMedia",
-        "params": { "filter": {}, "options": null }
-    }));
+    let find = execute_cli_command(
+        stg.to_str().unwrap(),
+        json!({
+            "operation": "findMedia",
+            "params": { "filter": {}, "options": null }
+        }),
+    );
     assert_eq!(find["data"].as_array().unwrap().len(), 1);
     assert_eq!(find["data"][0]["title"], "prod作品");
 }
@@ -1475,7 +1782,11 @@ fn test_cli_readonly_allows_read_operation() {
         json!({"operation": "getSchemaVersion", "params": {}}),
         &[("KIJUKU_TARGET", "prod")],
     );
-    assert_eq!(resp["success"], true, "読込操作は許可されるべき: {:?}", resp);
+    assert_eq!(
+        resp["success"], true,
+        "読込操作は許可されるべき: {:?}",
+        resp
+    );
 }
 
 /// KIJUKU_READ_SOURCE=prod で prod RO 読込専用セッション（方式A・TASK-52）。
@@ -1532,11 +1843,7 @@ fn test_cli_import_tsv_basic() {
     )
     .unwrap();
 
-    let resp = execute_cli_subcommand(
-        db_path,
-        media_root,
-        &["import", tsv_path.to_str().unwrap()],
-    );
+    let resp = execute_cli_subcommand(db_path, media_root, &["import", tsv_path.to_str().unwrap()]);
     assert_eq!(resp["success"], true, "import 成功のべき: {:?}", resp);
     assert_eq!(resp["data"]["imported"], 2);
     assert_eq!(resp["data"]["tags"], 0);
@@ -1610,11 +1917,7 @@ fn test_cli_import_with_tags() {
     )
     .unwrap();
 
-    let resp = execute_cli_subcommand(
-        db_path,
-        media_root,
-        &["import", tsv_path.to_str().unwrap()],
-    );
+    let resp = execute_cli_subcommand(db_path, media_root, &["import", tsv_path.to_str().unwrap()]);
     assert_eq!(resp["success"], true, "{:?}", resp);
     assert_eq!(resp["data"]["tags"], 2);
 
@@ -1701,11 +2004,7 @@ fn test_cli_import_invalid_media_type() {
     let tsv_path = dir.path().join("bad.tsv");
     fs::write(&tsv_path, "title\tmedia_type\nX\tunknown\n").unwrap();
 
-    let resp = execute_cli_subcommand(
-        db_path,
-        media_root,
-        &["import", tsv_path.to_str().unwrap()],
-    );
+    let resp = execute_cli_subcommand(db_path, media_root, &["import", tsv_path.to_str().unwrap()]);
     assert_eq!(resp["success"], false);
     assert!(resp["error"].as_str().unwrap().contains("media_type"));
 }
@@ -1720,13 +2019,12 @@ fn test_cli_import_missing_file() {
     let media_root = media_dir.path().to_str().unwrap();
 
     let missing = dir.path().join("no_such_file.tsv");
-    let resp = execute_cli_subcommand(
-        db_path,
-        media_root,
-        &["import", missing.to_str().unwrap()],
-    );
+    let resp = execute_cli_subcommand(db_path, media_root, &["import", missing.to_str().unwrap()]);
     assert_eq!(resp["success"], false);
-    assert!(resp["error"].as_str().unwrap().contains("ファイルが見つかりません"));
+    assert!(resp["error"]
+        .as_str()
+        .unwrap()
+        .contains("ファイルが見つかりません"));
 }
 
 /// prod（readonly）では import 拒否。
@@ -1744,12 +2042,7 @@ fn test_cli_import_prod_readonly_rejected() {
     let resp = execute_cli_subcommand(
         db_path,
         media_root,
-        &[
-            "--target",
-            "prod",
-            "import",
-            tsv_path.to_str().unwrap(),
-        ],
+        &["--target", "prod", "import", tsv_path.to_str().unwrap()],
     );
     assert_eq!(resp["success"], false);
     assert!(resp["error"].as_str().unwrap().contains("readonly"));

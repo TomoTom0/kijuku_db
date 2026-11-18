@@ -94,7 +94,12 @@ fn build_filter_conditions(filter: &MediaFilter) -> FilterConditions {
         where_clauses.push("m.language = ?".to_string());
         params.push(Box::new(language.clone()));
     }
-    add_like_filter(&mut where_clauses, &mut params, "magazine", &filter.magazine);
+    add_like_filter(
+        &mut where_clauses,
+        &mut params,
+        "magazine",
+        &filter.magazine,
+    );
     if let Some(ref magazine_id) = filter.magazine_id {
         where_clauses.push("m.magazine_id = ?".to_string());
         params.push(Box::new(magazine_id.clone()));
@@ -123,9 +128,24 @@ fn build_filter_conditions(filter: &MediaFilter) -> FilterConditions {
             params.push(Box::new(to_json_each_param(&unique_uuids)));
         }
     }
-    add_like_filter(&mut where_clauses, &mut params, "volume_title", &filter.volume_title);
-    add_like_filter(&mut where_clauses, &mut params, "title_en", &filter.title_en);
-    add_like_filter(&mut where_clauses, &mut params, "artist_en", &filter.artist_en);
+    add_like_filter(
+        &mut where_clauses,
+        &mut params,
+        "volume_title",
+        &filter.volume_title,
+    );
+    add_like_filter(
+        &mut where_clauses,
+        &mut params,
+        "title_en",
+        &filter.title_en,
+    );
+    add_like_filter(
+        &mut where_clauses,
+        &mut params,
+        "artist_en",
+        &filter.artist_en,
+    );
 
     // id_inフィルタの処理（json_each で1つのパラメータにまとめる）
     if let Some(ref ids) = filter.id_in {
@@ -211,16 +231,14 @@ pub fn find_media(
     };
 
     // GROUP BY句（タグフィルタ使用時に重複を排除）
-    let group_by_clause = if needs_tag_join {
-        "GROUP BY m.id"
-    } else {
-        ""
-    };
+    let group_by_clause = if needs_tag_join { "GROUP BY m.id" } else { "" };
 
     // ORDER BY句の構築
     let order_by_clause = if let Some(opts) = options {
         if !opts.sort_keys.is_empty() {
-            let parts: Vec<String> = opts.sort_keys.iter()
+            let parts: Vec<String> = opts
+                .sort_keys
+                .iter()
                 .map(|sk| format!("m.{} {}", sk.field, sk.order.as_str()))
                 .collect();
             format!("ORDER BY {}", parts.join(", "))
@@ -275,7 +293,9 @@ pub fn get_distinct_values(
     filter: &MediaFilter,
 ) -> Result<Vec<Vec<Option<String>>>> {
     if fields.is_empty() {
-        return Err(KijukuError::Validation("fieldsは1つ以上指定してください".to_string()));
+        return Err(KijukuError::Validation(
+            "fieldsは1つ以上指定してください".to_string(),
+        ));
     }
     for field in fields {
         if !ALLOWED_DISTINCT_FIELDS.contains(field) {
@@ -416,7 +436,12 @@ fn build_filter_conditions_sql(filter: &MediaFilter) -> FilterConditionsSql {
         where_clauses.push("m.language = ?".to_string());
         params.push(SqlParam::Text(language.clone()));
     }
-    add_like_filter_sql(&mut where_clauses, &mut params, "magazine", &filter.magazine);
+    add_like_filter_sql(
+        &mut where_clauses,
+        &mut params,
+        "magazine",
+        &filter.magazine,
+    );
     if let Some(ref magazine_id) = filter.magazine_id {
         where_clauses.push("m.magazine_id = ?".to_string());
         params.push(SqlParam::Text(magazine_id.clone()));
@@ -440,9 +465,24 @@ fn build_filter_conditions_sql(filter: &MediaFilter) -> FilterConditionsSql {
             params.push(SqlParam::Text(to_json_each_param(uuids)));
         }
     }
-    add_like_filter_sql(&mut where_clauses, &mut params, "volume_title", &filter.volume_title);
-    add_like_filter_sql(&mut where_clauses, &mut params, "title_en", &filter.title_en);
-    add_like_filter_sql(&mut where_clauses, &mut params, "artist_en", &filter.artist_en);
+    add_like_filter_sql(
+        &mut where_clauses,
+        &mut params,
+        "volume_title",
+        &filter.volume_title,
+    );
+    add_like_filter_sql(
+        &mut where_clauses,
+        &mut params,
+        "title_en",
+        &filter.title_en,
+    );
+    add_like_filter_sql(
+        &mut where_clauses,
+        &mut params,
+        "artist_en",
+        &filter.artist_en,
+    );
 
     // id_in（json_each で1つのパラメータにまとめる）
     if let Some(ref ids) = filter.id_in {
@@ -662,17 +702,25 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "コミック".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "コミック".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "動画".to_string(),
-            media_type: MediaType::Video,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "動画".to_string(),
+                media_type: MediaType::Video,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let filter = MediaFilter {
             media_type: Some(MediaType::Comic),
@@ -690,11 +738,15 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         for i in 1..=10 {
-            create_media(&conn, &MediaInput {
-                title: format!("メディア{}", i),
-                media_type: MediaType::Comic,
-                ..Default::default()
-            }).unwrap();
+            create_media(
+                &conn,
+                &MediaInput {
+                    title: format!("メディア{}", i),
+                    media_type: MediaType::Comic,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
 
         let filter = MediaFilter::default();
@@ -713,18 +765,26 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "冒険コミック".to_string(),
-            media_type: MediaType::Comic,
-            volume_title: Some("序章".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "別作品".to_string(),
-            media_type: MediaType::Comic,
-            volume_title: Some("最終章".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "冒険コミック".to_string(),
+                media_type: MediaType::Comic,
+                volume_title: Some("序章".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "別作品".to_string(),
+                media_type: MediaType::Comic,
+                volume_title: Some("最終章".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let filter = MediaFilter {
             volume_title: Some("序".to_string()),
@@ -740,18 +800,26 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "作品A".to_string(),
-            media_type: MediaType::Comic,
-            title_en: Some("Adventure Story".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品B".to_string(),
-            media_type: MediaType::Comic,
-            title_en: Some("Mystery Novel".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品A".to_string(),
+                media_type: MediaType::Comic,
+                title_en: Some("Adventure Story".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品B".to_string(),
+                media_type: MediaType::Comic,
+                title_en: Some("Mystery Novel".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let filter = MediaFilter {
             title_en: Some("venture".to_string()),
@@ -767,18 +835,26 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "作品A".to_string(),
-            media_type: MediaType::Comic,
-            artist_en: Some("John Smith".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品B".to_string(),
-            media_type: MediaType::Comic,
-            artist_en: Some("Jane Doe".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品A".to_string(),
+                media_type: MediaType::Comic,
+                artist_en: Some("John Smith".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品B".to_string(),
+                media_type: MediaType::Comic,
+                artist_en: Some("Jane Doe".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let filter = MediaFilter {
             artist_en: Some("Smith".to_string()),
@@ -794,27 +870,42 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "C".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "C".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "A".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "A".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "B".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "B".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let filter = MediaFilter::default();
         let options = QueryOptions {
-            sort_keys: vec![SortKey { field: "title".to_string(), order: SortOrder::Asc }],
+            sort_keys: vec![SortKey {
+                field: "title".to_string(),
+                order: SortOrder::Asc,
+            }],
             ..Default::default()
         };
 
@@ -830,17 +921,25 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         let target_uuid = "550e8400-e29b-41d4-a716-446655440000".to_string();
-        create_media(&conn, &MediaInput {
-            title: "対象".to_string(),
-            media_type: MediaType::Comic,
-            uuid: Some(target_uuid.clone()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "その他".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "対象".to_string(),
+                media_type: MediaType::Comic,
+                uuid: Some(target_uuid.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "その他".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // UUID完全一致で1件のみ取得
         let filter = MediaFilter {
@@ -867,23 +966,35 @@ mod tests {
 
         let uuid1 = "550e8400-e29b-41d4-a716-446655440000".to_string();
         let uuid2 = "6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string();
-        create_media(&conn, &MediaInput {
-            title: "作品1".to_string(),
-            media_type: MediaType::Comic,
-            uuid: Some(uuid1.clone()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品2".to_string(),
-            media_type: MediaType::Comic,
-            uuid: Some(uuid2.clone()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "自動UUID".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品1".to_string(),
+                media_type: MediaType::Comic,
+                uuid: Some(uuid1.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品2".to_string(),
+                media_type: MediaType::Comic,
+                uuid: Some(uuid2.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "自動UUID".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // uuid_inで2件取得（重複指定は結果に影響しない）
         let filter = MediaFilter {
@@ -917,12 +1028,16 @@ mod tests {
         let mut uuids = Vec::with_capacity(COUNT);
         for i in 0..COUNT {
             let uuid = format!("{:08x}-0000-4000-8000-{:012x}", i, i);
-            create_media(&conn, &MediaInput {
-                title: format!("作品{}", i),
-                media_type: MediaType::Comic,
-                uuid: Some(uuid.clone()),
-                ..Default::default()
-            }).unwrap();
+            create_media(
+                &conn,
+                &MediaInput {
+                    title: format!("作品{}", i),
+                    media_type: MediaType::Comic,
+                    uuid: Some(uuid.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             uuids.push(uuid);
         }
 
@@ -945,11 +1060,15 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         for i in 1..=5 {
-            create_media(&conn, &MediaInput {
-                title: format!("作品{}", i),
-                media_type: MediaType::Comic,
-                ..Default::default()
-            }).unwrap();
+            create_media(
+                &conn,
+                &MediaInput {
+                    title: format!("作品{}", i),
+                    media_type: MediaType::Comic,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
 
         // id=1,3,5のみ取得
@@ -977,11 +1096,15 @@ mod tests {
 
         const COUNT: usize = 1200;
         for i in 0..COUNT {
-            create_media(&conn, &MediaInput {
-                title: format!("作品{}", i),
-                media_type: MediaType::Comic,
-                ..Default::default()
-            }).unwrap();
+            create_media(
+                &conn,
+                &MediaInput {
+                    title: format!("作品{}", i),
+                    media_type: MediaType::Comic,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
         let all_ids: Vec<i64> = find_media(&conn, &MediaFilter::default(), None)
             .unwrap()
@@ -1011,11 +1134,15 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "作品1".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品1".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // 空のid_inは条件なしと同様（全件取得）
         let filter = MediaFilter {
@@ -1032,11 +1159,15 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         for i in 1..=5 {
-            create_media(&conn, &MediaInput {
-                title: format!("作品{}", i),
-                media_type: MediaType::Comic,
-                ..Default::default()
-            }).unwrap();
+            create_media(
+                &conn,
+                &MediaInput {
+                    title: format!("作品{}", i),
+                    media_type: MediaType::Comic,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
 
         // 重複した id_in（同じIDを複数回指定）でも結果は同一
@@ -1058,21 +1189,33 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "コミック".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "動画".to_string(),
-            media_type: MediaType::Video,
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "コミック2".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "コミック".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "動画".to_string(),
+                media_type: MediaType::Video,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "コミック2".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // id_in=[1,2,3] AND media_type=Comic → id=1,3のみ
         let filter = MediaFilter {
@@ -1091,11 +1234,15 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         for i in 1..=5 {
-            create_media(&conn, &MediaInput {
-                title: format!("作品{}", i),
-                media_type: MediaType::Comic,
-                ..Default::default()
-            }).unwrap();
+            create_media(
+                &conn,
+                &MediaInput {
+                    title: format!("作品{}", i),
+                    media_type: MediaType::Comic,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
 
         // id=2,4 を除外 → id=1,3,5 のみ取得
@@ -1120,11 +1267,15 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         for i in 1..=3 {
-            create_media(&conn, &MediaInput {
-                title: format!("作品{}", i),
-                media_type: MediaType::Comic,
-                ..Default::default()
-            }).unwrap();
+            create_media(
+                &conn,
+                &MediaInput {
+                    title: format!("作品{}", i),
+                    media_type: MediaType::Comic,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
 
         // 空の exclude_ids は条件なしと同様（全件取得）
@@ -1142,11 +1293,15 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         for i in 1..=5 {
-            create_media(&conn, &MediaInput {
-                title: format!("作品{}", i),
-                media_type: MediaType::Comic,
-                ..Default::default()
-            }).unwrap();
+            create_media(
+                &conn,
+                &MediaInput {
+                    title: format!("作品{}", i),
+                    media_type: MediaType::Comic,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
 
         // 重複した exclude_ids（同じIDを複数回指定）でも結果は同一
@@ -1171,11 +1326,15 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         for i in 1..=5 {
-            create_media(&conn, &MediaInput {
-                title: format!("作品{}", i),
-                media_type: MediaType::Comic,
-                ..Default::default()
-            }).unwrap();
+            create_media(
+                &conn,
+                &MediaInput {
+                    title: format!("作品{}", i),
+                    media_type: MediaType::Comic,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
 
         // id_in=[1,2,3,4] AND exclude_ids=[2,3] → id=1,4 のみ（IN と NOT IN の併用）
@@ -1201,27 +1360,39 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         // テストデータを作成
-        create_media(&conn, &MediaInput {
-            title: "作品A".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author1".to_string()),
-            series: Some("Series1".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品B".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author2".to_string()),
-            series: Some("Series2".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品C".to_string(),
-            media_type: MediaType::Video,
-            artist: Some("Author3".to_string()),
-            series: Some("Series3".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品A".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author1".to_string()),
+                series: Some("Series1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品B".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author2".to_string()),
+                series: Some("Series2".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品C".to_string(),
+                media_type: MediaType::Video,
+                artist: Some("Author3".to_string()),
+                series: Some("Series3".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // OR条件: artist="Author1" OR artist="Author2"
         let filter = MediaFilter {
@@ -1253,34 +1424,50 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         // テストデータを作成
-        create_media(&conn, &MediaInput {
-            title: "作品A".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author1".to_string()),
-            series: Some("Series1".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品B".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author1".to_string()),
-            series: Some("Series2".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品C".to_string(),
-            media_type: MediaType::Video,
-            artist: Some("Author2".to_string()),
-            series: Some("Series1".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品D".to_string(),
-            media_type: MediaType::Music,
-            artist: Some("Author3".to_string()),
-            series: Some("Series3".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品A".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author1".to_string()),
+                series: Some("Series1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品B".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author1".to_string()),
+                series: Some("Series2".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品C".to_string(),
+                media_type: MediaType::Video,
+                artist: Some("Author2".to_string()),
+                series: Some("Series1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品D".to_string(),
+                media_type: MediaType::Music,
+                artist: Some("Author3".to_string()),
+                series: Some("Series3".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // 複雑なOR条件: (artist="Author1" AND series="Series1") OR (artist="Author2")
         let filter = MediaFilter {
@@ -1314,34 +1501,44 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         // テストデータを作成
-        create_media(&conn, &MediaInput {
-            title: "作品A".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author1".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品B".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author2".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品C".to_string(),
-            media_type: MediaType::Video,
-            artist: Some("Author1".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品A".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品B".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author2".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品C".to_string(),
+                media_type: MediaType::Video,
+                artist: Some("Author1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // メイン条件 + OR条件: (media_type=Comic) OR (artist="Author1")
         let filter = MediaFilter {
             media_type: Some(MediaType::Comic),
-            or_filters: Some(vec![
-                MediaFilter {
-                    artist: Some("Author1".to_string()),
-                    ..Default::default()
-                },
-            ]),
+            or_filters: Some(vec![MediaFilter {
+                artist: Some("Author1".to_string()),
+                ..Default::default()
+            }]),
             ..Default::default()
         };
 
@@ -1360,20 +1557,27 @@ mod tests {
         migration::migrate(&conn).unwrap();
 
         for artist in &["Author1", "Author2", "Author1"] {
-            create_media(&conn, &MediaInput {
-                title: format!("作品_{}", artist),
-                media_type: MediaType::Comic,
-                artist: Some(artist.to_string()),
-                ..Default::default()
-            }).unwrap();
+            create_media(
+                &conn,
+                &MediaInput {
+                    title: format!("作品_{}", artist),
+                    media_type: MediaType::Comic,
+                    artist: Some(artist.to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
 
         let filter = MediaFilter::default();
         let rows = get_distinct_values(&conn, &["artist"], &filter).unwrap();
-        assert_eq!(rows, vec![
-            vec![Some("Author1".to_string())],
-            vec![Some("Author2".to_string())],
-        ]);
+        assert_eq!(
+            rows,
+            vec![
+                vec![Some("Author1".to_string())],
+                vec![Some("Author2".to_string())],
+            ]
+        );
     }
 
     #[test]
@@ -1381,43 +1585,68 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "作品A".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author1".to_string()),
-            series: Some("Series1".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品B".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author1".to_string()),
-            series: Some("Series2".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品C".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author2".to_string()),
-            series: Some("Series1".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品A".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author1".to_string()),
+                series: Some("Series1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品B".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author1".to_string()),
+                series: Some("Series2".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品C".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author2".to_string()),
+                series: Some("Series1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         // artist+seriesが重複
-        create_media(&conn, &MediaInput {
-            title: "作品D".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author1".to_string()),
-            series: Some("Series1".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品D".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author1".to_string()),
+                series: Some("Series1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let filter = MediaFilter::default();
         let rows = get_distinct_values(&conn, &["artist", "series"], &filter).unwrap();
         // 重複なし・昇順ソート
         assert_eq!(rows.len(), 3);
-        assert!(rows.contains(&vec![Some("Author1".to_string()), Some("Series1".to_string())]));
-        assert!(rows.contains(&vec![Some("Author1".to_string()), Some("Series2".to_string())]));
-        assert!(rows.contains(&vec![Some("Author2".to_string()), Some("Series1".to_string())]));
+        assert!(rows.contains(&vec![
+            Some("Author1".to_string()),
+            Some("Series1".to_string())
+        ]));
+        assert!(rows.contains(&vec![
+            Some("Author1".to_string()),
+            Some("Series2".to_string())
+        ]));
+        assert!(rows.contains(&vec![
+            Some("Author2".to_string()),
+            Some("Series1".to_string())
+        ]));
     }
 
     #[test]
@@ -1425,24 +1654,36 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "コミック1".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("AuthorA".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "コミック2".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("AuthorB".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "動画1".to_string(),
-            media_type: MediaType::Video,
-            artist: Some("AuthorC".to_string()),
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "コミック1".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("AuthorA".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "コミック2".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("AuthorB".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "動画1".to_string(),
+                media_type: MediaType::Video,
+                artist: Some("AuthorC".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let filter = MediaFilter {
             media_type: Some(MediaType::Comic),
@@ -1460,27 +1701,38 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "作品1".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author1".to_string()),
-            series: Some("Series1".to_string()),
-            ..Default::default()
-        }).unwrap();
-        create_media(&conn, &MediaInput {
-            title: "作品2".to_string(),
-            media_type: MediaType::Comic,
-            artist: Some("Author1".to_string()),
-            series: None,
-            ..Default::default()
-        }).unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品1".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author1".to_string()),
+                series: Some("Series1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "作品2".to_string(),
+                media_type: MediaType::Comic,
+                artist: Some("Author1".to_string()),
+                series: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let filter = MediaFilter::default();
         let rows = get_distinct_values(&conn, &["artist", "series"], &filter).unwrap();
         // NULLの組み合わせも含まれる
         assert_eq!(rows.len(), 2);
         assert!(rows.contains(&vec![Some("Author1".to_string()), None]));
-        assert!(rows.contains(&vec![Some("Author1".to_string()), Some("Series1".to_string())]));
+        assert!(rows.contains(&vec![
+            Some("Author1".to_string()),
+            Some("Series1".to_string())
+        ]));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::audit::{AuditLogFilter, AuditRecord};
 /// バックアップ機能
 ///
 /// ディレクトリ構成:
@@ -18,7 +19,6 @@
 ///
 /// timestamp = `YYYYMMDDHHMMSS-mmm` (18文字固定)
 use crate::{KijukuError, Result};
-use crate::audit::{AuditLogFilter, AuditRecord};
 use chrono::{Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -154,13 +154,34 @@ impl Default for RetentionPolicy {
     fn default() -> Self {
         Self {
             tiers: vec![
-                RetentionTier { max_age_secs: HOUR_SECS,    keep_interval_secs: 0 },
-                RetentionTier { max_age_secs: DAY_SECS,     keep_interval_secs: HOUR_SECS },
-                RetentionTier { max_age_secs: WEEK_SECS,    keep_interval_secs: DAY_SECS },
-                RetentionTier { max_age_secs: MONTH_SECS,   keep_interval_secs: WEEK_SECS },
-                RetentionTier { max_age_secs: QUARTER_SECS, keep_interval_secs: MONTH_SECS },
-                RetentionTier { max_age_secs: YEAR_SECS,    keep_interval_secs: QUARTER_SECS },
-                RetentionTier { max_age_secs: u64::MAX,     keep_interval_secs: YEAR_SECS },
+                RetentionTier {
+                    max_age_secs: HOUR_SECS,
+                    keep_interval_secs: 0,
+                },
+                RetentionTier {
+                    max_age_secs: DAY_SECS,
+                    keep_interval_secs: HOUR_SECS,
+                },
+                RetentionTier {
+                    max_age_secs: WEEK_SECS,
+                    keep_interval_secs: DAY_SECS,
+                },
+                RetentionTier {
+                    max_age_secs: MONTH_SECS,
+                    keep_interval_secs: WEEK_SECS,
+                },
+                RetentionTier {
+                    max_age_secs: QUARTER_SECS,
+                    keep_interval_secs: MONTH_SECS,
+                },
+                RetentionTier {
+                    max_age_secs: YEAR_SECS,
+                    keep_interval_secs: QUARTER_SECS,
+                },
+                RetentionTier {
+                    max_age_secs: u64::MAX,
+                    keep_interval_secs: YEAR_SECS,
+                },
             ],
         }
     }
@@ -242,24 +263,42 @@ pub(crate) enum BackupSelectorKind {
 
 impl BackupSelector {
     pub fn latest() -> Self {
-        Self { kind: BackupSelectorKind::Latest, scope_filter: None }
+        Self {
+            kind: BackupSelectorKind::Latest,
+            scope_filter: None,
+        }
     }
     pub fn nth(n: usize) -> Self {
-        Self { kind: BackupSelectorKind::Nth(n), scope_filter: None }
+        Self {
+            kind: BackupSelectorKind::Nth(n),
+            scope_filter: None,
+        }
     }
     pub fn before(time: SystemTime) -> Self {
-        Self { kind: BackupSelectorKind::Before(time), scope_filter: None }
+        Self {
+            kind: BackupSelectorKind::Before(time),
+            scope_filter: None,
+        }
     }
     pub fn after(time: SystemTime) -> Self {
-        Self { kind: BackupSelectorKind::After(time), scope_filter: None }
+        Self {
+            kind: BackupSelectorKind::After(time),
+            scope_filter: None,
+        }
     }
     pub fn closest_to(time: SystemTime) -> Self {
-        Self { kind: BackupSelectorKind::ClosestTo(time), scope_filter: None }
+        Self {
+            kind: BackupSelectorKind::ClosestTo(time),
+            scope_filter: None,
+        }
     }
 
     /// ID（タイムスタンプ文字列）でバックアップを直接指定する
     pub fn by_id(id: impl Into<String>) -> Self {
-        Self { kind: BackupSelectorKind::ById(id.into()), scope_filter: None }
+        Self {
+            kind: BackupSelectorKind::ById(id.into()),
+            scope_filter: None,
+        }
     }
 
     /// 既知パスでバックアップファイルを直接指定する（設計 §8 即時復旧・pre-stash 戻し）。
@@ -268,7 +307,10 @@ impl BackupSelector {
     /// promote/(b)操作が返す `pre_stash_path` を restore に回す即時復旧ループ（§8）で使用する。
     /// backup_dir 配下の `.db` ファイルのみ許可（`select_backup` で検証）。
     pub fn by_path(path: impl Into<PathBuf>) -> Self {
-        Self { kind: BackupSelectorKind::ByPath(path.into()), scope_filter: None }
+        Self {
+            kind: BackupSelectorKind::ByPath(path.into()),
+            scope_filter: None,
+        }
     }
 
     /// スコープを限定する（TASK-150）
@@ -452,7 +494,11 @@ impl BackupManager {
                 .and_then(|b| b.created_at.elapsed().ok())
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            if elapsed_secs < HOUR_SECS { "recent" } else { "hourly" }
+            if elapsed_secs < HOUR_SECS {
+                "recent"
+            } else {
+                "hourly"
+            }
         } else {
             "daily"
         };
@@ -460,7 +506,11 @@ impl BackupManager {
             id: timestamp,
             created_at: iso8601_now(),
             tier: tier.to_string(),
-            kind: if is_diff { "diff".to_string() } else { "full".to_string() },
+            kind: if is_diff {
+                "diff".to_string()
+            } else {
+                "full".to_string()
+            },
             base_id: base_id_opt.unwrap_or_default(),
             size_bytes,
             status: AutoRecordStatus::Kept,
@@ -486,7 +536,13 @@ impl BackupManager {
             Some(l) => {
                 let sanitized: String = l
                     .chars()
-                    .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+                    .map(|c| {
+                        if c.is_alphanumeric() || c == '_' || c == '-' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
                     .collect();
                 format!("{}.{}-{}.db", self.db_stem, timestamp, sanitized)
             }
@@ -530,22 +586,29 @@ impl BackupManager {
         // 2. バックアップを復元
         match &backup_info.kind {
             BackupKind::Full => {
-                let src =
-                    rusqlite::Connection::open_with_flags(&backup_info.path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                let src = rusqlite::Connection::open_with_flags(
+                    &backup_info.path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )?;
                 let bk = rusqlite::backup::Backup::new(&src, conn)?;
                 bk.run_to_completion(1000, std::time::Duration::from_millis(50), None)?;
             }
             BackupKind::Diff { base_id } => {
                 let base = self
                     .find_backup_by_id_in_scope(base_id, BackupScope::Auto)?
-                    .ok_or_else(|| KijukuError::Other(format!("Base backup {} not found", base_id)))?;
+                    .ok_or_else(|| {
+                        KijukuError::Other(format!("Base backup {} not found", base_id))
+                    })?;
 
                 // 差分を適用して一時ファイルに復元
                 let temp_path = self.temp_full_path_for_diff(base_id);
                 fs::create_dir_all(temp_path.parent().unwrap())?;
                 apply_diff_to_file(&base.path, &backup_info.path, &temp_path)?;
 
-                let src = rusqlite::Connection::open_with_flags(&temp_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                let src = rusqlite::Connection::open_with_flags(
+                    &temp_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )?;
                 let bk = rusqlite::backup::Backup::new(&src, conn)?;
                 bk.run_to_completion(1000, std::time::Duration::from_millis(50), None)?;
                 let _ = fs::remove_file(&temp_path);
@@ -568,10 +631,8 @@ impl BackupManager {
         let timestamp = current_timestamp_str();
         let tmp_dir = self.backup_dir.join("tmp");
         fs::create_dir_all(&tmp_dir)?;
-        let pre_migrate_path = tmp_dir.join(format!(
-            "{}.{}-pre_migrate.db",
-            self.db_stem, timestamp
-        ));
+        let pre_migrate_path =
+            tmp_dir.join(format!("{}.{}-pre_migrate.db", self.db_stem, timestamp));
         self.copy_db_to(&pre_migrate_path)?;
         Ok(Some(pre_migrate_path.to_string_lossy().to_string()))
     }
@@ -582,10 +643,8 @@ impl BackupManager {
         let timestamp = current_timestamp_str();
         let tmp_dir = self.backup_dir.join("tmp");
         fs::create_dir_all(&tmp_dir)?;
-        let pre_promote_path = tmp_dir.join(format!(
-            "{}.{}-pre_promote.db",
-            self.db_stem, timestamp
-        ));
+        let pre_promote_path =
+            tmp_dir.join(format!("{}.{}-pre_promote.db", self.db_stem, timestamp));
         self.copy_db_to(&pre_promote_path)?;
         Ok(Some(pre_promote_path.to_string_lossy().to_string()))
     }
@@ -671,8 +730,8 @@ impl BackupManager {
                     let path = entry.path();
                     let metadata = fs::metadata(&path)?;
                     let kind = if parsed.extension == "diff" {
-                        let base_id = read_diff_base_id(&path)
-                            .unwrap_or_else(|_| "unknown".to_string());
+                        let base_id =
+                            read_diff_base_id(&path).unwrap_or_else(|_| "unknown".to_string());
                         BackupKind::Diff { base_id }
                     } else {
                         BackupKind::Full
@@ -729,22 +788,18 @@ impl BackupManager {
         Ok(match &selector.kind {
             BackupSelectorKind::Latest => backups.into_iter().next(),
             BackupSelectorKind::Nth(n) => backups.into_iter().nth(*n),
-            BackupSelectorKind::Before(time) => {
-                backups.into_iter().find(|b| b.created_at < *time)
-            }
+            BackupSelectorKind::Before(time) => backups.into_iter().find(|b| b.created_at < *time),
             BackupSelectorKind::After(time) => {
                 backups.into_iter().filter(|b| b.created_at > *time).last()
             }
-            BackupSelectorKind::ClosestTo(time) => {
-                backups.into_iter().min_by_key(|b| {
-                    let diff = if b.created_at > *time {
-                        b.created_at.duration_since(*time).unwrap_or_default()
-                    } else {
-                        time.duration_since(b.created_at).unwrap_or_default()
-                    };
-                    diff.as_millis()
-                })
-            }
+            BackupSelectorKind::ClosestTo(time) => backups.into_iter().min_by_key(|b| {
+                let diff = if b.created_at > *time {
+                    b.created_at.duration_since(*time).unwrap_or_default()
+                } else {
+                    time.duration_since(b.created_at).unwrap_or_default()
+                };
+                diff.as_millis()
+            }),
             // ID（タイムスタンプ文字列）で検索。.db/.diff 両方を対象とするため
             // list 結果から一致する id を探す（find_backup_by_id_in_scope は基底フル
             // .db のみを返すため、差分バックアップの直接選択には使えない）。
@@ -764,9 +819,9 @@ impl BackupManager {
     fn build_backup_info_from_path(&self, path: &Path) -> Result<BackupInfo> {
         // canonicalize で実在確認＋絶対パス化。不在は NotFound。traversal(`..`) も解決後に
         // backup_dir 配下チェックで弾かれる。
-        let path_c = path
-            .canonicalize()
-            .map_err(|_| KijukuError::NotFound(format!("backup path not found: {}", path.display())))?;
+        let path_c = path.canonicalize().map_err(|_| {
+            KijukuError::NotFound(format!("backup path not found: {}", path.display()))
+        })?;
 
         // 拡張子は .db のみ（pre-stash は常にフル .db）。
         if path_c.extension().and_then(|e| e.to_str()) != Some("db") {
@@ -972,10 +1027,8 @@ impl BackupManager {
 
     fn try_copy_db_online(src: &Path, dst: &Path) -> Result<()> {
         let mut dst_conn = rusqlite::Connection::open(dst)?;
-        let src_conn = rusqlite::Connection::open_with_flags(
-            src,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
+        let src_conn =
+            rusqlite::Connection::open_with_flags(src, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         src_conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         let bk = rusqlite::backup::Backup::new(&src_conn, &mut dst_conn)?;
         bk.run_to_completion(1000, std::time::Duration::from_millis(100), None)?;
@@ -1025,7 +1078,11 @@ impl BackupManager {
     }
 
     /// IDでバックアップを検索（指定スコープ内）
-    pub(crate) fn find_backup_by_id_in_scope(&self, id: &str, scope: BackupScope) -> Result<Option<BackupInfo>> {
+    pub(crate) fn find_backup_by_id_in_scope(
+        &self,
+        id: &str,
+        scope: BackupScope,
+    ) -> Result<Option<BackupInfo>> {
         let subdir = match &scope {
             BackupScope::Auto => self.backup_dir.join("auto"),
             BackupScope::Manual => self.backup_dir.join("manual"),
@@ -1066,9 +1123,12 @@ impl BackupManager {
 
     /// 差分backup復元・参照用の一時フルDBパス（pid付きでプロセス間衝突回避）
     pub(crate) fn temp_full_path_for_diff(&self, base_id: &str) -> PathBuf {
-        self.backup_dir
-            .join("tmp")
-            .join(format!("{}.restore_temp_{}_{}.db", self.db_stem, base_id, std::process::id()))
+        self.backup_dir.join("tmp").join(format!(
+            "{}.restore_temp_{}_{}.db",
+            self.db_stem,
+            base_id,
+            std::process::id()
+        ))
     }
 
     /// 差分バックアップファイルを作成（TASK-147）
@@ -1119,9 +1179,9 @@ impl BackupManager {
                 }
 
                 // このフルを参照しているkept差分があるか確認
-                let has_kept_diff = records.iter().any(|r| {
-                    r.base_id == parsed.id && r.status == AutoRecordStatus::Kept
-                });
+                let has_kept_diff = records
+                    .iter()
+                    .any(|r| r.base_id == parsed.id && r.status == AutoRecordStatus::Kept);
 
                 if !has_kept_diff {
                     to_delete.push(path);
@@ -1211,8 +1271,8 @@ impl BackupManager {
         if content.trim().is_empty() {
             return Ok(BackupMetaStore::default());
         }
-        let store: BackupMetaStore = serde_json::from_str(&content)
-            .map_err(|e| KijukuError::Other(e.to_string()))?;
+        let store: BackupMetaStore =
+            serde_json::from_str(&content).map_err(|e| KijukuError::Other(e.to_string()))?;
         Ok(store)
     }
 
@@ -1235,12 +1295,15 @@ impl BackupManager {
             return Err(KijukuError::Other(format!("Backup {} not found", id)));
         }
         let mut store = self.read_backup_meta_store()?;
-        let entry = store.entries.entry(id.to_string()).or_insert(BackupMetaEntry {
-            id: id.to_string(),
-            label: None,
-            note: None,
-            updated_at: iso8601_now(),
-        });
+        let entry = store
+            .entries
+            .entry(id.to_string())
+            .or_insert(BackupMetaEntry {
+                id: id.to_string(),
+                label: None,
+                note: None,
+                updated_at: iso8601_now(),
+            });
         f(entry);
         entry.updated_at = iso8601_now();
         self.write_backup_meta_store(&store)
@@ -1374,10 +1437,13 @@ impl BackupManager {
         let path = self.records_path();
         fs::create_dir_all(path.parent().unwrap())?;
 
-        let needs_header = !path.exists()
-            || fs::metadata(&path).map(|m| m.len() == 0).unwrap_or(true);
+        let needs_header =
+            !path.exists() || fs::metadata(&path).map(|m| m.len() == 0).unwrap_or(true);
 
-        let mut file = fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
 
         if needs_header {
             writeln!(
@@ -1395,7 +1461,11 @@ impl BackupManager {
             record.kind,
             record.base_id,
             record.size_bytes,
-            if record.status == AutoRecordStatus::Kept { "kept" } else { "pruned" },
+            if record.status == AutoRecordStatus::Kept {
+                "kept"
+            } else {
+                "pruned"
+            },
             record.pruned_at,
         )?;
 
@@ -1419,8 +1489,7 @@ impl BackupManager {
                     if parts.len() >= 8 {
                         format!(
                             "{},{},{},{},{},{},pruned,{}",
-                            parts[0], parts[1], parts[2], parts[3],
-                            parts[4], parts[5], pruned_at
+                            parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], pruned_at
                         )
                     } else {
                         line.to_string()
@@ -1534,7 +1603,11 @@ fn read_diff_base_id(diff_path: &Path) -> Result<String> {
 ///
 /// 基底DBと差分ファイルをページ単位でストリーミングしながらマージするため、
 /// ファイルサイズに依存しない一定量のメモリのみを使用する。
-pub(crate) fn apply_diff_to_file(base_path: &Path, diff_path: &Path, output_path: &Path) -> Result<()> {
+pub(crate) fn apply_diff_to_file(
+    base_path: &Path,
+    diff_path: &Path,
+    output_path: &Path,
+) -> Result<()> {
     let mut diff_file = File::open(diff_path)?;
     let mut header = [0u8; 30]; // 18 + 4 + 4 + 4
     diff_file
@@ -1643,7 +1716,10 @@ fn prune_auto_backups_by_policy(
 ) -> Vec<PathBuf> {
     let mut to_delete = Vec::new();
     // 自動バックアップ（フル・差分両方）を対象
-    let auto_backups: Vec<&BackupInfo> = backups.iter().filter(|b| b.scope == BackupScope::Auto).collect();
+    let auto_backups: Vec<&BackupInfo> = backups
+        .iter()
+        .filter(|b| b.scope == BackupScope::Auto)
+        .collect();
 
     let mut min_age_secs = 0u64;
 
@@ -1656,7 +1732,10 @@ fn prune_auto_backups_by_policy(
         let tier_backups: Vec<&&BackupInfo> = auto_backups
             .iter()
             .filter(|b| {
-                let age = now.duration_since(b.created_at).unwrap_or_default().as_secs();
+                let age = now
+                    .duration_since(b.created_at)
+                    .unwrap_or_default()
+                    .as_secs();
                 age >= min_age_secs && age < tier.max_age_secs
             })
             .collect();
@@ -1668,7 +1747,10 @@ fn prune_auto_backups_by_policy(
 
         let mut buckets: HashMap<u64, Vec<&&BackupInfo>> = HashMap::new();
         for backup in &tier_backups {
-            let age = now.duration_since(backup.created_at).unwrap_or_default().as_secs();
+            let age = now
+                .duration_since(backup.created_at)
+                .unwrap_or_default()
+                .as_secs();
             let bucket = age / tier.keep_interval_secs;
             buckets.entry(bucket).or_default().push(backup);
         }
@@ -1919,7 +2001,10 @@ mod tests {
 
         let manager = BackupManager::new(&db_path, options).unwrap();
         assert_eq!(manager.busy_timeout_ms, 5_000);
-        assert_eq!(manager.retry_intervals_ms, vec![5_000, 10_000, 30_000, 60_000]);
+        assert_eq!(
+            manager.retry_intervals_ms,
+            vec![5_000, 10_000, 30_000, 60_000]
+        );
     }
 
     #[test]
@@ -2015,8 +2100,14 @@ mod tests {
         assert_eq!(backups.len(), 3); // 1 auto + 2 manual
 
         // scope確認
-        let auto_count = backups.iter().filter(|b| b.scope == BackupScope::Auto).count();
-        let manual_count = backups.iter().filter(|b| b.scope == BackupScope::Manual).count();
+        let auto_count = backups
+            .iter()
+            .filter(|b| b.scope == BackupScope::Auto)
+            .count();
+        let manual_count = backups
+            .iter()
+            .filter(|b| b.scope == BackupScope::Manual)
+            .count();
         assert_eq!(auto_count, 1);
         assert_eq!(manual_count, 2);
 
@@ -2071,7 +2162,9 @@ mod tests {
             .unwrap();
         assert_eq!(count, 0);
 
-        manager.restore(&mut conn, &BackupSelector::latest()).unwrap();
+        manager
+            .restore(&mut conn, &BackupSelector::latest())
+            .unwrap();
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM test", [], |r| r.get(0))
@@ -2188,7 +2281,11 @@ mod tests {
         let backups = manager.list_backups().unwrap();
         // フォールバックモード（retention_policy=None + max_backups）の削除対象は auto のみ。
         // manual は削除されず全件残る（設計 §7.4・manual は対象外＝手動削除のみ）。
-        assert_eq!(backups.len(), 4, "manual は max_backups の削除対象外（§7.4）");
+        assert_eq!(
+            backups.len(),
+            4,
+            "manual は max_backups の削除対象外（§7.4）"
+        );
     }
 
     #[test]
@@ -2221,15 +2318,18 @@ mod tests {
         // ベースDBを作成
         let base_db = temp_dir.path().join("base.db");
         let conn = rusqlite::Connection::open(&base_db).unwrap();
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", []).unwrap();
-        conn.execute("INSERT INTO t VALUES (1, 'hello')", []).unwrap();
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO t VALUES (1, 'hello')", [])
+            .unwrap();
         drop(conn);
 
         // 変更後DBを作成
         let current_db = temp_dir.path().join("current.db");
         fs::copy(&base_db, &current_db).unwrap();
         let conn = rusqlite::Connection::open(&current_db).unwrap();
-        conn.execute("INSERT INTO t VALUES (2, 'world')", []).unwrap();
+        conn.execute("INSERT INTO t VALUES (2, 'world')", [])
+            .unwrap();
         drop(conn);
 
         // 差分ファイルを作成
@@ -2341,7 +2441,10 @@ mod tests {
             "フル(.db)が基底に選ばれるべき: {:?}",
             found.path
         );
-        assert!(matches!(found.kind, BackupKind::Full), "kind は Full のべき");
+        assert!(
+            matches!(found.kind, BackupKind::Full),
+            "kind は Full のべき"
+        );
     }
 
     /// ByPath selector で pre-stash（list 除外ファイル）を直接選択できる（設計 §8 即時復旧）。
@@ -2371,7 +2474,9 @@ mod tests {
         assert!(matches!(info.kind, BackupKind::Full), "pre-stash は Full");
         assert_eq!(info.scope, BackupScope::Tmp);
         assert_eq!(info.label, None, "pre_promote ラベルは None で上書き");
-        assert!(info.path.ends_with("test.20260724000000-000-pre_promote.db"));
+        assert!(info
+            .path
+            .ends_with("test.20260724000000-000-pre_promote.db"));
     }
 
     /// list_pre_stashes は pre-stash のみを返し list_backups は除外したまま（設計 §8）。
@@ -2438,7 +2543,10 @@ mod tests {
             ..Default::default()
         };
         let manager = BackupManager::new(&db_path, options).unwrap();
-        assert!(manager.list_pre_stashes().unwrap().is_empty(), "tmp/ なしは空");
+        assert!(
+            manager.list_pre_stashes().unwrap().is_empty(),
+            "tmp/ なしは空"
+        );
 
         // tmp/ はあるが pre-stash なし（通常 backup のみ）。
         let tmp_dir = backup_dir.join("tmp");
@@ -2627,7 +2735,9 @@ mod tests {
 
     #[test]
     fn test_backup_selector_to_wire_value_by_path() {
-        let v = BackupSelector::by_path("/tmp/x.db").to_wire_value().unwrap();
+        let v = BackupSelector::by_path("/tmp/x.db")
+            .to_wire_value()
+            .unwrap();
         assert_eq!(
             v,
             serde_json::json!({ "type": "byPath", "path": "/tmp/x.db" })

@@ -1,10 +1,10 @@
 //! メディア追加属性の操作
 
-use rusqlite::{params, Connection, Result};
 use crate::db_value::{SqlParam, SqlRow};
-use crate::exec::SqlExec;
-use crate::types::{MediaAttribute, AttributeValueType};
 use crate::error::KijukuError;
+use crate::exec::SqlExec;
+use crate::types::{AttributeValueType, MediaAttribute};
+use rusqlite::{params, Connection, Result};
 
 /// メディアに属性を設定
 pub fn set_media_attribute(
@@ -150,10 +150,7 @@ pub fn delete_media_attribute(
 }
 
 /// メディアの全ての属性を削除
-pub fn delete_all_media_attributes(
-    conn: &Connection,
-    media_id: i64,
-) -> Result<(), KijukuError> {
+pub fn delete_all_media_attributes(conn: &Connection, media_id: i64) -> Result<(), KijukuError> {
     conn.execute(
         "DELETE FROM media_attributes WHERE media_id = ?1",
         params![media_id],

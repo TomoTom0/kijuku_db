@@ -89,7 +89,7 @@ fn test_remote_config_partial_options() {
         port: None, // デフォルトのポート22が使われる
         username: Some("user".to_string()),
         private_key_path: Some(PathBuf::from("/home/user/.ssh/id_ed25519")),
-        db_path: None, // デフォルトパスが使われる
+        db_path: None,     // デフォルトパスが使われる
         binary_path: None, // デフォルトパスが使われる
         media_root: None,
         ..Default::default()
@@ -212,11 +212,7 @@ fn test_remote_media_file_operations() {
     let ssh_key = std::env::var("KIJUKU_TEST_SSH_KEY").ok();
     let media_root = std::env::var("KIJUKU_TEST_MEDIA_ROOT").ok();
 
-    if ssh_host.is_none()
-        || ssh_user.is_none()
-        || ssh_key.is_none()
-        || media_root.is_none()
-    {
+    if ssh_host.is_none() || ssh_user.is_none() || ssh_key.is_none() || media_root.is_none() {
         return;
     }
 
@@ -246,7 +242,10 @@ fn test_remote_media_file_operations() {
     // upload/download ラウンドトリップ（KIJUKU_TEST_LOCAL_FILE に有効なローカルファイルを指定時のみ）
     if let Ok(local_file) = std::env::var("KIJUKU_TEST_LOCAL_FILE") {
         let _ = remote.upload(Path::new(&local_file), "e2e/uploaded.txt");
-        let _ = remote.download("e2e/uploaded.txt", Path::new("/tmp/kijuku_e2e_downloaded.txt"));
+        let _ = remote.download(
+            "e2e/uploaded.txt",
+            Path::new("/tmp/kijuku_e2e_downloaded.txt"),
+        );
     }
 }
 

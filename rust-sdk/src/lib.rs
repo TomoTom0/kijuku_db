@@ -33,8 +33,8 @@
 //! # }
 //! ```
 
-pub mod audit;
 pub mod attribute;
+pub mod audit;
 pub mod backend;
 pub mod backup;
 pub mod bulk;
@@ -59,44 +59,43 @@ pub mod search;
 pub mod server;
 pub mod stg_session;
 pub mod tag;
-pub mod trash;
 pub mod thumbnail;
+pub mod trash;
 pub mod types;
 pub mod update_exist;
 
 pub use audit::{AuditLogFilter, AuditRecord, AuditResult, AuditTarget, SyncOp};
+pub use backend::KijukuBackend;
 pub use backup::{
     AutoRecord, AutoRecordStatus, BackupInfo, BackupKind, BackupManager, BackupOptions,
     BackupScope, BackupSelector, RetentionPolicy, RetentionTier,
 };
-pub use backend::KijukuBackend;
 pub use bulk_load::{transfer, verify, TransferOptions, TransferReport};
+pub use config::{
+    load_config, parse_db_path, resolve_prod_and_stg_paths, resolve_target, BackupConfig,
+    EnvProvider, KijukuConfig, ParsedDbPath, SystemEnv, Target, TargetResolution,
+};
 pub use d1_backend::D1KijukuDB;
 pub use d1_client::D1Config;
-pub use config::{
-    load_config, BackupConfig, EnvProvider, KijukuConfig, ParsedDbPath, SystemEnv, Target,
-    TargetResolution, parse_db_path, resolve_prod_and_stg_paths, resolve_target,
-};
 pub use db_value::{SqlParam, SqlRow};
 pub use error::{KijukuError, Result};
 pub use exec::SqlExec;
 pub use exec_local::LocalExec;
 pub use migration::TableColumnInfo;
+pub use prod_rw::ProdRwScope;
 pub use remote::{RemoteConfig, RemoteKijukuDB};
 pub use search::ALLOWED_DISTINCT_FIELDS;
-pub use server::auth::{AuthManager, generate_password};
-pub use server::{ServerOptions, start_server};
+pub use server::auth::{generate_password, AuthManager};
+pub use server::{start_server, ServerOptions};
 pub use stg_session::{
-    ProdRevision, StgLock, StgMeta, SyncedFrom, compute_prod_revision, lock_path, meta_path,
-    read_stg_meta, write_stg_meta,
+    compute_prod_revision, lock_path, meta_path, read_stg_meta, write_stg_meta, ProdRevision,
+    StgLock, StgMeta, SyncedFrom,
 };
-pub use prod_rw::ProdRwScope;
-pub use types::*;
 pub use thumbnail::{
-    CheckThumbnailItemResult, CheckThumbnailResult, CheckThumbnailStatus, ThumbnailOptions,
-    UpdateThumbnailItemResult, UpdateThumbnailResult, UpdateThumbnailStatus,
-    resolve_thumbnail_path,
+    resolve_thumbnail_path, CheckThumbnailItemResult, CheckThumbnailResult, CheckThumbnailStatus,
+    ThumbnailOptions, UpdateThumbnailItemResult, UpdateThumbnailResult, UpdateThumbnailStatus,
 };
+pub use types::*;
 pub use update_exist::{UpdateExistItemResult, UpdateExistOptions, UpdateExistResult};
 
 use parking_lot::ReentrantMutex;
@@ -159,10 +158,7 @@ impl KijukuDB {
     pub fn open_with_options<P: AsRef<Path>>(path: P, options: DBOptions) -> Result<Self> {
         let path_ref = path.as_ref();
         let mut conn = if options.readonly {
-            Connection::open_with_flags(
-                path_ref,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-            )?
+            Connection::open_with_flags(path_ref, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?
         } else {
             Connection::open(path_ref)?
         };
@@ -762,7 +758,12 @@ impl KijukuDB {
 
     /// 特定位置のハッシュを取得
     #[deprecated(note = "async API を使用してください (KijukuBackend::get_media_hash)")]
-    pub fn get_media_hash(&self, item_uuid: &str, filename: &str, time_range: &str) -> Result<Option<MediaHash>> {
+    pub fn get_media_hash(
+        &self,
+        item_uuid: &str,
+        filename: &str,
+        time_range: &str,
+    ) -> Result<Option<MediaHash>> {
         let conn = self.conn.lock();
         hash::get_media_hash(&conn, item_uuid, filename, time_range)
     }
@@ -776,7 +777,12 @@ impl KijukuDB {
 
     /// 特定位置のハッシュを削除（代替行の連鎖削除を含む）
     #[deprecated(note = "async API を使用してください (KijukuBackend::delete_media_hash)")]
-    pub fn delete_media_hash(&self, item_uuid: &str, filename: &str, time_range: &str) -> Result<()> {
+    pub fn delete_media_hash(
+        &self,
+        item_uuid: &str,
+        filename: &str,
+        time_range: &str,
+    ) -> Result<()> {
         {
             let conn = self.conn.lock();
             hash::delete_media_hash(&conn, item_uuid, filename, time_range)?;
@@ -852,7 +858,9 @@ impl KijukuDB {
     }
 
     /// メディアの全ての属性を削除
-    #[deprecated(note = "async API を使用してください (KijukuBackend::delete_all_media_attributes)")]
+    #[deprecated(
+        note = "async API を使用してください (KijukuBackend::delete_all_media_attributes)"
+    )]
     pub fn delete_all_media_attributes(&self, media_id: i64) -> Result<()> {
         {
             let conn = self.conn.lock();
@@ -1126,7 +1134,10 @@ impl KijukuDB {
                 // フルバックアップは読み取り専用で直接開く
                 let backup_db = KijukuDB::open_with_options(
                     &backup_info.path,
-                    DBOptions { readonly: true, ..Default::default() },
+                    DBOptions {
+                        readonly: true,
+                        ..Default::default()
+                    },
                 )?;
                 f(&backup_db)
             }
@@ -1147,7 +1158,10 @@ impl KijukuDB {
                 let result = (|| {
                     let backup_db = KijukuDB::open_with_options(
                         &temp_path,
-                        DBOptions { readonly: true, ..Default::default() },
+                        DBOptions {
+                            readonly: true,
+                            ..Default::default()
+                        },
                     )?;
                     f(&backup_db)
                 })();
@@ -1215,7 +1229,9 @@ impl KijukuDB {
         key: &str,
         selector: &BackupSelector,
     ) -> Result<Option<MediaAttribute>> {
-        self.with_backup_db(selector, |backup_db| backup_db.get_media_attribute(media_id, key))
+        self.with_backup_db(selector, |backup_db| {
+            backup_db.get_media_attribute(media_id, key)
+        })
     }
 
     /// バックアップからメディアの全ての属性を取得
@@ -1225,7 +1241,9 @@ impl KijukuDB {
         media_id: i64,
         selector: &BackupSelector,
     ) -> Result<Vec<MediaAttribute>> {
-        self.with_backup_db(selector, |backup_db| backup_db.get_media_attributes(media_id))
+        self.with_backup_db(selector, |backup_db| {
+            backup_db.get_media_attributes(media_id)
+        })
     }
 
     /// バックアップから特定作品の全ハッシュを取得
@@ -1259,7 +1277,9 @@ impl KijukuDB {
         hash_bytes: &[u8],
         selector: &BackupSelector,
     ) -> Result<Vec<MediaHash>> {
-        self.with_backup_db(selector, |backup_db| backup_db.find_by_content_hash(hash_bytes))
+        self.with_backup_db(selector, |backup_db| {
+            backup_db.find_by_content_hash(hash_bytes)
+        })
     }
 
     /// バックアップから重複ハッシュを検出
@@ -1290,7 +1310,14 @@ impl KijukuDB {
             snap.attributes.insert((a.media_id, a.key.clone()), a);
         }
         for h in hash::get_all_media_hashes(&conn)? {
-            snap.hashes.insert((h.item_uuid.clone(), h.filename.clone(), h.time_range.clone()), h);
+            snap.hashes.insert(
+                (
+                    h.item_uuid.clone(),
+                    h.filename.clone(),
+                    h.time_range.clone(),
+                ),
+                h,
+            );
         }
         Ok(snap)
     }
@@ -1330,7 +1357,10 @@ impl KijukuDB {
         let prod_snap = {
             let prod_db = KijukuDB::open_with_options(
                 prod_db_path,
-                DBOptions { readonly: true, ..Default::default() },
+                DBOptions {
+                    readonly: true,
+                    ..Default::default()
+                },
             )?;
             prod_db.collect_snapshot()?
         };
@@ -1412,13 +1442,20 @@ impl KijukuDB {
         let (prod_snap, prod_schema_version, prod_revision) = {
             let prod_db = KijukuDB::open_with_options(
                 prod_db_path,
-                DBOptions { readonly: true, ..Default::default() },
+                DBOptions {
+                    readonly: true,
+                    ..Default::default()
+                },
             )?;
             let prod_revision = {
                 let conn = prod_db.conn.lock();
                 stg_session::compute_prod_revision(&conn)?
             };
-            (prod_db.collect_snapshot()?, prod_db.get_schema_version()?, prod_revision)
+            (
+                prod_db.collect_snapshot()?,
+                prod_db.get_schema_version()?,
+                prod_revision,
+            )
         };
 
         // --- stg 側（self）: snapshot + gate 用 DB 検査を1ロックで実行 ---
@@ -1432,10 +1469,12 @@ impl KijukuDB {
             .gate_config
             .golden_assertions
             .iter()
-            .map(|ga| match conn.query_row(&ga.sql, [], |row| row.get::<_, i64>(0)) {
-                Ok(c) => diff::GoldenResult::Count(c),
-                Err(e) => diff::GoldenResult::Error(e.to_string()),
-            })
+            .map(
+                |ga| match conn.query_row(&ga.sql, [], |row| row.get::<_, i64>(0)) {
+                    Ok(c) => diff::GoldenResult::Count(c),
+                    Err(e) => diff::GoldenResult::Error(e.to_string()),
+                },
+            )
             .collect();
         drop(conn);
 
@@ -1752,10 +1791,7 @@ impl KijukuBackend for KijukuDB {
         tag::get_media_tags_async(&self.exec, media_id).await
     }
 
-    async fn get_media_tags_bulk(
-        &self,
-        media_ids: &[i64],
-    ) -> Result<HashMap<i64, Vec<Tag>>> {
+    async fn get_media_tags_bulk(&self, media_ids: &[i64]) -> Result<HashMap<i64, Vec<Tag>>> {
         tag::get_media_tags_bulk_async(&self.exec, media_ids).await
     }
 
@@ -1779,7 +1815,11 @@ impl KijukuBackend for KijukuDB {
         Ok(())
     }
 
-    async fn get_media_attribute(&self, media_id: i64, key: &str) -> Result<Option<MediaAttribute>> {
+    async fn get_media_attribute(
+        &self,
+        media_id: i64,
+        key: &str,
+    ) -> Result<Option<MediaAttribute>> {
         attribute::get_media_attribute_async(&self.exec, media_id, key).await
     }
 
@@ -1985,7 +2025,10 @@ mod tests {
         .unwrap();
         assert_eq!(media.title, "テスト");
 
-        let got = KijukuBackend::get_media(&db, media.id).await.unwrap().unwrap();
+        let got = KijukuBackend::get_media(&db, media.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(got.id, media.id);
 
         let found = KijukuBackend::find_media(&db, &MediaFilter::default(), None)
@@ -1999,7 +2042,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            KijukuBackend::get_media_tags(&db, media.id).await.unwrap().len(),
+            KijukuBackend::get_media_tags(&db, media.id)
+                .await
+                .unwrap()
+                .len(),
             1
         );
 
@@ -2057,14 +2103,19 @@ mod tests {
         let t2 = KijukuBackend::create_tag(&db, "tag-b").await.unwrap();
 
         // m1: tag-a, tag-b / m2: tag-a / m3: タグなし
-        KijukuBackend::add_tag_to_media(&db, m1.id, t1.id).await.unwrap();
-        KijukuBackend::add_tag_to_media(&db, m1.id, t2.id).await.unwrap();
-        KijukuBackend::add_tag_to_media(&db, m2.id, t1.id).await.unwrap();
+        KijukuBackend::add_tag_to_media(&db, m1.id, t1.id)
+            .await
+            .unwrap();
+        KijukuBackend::add_tag_to_media(&db, m1.id, t2.id)
+            .await
+            .unwrap();
+        KijukuBackend::add_tag_to_media(&db, m2.id, t1.id)
+            .await
+            .unwrap();
 
-        let result =
-            KijukuBackend::get_media_tags_bulk(&db, &[m1.id, m2.id, m3.id])
-                .await
-                .unwrap();
+        let result = KijukuBackend::get_media_tags_bulk(&db, &[m1.id, m2.id, m3.id])
+            .await
+            .unwrap();
 
         // タグなしメディア(m3)は結果のエントリに含まれない
         assert_eq!(result.len(), 2);
@@ -2147,11 +2198,17 @@ mod tests {
         )
         .await
         .unwrap();
-        let got = KijukuBackend::get_media(&db, media.id).await.unwrap().unwrap();
+        let got = KijukuBackend::get_media(&db, media.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(got.title, "更新後");
 
         KijukuBackend::delete_media(&db, media.id).await.unwrap();
-        assert!(KijukuBackend::get_media(&db, media.id).await.unwrap().is_none());
+        assert!(KijukuBackend::get_media(&db, media.id)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[allow(deprecated)]
