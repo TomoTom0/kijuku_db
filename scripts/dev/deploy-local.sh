@@ -21,7 +21,9 @@ cd "$RUST_SDK_DIR"
 cargo build --release
 
 # ワークスペースのtargetディレクトリから取得
-WORKSPACE_TARGET="$PROJECT_ROOT/target/release"
+# target-dir is machine-local cargo configuration: resolve the
+# workspace build output through cargo metadata, never assume target/.
+WORKSPACE_TARGET="$(cd "$PROJECT_ROOT" && cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/release"
 
 # ローカルデプロイ
 echo "ローカルにデプロイ中..."
