@@ -225,10 +225,8 @@ async fn bulk_load_transfer_local_to_local_preserves_uuid_and_all_relations() {
                 h.alternative_of.clone(),
             )
         };
-        let s_hash_set: std::collections::BTreeSet<_> =
-            s_hashes.iter().map(to_hash_key).collect();
-        let d_hash_set: std::collections::BTreeSet<_> =
-            d_hashes.iter().map(to_hash_key).collect();
+        let s_hash_set: std::collections::BTreeSet<_> = s_hashes.iter().map(to_hash_key).collect();
+        let d_hash_set: std::collections::BTreeSet<_> = d_hashes.iter().map(to_hash_key).collect();
         assert_eq!(d_hash_set, s_hash_set);
 
         // media ごとの期待値を明示的に検証（失敗時の診断を容易にするため）
@@ -371,14 +369,9 @@ async fn bulk_load_verify_detects_content_divergence() {
             .await
             .unwrap()
             .expect("転送済み media");
-        dst.set_media_attribute(
-            d.id,
-            "rating",
-            Some("3"),
-            Some(AttributeValueType::Integer),
-        )
-        .await
-        .unwrap();
+        dst.set_media_attribute(d.id, "rating", Some("3"), Some(AttributeValueType::Integer))
+            .await
+            .unwrap();
 
         let err = verify(src, dst).await.expect_err("属性値改変は検出される");
         assert!(
@@ -406,7 +399,9 @@ async fn bulk_load_verify_detects_content_divergence() {
             .expect("Comic (m1)");
         dst.delete_media_hashes(&comic.uuid).await.unwrap();
 
-        let err = verify(src, dst).await.expect_err("ハッシュ欠落は検出される");
+        let err = verify(src, dst)
+            .await
+            .expect_err("ハッシュ欠落は検出される");
         assert!(
             err.to_string().contains("hashes 不一致"),
             "hashes 不一致のエラーであること: {err}"
