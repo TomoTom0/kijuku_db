@@ -112,7 +112,7 @@ export {
   type StgMeta,
   type SyncedFrom,
 } from './stg-session.js';
-export { startServer } from './server/index.js';
+export { startServer, createApp } from './server/index.js';
 export { AuthManager, generatePassword } from './server/auth.js';
 
 /**

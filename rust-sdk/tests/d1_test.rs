@@ -175,3 +175,69 @@ async fn d1_bulk_load_from_local() {
     // ---- クリーンアップ: 全テーブルを空にする（次回実行・他テストへの影響を回避） ----
     wipe(&dest).await;
 }
+
+/// 大規模リスト（999件超 → json_each で1パラメータ化される件数）の
+/// find_media uuid_in / id_in が実 D1 でも通るか（TASK-103）。
+///
+/// ローカル SQLite では同一ロジックの回帰テスト済み（TASK-102 の json_each 化）。
+/// 1200件を bulk_create して全件フェッチできることと、返却値の uuid/id が
+/// 過不足なく一致することを検証する。他テストのデータに影響しないよう、
+/// 掃除は作成した id のみを bulk_delete_media で行う。
+#[tokio::test]
+async fn d1_find_media_large_uuid_in_and_id_in() {
+    const COUNT: usize = 1200;
+
+    let db = setup().await;
+
+    let inputs: Vec<MediaInput> = (0..COUNT)
+        .map(|i| MediaInput {
+            title: format!("d1-large-{i:04}-{}", Uuid::new_v4()),
+            media_type: MediaType::Comic,
+            ..Default::default()
+        })
+        .collect();
+    let created = db.bulk_create_media(&inputs).await.unwrap();
+    assert_eq!(created.len(), COUNT);
+
+    // ---- uuid_in: 1200件を一括フェッチ ----
+    let uuids: Vec<String> = created.iter().map(|m| m.uuid.clone()).collect();
+    let found = db
+        .find_media(
+            &MediaFilter {
+                uuid_in: Some(uuids.clone()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(found.len(), COUNT, "uuid_in 1200件が欠落なく返る");
+    let found_uuids: std::collections::HashSet<&str> =
+        found.iter().map(|m| m.uuid.as_str()).collect();
+    assert!(
+        uuids.iter().all(|u| found_uuids.contains(u.as_str())),
+        "uuid_in に渡した全uuidが含まれる"
+    );
+
+    // ---- id_in: 1200件を一括フェッチ ----
+    let ids: Vec<i64> = created.iter().map(|m| m.id).collect();
+    let found = db
+        .find_media(
+            &MediaFilter {
+                id_in: Some(ids.clone()),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(found.len(), COUNT, "id_in 1200件が欠落なく返る");
+    let found_ids: std::collections::HashSet<i64> = found.iter().map(|m| m.id).collect();
+    assert!(
+        ids.iter().all(|id| found_ids.contains(id)),
+        "id_in に渡した全idが含まれる"
+    );
+
+    // ---- クリーンアップ: 本テストで作成した行のみ削除 ----
+    db.bulk_delete_media(&ids).await.unwrap();
+}

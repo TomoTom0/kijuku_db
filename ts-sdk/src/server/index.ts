@@ -23,13 +23,11 @@ export interface ServerOptions {
 }
 
 /**
- * Web GUIサーバーを起動
+ * Hono アプリを構築する（`startServer` と in-process テスト `test/integration/server.test.ts` で共用）。
+ *
+ * ミドルウェアとルート定義のみを持ち、リッスンはしない。
  */
-export function startServer(db: KijukuDB, options: ServerOptions = {}): void {
-  const port = options.port ?? 40001;
-  const password = options.password ?? generatePassword();
-  const authManager = new AuthManager(password, options.sessionMaxAge);
-
+export function createApp(db: KijukuDB, authManager: AuthManager, options: ServerOptions = {}): Hono {
   const app = new Hono();
 
   app.use('*', async (c, next) => {
@@ -144,6 +142,19 @@ export function startServer(db: KijukuDB, options: ServerOptions = {}): void {
 
     return c.text(content);
   });
+
+  return app;
+}
+
+/**
+ * Web GUIサーバーを起動
+ */
+export function startServer(db: KijukuDB, options: ServerOptions = {}): void {
+  const port = options.port ?? 40001;
+  const password = options.password ?? generatePassword();
+  const authManager = new AuthManager(password, options.sessionMaxAge);
+
+  const app = createApp(db, authManager, options);
 
   console.log(`\nKijuku DB Web GUI Server`);
   console.log(`========================`);
