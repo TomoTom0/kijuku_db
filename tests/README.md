@@ -16,6 +16,7 @@ rust-sdk/tests/              # Rust SDK のインテグレーションテスト
   prod_rw_test.rs            - prod RW 一時取得（ProdRwScope・排他ロック・pre-stash 強制・RAII 解放）
   promote_test.rs            - promote コア（stg→prod 反映・gate 不合格時の prod 無触発・同一パス拒否）
   remote_test.rs             - リモートDB接続テスト（--target 配線）
+  server_test.rs             - Web GUIサーバー層（axum oneshot・media endpoint・リストクエリ・認証/セッション）
   stg_session_test.rs        - stg 排他ロック・sync 元 revision 記録
   sync_test.rs               - sync（prod→stg フル複製・replicate_db/copy_db_online）
 
@@ -71,6 +72,7 @@ ts-sdk/test/
     migration.test.ts        - マイグレーション・スキーマバージョン
     promote.test.ts          - promote（stg→prod 反映・gate）
     search.test.ts           - 検索・フィルタ・ソート・ページネーション
+    server.test.ts           - Web GUIサーバー層（Hono app.request・media endpoint・リストクエリ・認証/セッション）
     stg-lock.test.ts         - stg 排他ロック・revision 記録
     sync.test.ts             - sync（prod→stg フル複製・replicateDb）
     tag.test.ts              - タグCRUD・メディアへの紐付け・使用統計
@@ -127,6 +129,7 @@ cd rust-sdk && cargo test --test backup_test
 | エラーハンドリングの変更 | `ts-sdk/test/unit/error-handling.test.ts`, `ts-sdk/test/integration/errors.test.ts` |
 | CLIコマンドの変更 | `rust-sdk/tests/cli_integration_test.rs`, `ts-sdk/test/integration/workflow.test.ts` |
 | リモートDB接続の変更 | `rust-sdk/tests/remote_test.rs`, `ts-sdk/test/e2e/sdk-remote.test.ts` |
+| Web GUIサーバー層（endpoint・認証・リストクエリ）の変更 | `rust-sdk/tests/server_test.rs`, `ts-sdk/test/integration/server.test.ts` |
 | リモート SSH Session 接続プール（再利用・slot無効化・disconnect/connectCount）の変更 | `ts-sdk/test/unit/remote-session-pool.test.ts`, `ts-sdk/test/e2e/sdk-remote.test.ts`, `rust-sdk/tests/remote_test.rs` |
 | ファイル操作（media root内 cp/mv/sync）の変更 | `rust-sdk/src/file_ops.rs`（内蔵）, `ts-sdk/test/unit/file-ops.test.ts`, `rust-sdk/tests/cli_integration_test.rs` |
 | trash（論理削除）機能の変更 | `rust-sdk/src/trash.rs`（内蔵）, `ts-sdk/test/unit/trash.test.ts`, `rust-sdk/tests/cli_integration_test.rs` |

@@ -25,6 +25,16 @@ pub struct ServerState {
     auth: Arc<AuthManager>,
 }
 
+impl ServerState {
+    /// 本番 (`start_server`) と in-process テスト (`tests/server_test.rs`) で共用の構築
+    pub fn new(db: KijukuDB, auth: Arc<AuthManager>) -> Self {
+        Self {
+            db: Arc::new(Mutex::new(db)),
+            auth,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct LoginRequest {
     password: String,
@@ -68,6 +78,30 @@ impl Default for ServerOptions {
     }
 }
 
+/// Router を構築する（`start_server` と in-process テスト `tests/server_test.rs` で共用）。
+///
+/// NOTE: axum 0.8 からパスパラメータは `:id` ではなく `{id}` 構文
+/// （wildcard は `*path` ではなく `{*path}`）。旧構文は Router 構築時に panic する。
+pub fn build_app(state: Arc<ServerState>) -> Router {
+    // Protected routes that require authentication
+    let protected_routes = Router::new()
+        .route("/api/media", get(get_media_list))
+        .route("/api/media/uuid/{uuid}", get(get_media_detail_by_uuid))
+        .route("/api/media/{id}", get(get_media_detail))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
+
+    Router::new()
+        .route("/", get(serve_index))
+        .route("/static/{*path}", get(serve_static))
+        .route("/api/auth/login", post(login))
+        .route("/api/auth/logout", post(logout))
+        .merge(protected_routes)
+        .with_state(state)
+}
+
 pub async fn start_server(db: KijukuDB, options: ServerOptions) {
     let password = options.password.unwrap_or_else(generate_password);
     let auth = Arc::new(AuthManager::new(password.clone()));
@@ -82,25 +116,7 @@ pub async fn start_server(db: KijukuDB, options: ServerOptions) {
         }
     });
 
-    let state = Arc::new(ServerState {
-        db: Arc::new(Mutex::new(db)),
-        auth: auth.clone(),
-    });
-
-    // Protected routes that require authentication
-    let protected_routes = Router::new()
-        .route("/api/media", get(get_media_list))
-        .route("/api/media/uuid/:uuid", get(get_media_detail_by_uuid))
-        .route("/api/media/:id", get(get_media_detail))
-        .layer(middleware::from_fn(auth_middleware));
-
-    let app = Router::new()
-        .route("/", get(serve_index))
-        .route("/static/*path", get(serve_static))
-        .route("/api/auth/login", post(login))
-        .route("/api/auth/logout", post(logout))
-        .merge(protected_routes)
-        .with_state(state);
+    let app = build_app(Arc::new(ServerState::new(db, auth)));
 
     let addr = format!("0.0.0.0:{}", options.port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
@@ -125,18 +141,14 @@ async fn shutdown_signal() {
         .expect("failed to install Ctrl+C handler");
 }
 
+/// 認証 middleware。`from_fn_with_state` で state を受け取る
+/// （axum 0.8 では Extensions 経由の state 取得は機能しないため）。
 async fn auth_middleware(
+    State(state): State<Arc<ServerState>>,
     request: axum::extract::Request,
     next: middleware::Next,
 ) -> Result<axum::response::Response, StatusCode> {
     let (mut parts, body) = request.into_parts();
-
-    // ExtensionからStateを取得（クローンして借用を解除）
-    let state = parts
-        .extensions
-        .get::<Arc<ServerState>>()
-        .cloned()
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // CookieJarを取得（Infallibleなのでunwrap()が安全）
     let jar = CookieJar::from_request_parts(&mut parts, &())

@@ -72,6 +72,7 @@ Kijuku DBプロジェクトのテスト戦略とガイドライン。TypeScript 
 - `remote_test.rs`: リモート接続（SSH）のテスト
 - `backup_test.rs` / `promote_test.rs` / `sync_test.rs`: バックアップ・昇格・同期のテスト
 - `cli_integration_test.rs`: CLIの統合テスト
+- `server_test.rs`: Web GUIサーバー層のテスト（axum oneshot による endpoint・認証の in-process テスト）
 
 **実行**（`.mise.toml` のタスクを使用）:
 
@@ -157,15 +158,16 @@ ts-sdk/
     │   ├── parse-db-path.test.ts
     │   ├── create-database.test.ts
     │   └── ...
-    ├── integration/       # 結合テスト（19ファイル）
+    ├── integration/       # 結合テスト（20ファイル）
     │   ├── crud.test.ts
     │   ├── search.test.ts
+    │   ├── server.test.ts
     │   └── ...
     └── e2e/               # E2Eテスト（リモート接続）
         └── sdk-remote.test.ts
 
 rust-sdk/
-└── tests/                 # Rust SDK テスト（13ファイル）
+└── tests/                 # Rust SDK テスト（14ファイル）
     ├── integration_test.rs
     ├── d1_test.rs
     └── ...

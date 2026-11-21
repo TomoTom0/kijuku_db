@@ -18,6 +18,7 @@
 |-----------|-----|------|----------|------|
 | `port` | `number` | | `40001` | サーバーのポート番号 |
 | `password` | `string` | | (自動生成) | 認証パスワード |
+| `sessionMaxAge` | `number` | | `3600000` | セッション有効期限（ミリ秒） |
 
 **戻り値:** なし
 
@@ -55,6 +56,20 @@ Password: Ab12Cd34Ef56
 
 Press Ctrl+C to stop the server
 ```
+
+## `createApp(db: KijukuDB, authManager: AuthManager, options?: ServerOptions): Hono`
+
+認証ミドルウェアとルート定義のみを持つ Hono アプリを構築します（リッスンはしない）。`startServer` の内部実装そのものであり、HTTP リスンなしで endpoint を検証する in-process テスト（`ts-sdk/test/integration/server.test.ts`）でも使用します。
+
+**パラメータ:**
+
+| 名前 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `db` | `KijukuDB` | 必須 | データベースインスタンス |
+| `authManager` | `AuthManager` | 必須 | 認証マネージャー |
+| `options` | `ServerOptions` | | `sessionMaxAge`（cookie の有効期限）等 |
+
+**戻り値:** `Hono` アプリケーションインスタンス（`app.request()` で直接リクエストを投げられる）
 
 ## APIエンドポイント
 
