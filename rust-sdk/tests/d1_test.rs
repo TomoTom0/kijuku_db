@@ -5,6 +5,9 @@
 //! 実行例:
 //!   D1_ACCOUNT_ID=... D1_DATABASE_ID=... \
 //!     cargo test --features d1-integration --test d1_test
+//!
+//! なお全テストが単一の実 D1 を共有する（wipe は全データ削除）ため、実 D1 実行時は
+//! テスト間干渉・API レート制限を避けるため `-- --test-threads=1` を推奨。
 
 #![cfg(feature = "d1-integration")]
 

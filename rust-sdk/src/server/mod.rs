@@ -151,7 +151,9 @@ async fn auth_middleware(
     let (mut parts, body) = request.into_parts();
 
     // CookieJarを取得（Infallibleなのでunwrap()が安全）
-    let jar = CookieJar::from_request_parts(&mut parts, &()).await.unwrap();
+    let jar = CookieJar::from_request_parts(&mut parts, &())
+        .await
+        .unwrap();
 
     let request = axum::http::Request::from_parts(parts, body);
 

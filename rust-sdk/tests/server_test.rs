@@ -96,7 +96,11 @@ async fn media_endpoints_reject_missing_session() {
     let app = test_app();
     for uri in ["/api/media", "/api/media/1", "/api/media/uuid/some-uuid"] {
         let res = get(&app, uri, None).await;
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{uri} は未認証で 401");
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "{uri} は未認証で 401"
+        );
     }
 }
 
@@ -160,12 +164,7 @@ async fn media_list_supports_filter_limit_offset_and_order() {
     assert_eq!(body["media"][0]["title"], "srv-comic-B");
 
     // order_by / order（id DESC で降順）
-    let res = get(
-        &app,
-        "/api/media?orderBy=id&order=DESC",
-        Some(&session_id),
-    )
-    .await;
+    let res = get(&app, "/api/media?orderBy=id&order=DESC", Some(&session_id)).await;
     let body = body_json(res).await;
     let ids: Vec<_> = body["media"]
         .as_array()
@@ -174,6 +173,28 @@ async fn media_list_supports_filter_limit_offset_and_order() {
         .map(|m| m["id"].as_i64().unwrap())
         .collect();
     assert_eq!(ids, vec![3, 2, 1], "orderBy=id&order=DESC で降順");
+
+    // order=ASC（明示的な昇順）
+    let res = get(&app, "/api/media?orderBy=id&order=ASC", Some(&session_id)).await;
+    let body = body_json(res).await;
+    let ids: Vec<_> = body["media"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, vec![1, 2, 3], "orderBy=id&order=ASC で昇順");
+
+    // order=asc（小文字）は Asc に丸められ、昇順として扱われる
+    let res = get(&app, "/api/media?orderBy=id&order=asc", Some(&session_id)).await;
+    let body = body_json(res).await;
+    let ids: Vec<_> = body["media"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, vec![1, 2, 3], "小文字 asc は Asc に丸められて昇順");
 }
 
 #[tokio::test]
@@ -183,8 +204,13 @@ async fn media_detail_by_id_returns_media_tags_attributes() {
     let media = create_media(&db, "srv-detail");
     let tag = db.create_tag("srv-tag").unwrap();
     db.add_tag_to_media(media.id, tag.id).unwrap();
-    db.set_media_attribute(media.id, "rating", Some("5"), Some(AttributeValueType::Integer))
-        .unwrap();
+    db.set_media_attribute(
+        media.id,
+        "rating",
+        Some("5"),
+        Some(AttributeValueType::Integer),
+    )
+    .unwrap();
     let app = app_for(db);
     let session_id = login(&app).await;
 
