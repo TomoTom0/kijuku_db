@@ -138,10 +138,8 @@ pub async fn transfer(
     // タグ数 N 回の HTTP ラウンドトリップが発生し D1 バックエンドで劇的に低速化するため、
     // 最初に 1 回取得して HashMap を作り、未登録タグのみ create_tag で作成する。
     let dst_tags = dest.get_all_tags().await?;
-    let mut tag_name_to_id: HashMap<String, i64> = dst_tags
-        .into_iter()
-        .map(|t| (t.name, t.id))
-        .collect();
+    let mut tag_name_to_id: HashMap<String, i64> =
+        dst_tags.into_iter().map(|t| (t.name, t.id)).collect();
     for t in &src_tags {
         if !tag_name_to_id.contains_key(&t.name) {
             let new_tag = dest.create_tag(&t.name).await?;
@@ -222,10 +220,7 @@ pub async fn transfer(
             }
         }
 
-        log_verbose(
-            opts,
-            &format!("media: {} 件まで転送済み", report.media),
-        );
+        log_verbose(opts, &format!("media: {} 件まで転送済み", report.media));
 
         offset += n as i64;
         if n < chunk {
@@ -256,12 +251,8 @@ pub async fn verify(
     };
 
     // --- media: 件数 + 内容 ---
-    let src_media = source
-        .find_media(&MediaFilter::default(), None)
-        .await?;
-    let dst_media = dest
-        .find_media(&MediaFilter::default(), None)
-        .await?;
+    let src_media = source.find_media(&MediaFilter::default(), None).await?;
+    let dst_media = dest.find_media(&MediaFilter::default(), None).await?;
     report.media = src_media.len();
     if src_media.len() != dst_media.len() {
         return Err(KijukuError::Other(format!(
@@ -322,11 +313,29 @@ pub async fn verify(
         let d_attrs = dest.get_media_attributes(d.id).await?;
         let s_attr_set: BTreeMap<(String, Option<String>, String), ()> = s_attrs
             .iter()
-            .map(|a| ((a.key.clone(), a.value.clone(), a.value_type.as_str().to_string()), ()))
+            .map(|a| {
+                (
+                    (
+                        a.key.clone(),
+                        a.value.clone(),
+                        a.value_type.as_str().to_string(),
+                    ),
+                    (),
+                )
+            })
             .collect();
         let d_attr_set: BTreeMap<(String, Option<String>, String), ()> = d_attrs
             .iter()
-            .map(|a| ((a.key.clone(), a.value.clone(), a.value_type.as_str().to_string()), ()))
+            .map(|a| {
+                (
+                    (
+                        a.key.clone(),
+                        a.value.clone(),
+                        a.value_type.as_str().to_string(),
+                    ),
+                    (),
+                )
+            })
             .collect();
         if s_attr_set != d_attr_set {
             return Err(KijukuError::Other(format!(
@@ -431,12 +440,22 @@ mod tests {
         db.add_tag_to_media(m2.id, t1.id).await.unwrap();
         db.add_tag_to_media(m1.id, t2.id).await.unwrap(); // media_tags 計3
 
-        db.set_media_attribute(m1.id, "rating", Some("5"), Some(AttributeValueType::Integer))
-            .await
-            .unwrap();
-        db.set_media_attribute(m1.id, "note", Some("メモ"), Some(AttributeValueType::String))
-            .await
-            .unwrap();
+        db.set_media_attribute(
+            m1.id,
+            "rating",
+            Some("5"),
+            Some(AttributeValueType::Integer),
+        )
+        .await
+        .unwrap();
+        db.set_media_attribute(
+            m1.id,
+            "note",
+            Some("メモ"),
+            Some(AttributeValueType::String),
+        )
+        .await
+        .unwrap();
 
         // content_hash は SHA256(32byte) 想定
         db.add_media_hash(&MediaHashInput {
@@ -463,7 +482,9 @@ mod tests {
         src.migrate().await.unwrap();
         seed(src).await;
 
-        let report = transfer(src, &dest, &TransferOptions::default()).await.unwrap();
+        let report = transfer(src, &dest, &TransferOptions::default())
+            .await
+            .unwrap();
 
         assert_eq!(report.media, 2);
         assert_eq!(report.tags, 2);
@@ -503,7 +524,9 @@ mod tests {
         let src: &dyn KijukuBackend = &source;
         src.migrate().await.unwrap();
         seed(src).await;
-        transfer(src, &dest, &TransferOptions::default()).await.unwrap();
+        transfer(src, &dest, &TransferOptions::default())
+            .await
+            .unwrap();
 
         let v = verify(src, &dest).await.unwrap();
         assert!(v.verified);

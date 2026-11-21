@@ -1,8 +1,8 @@
-use rusqlite::{params, Connection};
 use crate::db_value::{SqlParam, SqlRow};
 use crate::error::{KijukuError, Result};
 use crate::exec::SqlExec;
 use crate::types::{MediaHash, MediaHashInput};
+use rusqlite::{params, Connection};
 
 fn row_to_media_hash(row: &rusqlite::Row) -> rusqlite::Result<MediaHash> {
     Ok(MediaHash {
@@ -47,11 +47,19 @@ pub fn add_media_hash(conn: &Connection, input: &MediaHashInput) -> Result<Media
          ON CONFLICT(item_uuid, filename, time_range) DO UPDATE SET
            content_hash = ?4,
            alternative_of = ?5",
-        params![input.item_uuid, input.filename, input.time_range, input.content_hash, input.alternative_of],
+        params![
+            input.item_uuid,
+            input.filename,
+            input.time_range,
+            input.content_hash,
+            input.alternative_of
+        ],
     )?;
 
     let hash = get_media_hash(conn, &input.item_uuid, &input.filename, &input.time_range)?
-        .ok_or_else(|| crate::error::KijukuError::Other("Failed to read inserted hash".to_string()))?;
+        .ok_or_else(|| {
+            crate::error::KijukuError::Other("Failed to read inserted hash".to_string())
+        })?;
     Ok(hash)
 }
 
@@ -72,7 +80,9 @@ pub fn add_media_hashes(conn: &Connection, inputs: &[MediaHashInput]) -> Result<
     tx.commit()?;
 
     for input in inputs {
-        if let Some(hash) = get_media_hash(conn, &input.item_uuid, &input.filename, &input.time_range)? {
+        if let Some(hash) =
+            get_media_hash(conn, &input.item_uuid, &input.filename, &input.time_range)?
+        {
             results.push(hash);
         }
     }
@@ -221,7 +231,8 @@ fn upsert_media_hash_stmt(input: &MediaHashInput) -> (String, Vec<SqlParam>) {
         SqlParam::from_opt_str(&input.alternative_of),
     ];
 
-    let sql = "INSERT INTO media_hashes (item_uuid, filename, time_range, content_hash, alternative_of)
+    let sql =
+        "INSERT INTO media_hashes (item_uuid, filename, time_range, content_hash, alternative_of)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(item_uuid, filename, time_range) DO UPDATE SET
            content_hash = ?4,
@@ -257,8 +268,7 @@ pub async fn add_media_hashes_async(
         return Ok(Vec::new());
     }
 
-    let stmts: Vec<(String, Vec<SqlParam>)> =
-        inputs.iter().map(upsert_media_hash_stmt).collect();
+    let stmts: Vec<(String, Vec<SqlParam>)> = inputs.iter().map(upsert_media_hash_stmt).collect();
     exec.execute_batch(stmts).await?;
 
     let mut results = Vec::with_capacity(inputs.len());
@@ -304,10 +314,7 @@ pub async fn get_media_hash_async(
 }
 
 /// async バックエンド経由の SHA256 完全一致検索
-pub async fn find_by_content_hash_async(
-    exec: &dyn SqlExec,
-    hash: &[u8],
-) -> Result<Vec<MediaHash>> {
+pub async fn find_by_content_hash_async(exec: &dyn SqlExec, hash: &[u8]) -> Result<Vec<MediaHash>> {
     let sql = "SELECT * FROM media_hashes WHERE content_hash = ?1";
     let params = vec![SqlParam::Blob(hash.to_vec())];
     let rows = exec.query(sql, &params).await?;
@@ -369,9 +376,7 @@ pub async fn delete_media_hashes_async(exec: &dyn SqlExec, item_uuid: &str) -> R
 }
 
 /// async バックエンド経由で重複ハッシュを検出
-pub async fn find_duplicate_hashes_async(
-    exec: &dyn SqlExec,
-) -> Result<Vec<(Vec<u8>, i64)>> {
+pub async fn find_duplicate_hashes_async(exec: &dyn SqlExec) -> Result<Vec<(Vec<u8>, i64)>> {
     let sql = "SELECT content_hash, COUNT(*) as cnt
          FROM media_hashes
          GROUP BY content_hash
@@ -393,7 +398,7 @@ pub struct ComputeHashResult {
 
 /// ファイルのSHA256をストリーミング計算
 fn compute_sha256_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     use std::io::Read;
 
     let mut hasher = Sha256::new();
@@ -401,7 +406,9 @@ fn compute_sha256_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     let mut buf = [0u8; 8192];
     loop {
         let n = file.read(&mut buf)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
     }
     Ok(hasher.finalize().to_vec())
@@ -409,7 +416,7 @@ fn compute_sha256_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 
 /// ファイルの先頭NバイトのSHA256を計算
 fn compute_sha256_prefix(path: &std::path::Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     use std::io::Read;
 
     let mut hasher = Sha256::new();
@@ -418,9 +425,13 @@ fn compute_sha256_prefix(path: &std::path::Path, max_bytes: u64) -> std::io::Res
     let mut remaining = max_bytes;
     loop {
         let to_read = std::cmp::min(buf.len() as u64, remaining) as usize;
-        if to_read == 0 { break; }
+        if to_read == 0 {
+            break;
+        }
         let n = file.read(&mut buf[..to_read])?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
         remaining -= n as u64;
     }
@@ -429,7 +440,7 @@ fn compute_sha256_prefix(path: &std::path::Path, max_bytes: u64) -> std::io::Res
 
 /// バイト配列のSHA256を計算
 fn compute_sha256_bytes(data: &[u8]) -> Vec<u8> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(data);
     hasher.finalize().to_vec()
@@ -438,9 +449,11 @@ fn compute_sha256_bytes(data: &[u8]) -> Vec<u8> {
 /// 画像ファイルの拡張子かどうか
 fn is_image_file(name: &str) -> bool {
     let lower = name.to_lowercase();
-    lower.ends_with(".jpg") || lower.ends_with(".jpeg") ||
-        lower.ends_with(".png") || lower.ends_with(".gif") ||
-        lower.ends_with(".webp")
+    lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".png")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".webp")
 }
 
 /// 音声ファイルの先頭秒数に対応するバイト数を推定
@@ -646,7 +659,11 @@ fn compute_comic_hash(
         .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            if is_image_file(&name) { Some(name) } else { None }
+            if is_image_file(&name) {
+                Some(name)
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -757,7 +774,7 @@ mod tests {
     use crate::crud::create_media;
     use crate::exec_local::LocalExec;
     use crate::migration;
-    use crate::types::{MediaInput, MediaFilter, MediaType};
+    use crate::types::{MediaFilter, MediaInput, MediaType};
     use parking_lot::ReentrantMutex;
     use std::sync::Arc;
 
@@ -856,7 +873,10 @@ mod tests {
         delete_media_hash_async(&exec, &uuid, "001.jpg", "")
             .await
             .unwrap();
-        assert!(get_media_hashes_async(&exec, &uuid).await.unwrap().is_empty());
+        assert!(get_media_hashes_async(&exec, &uuid)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -939,7 +959,9 @@ mod tests {
         assert_eq!(hash.filename, "001.jpg");
         assert_eq!(hash.content_hash, vec![1u8; 32]);
 
-        let got = get_media_hash(&conn, &uuid, "001.jpg", "").unwrap().unwrap();
+        let got = get_media_hash(&conn, &uuid, "001.jpg", "")
+            .unwrap()
+            .unwrap();
         assert_eq!(got.content_hash, vec![1u8; 32]);
     }
 
@@ -1111,8 +1133,11 @@ mod tests {
     fn test_delete_cascade_on_media_delete() {
         let (conn, uuid) = setup();
         let media_id = {
-            let mut stmt = conn.prepare("SELECT id FROM media WHERE uuid = ?1").unwrap();
-            stmt.query_row(params![uuid], |row| row.get::<_, i64>(0)).unwrap()
+            let mut stmt = conn
+                .prepare("SELECT id FROM media WHERE uuid = ?1")
+                .unwrap();
+            stmt.query_row(params![uuid], |row| row.get::<_, i64>(0))
+                .unwrap()
         };
 
         let mut input = make_hash(&uuid, "", "");
@@ -1127,10 +1152,7 @@ mod tests {
 
     // ========== compute_media_hash テスト ==========
 
-    fn setup_with_media(
-        media_type: MediaType,
-        path: Option<String>,
-    ) -> (Connection, String) {
+    fn setup_with_media(media_type: MediaType, path: Option<String>) -> (Connection, String) {
         let conn = Connection::open_in_memory().unwrap();
         migration::migrate(&conn).unwrap();
         let media = create_media(
@@ -1159,8 +1181,13 @@ mod tests {
         );
 
         let result = compute_media_hash(
-            &conn, &uuid, file_path.to_str().unwrap(), "music", Some(180),
-        ).unwrap();
+            &conn,
+            &uuid,
+            file_path.to_str().unwrap(),
+            "music",
+            Some(180),
+        )
+        .unwrap();
 
         assert!(!result.skipped);
         assert_eq!(result.hashes.len(), 2); // 全体 + 先頭30秒
@@ -1181,9 +1208,8 @@ mod tests {
             Some(file_path.to_str().unwrap().to_string()),
         );
 
-        let result = compute_media_hash(
-            &conn, &uuid, file_path.to_str().unwrap(), "video", None,
-        ).unwrap();
+        let result =
+            compute_media_hash(&conn, &uuid, file_path.to_str().unwrap(), "video", None).unwrap();
 
         assert!(!result.skipped);
         assert_eq!(result.hashes.len(), 1); // 全体のみ
@@ -1204,20 +1230,23 @@ mod tests {
             Some(dir.path().to_str().unwrap().to_string()),
         );
 
-        let result = compute_media_hash(
-            &conn, &uuid, dir.path().to_str().unwrap(), "comic", None,
-        ).unwrap();
+        let result =
+            compute_media_hash(&conn, &uuid, dir.path().to_str().unwrap(), "comic", None).unwrap();
 
         assert!(!result.skipped);
         // 2ページ + 全体hash = 3
         assert_eq!(result.hashes.len(), 3);
         // ページhash
-        let page_hashes: Vec<_> = result.hashes.iter()
+        let page_hashes: Vec<_> = result
+            .hashes
+            .iter()
             .filter(|h| !h.filename.is_empty())
             .collect();
         assert_eq!(page_hashes.len(), 2);
         // 全体hash
-        let whole: Vec<_> = result.hashes.iter()
+        let whole: Vec<_> = result
+            .hashes
+            .iter()
             .filter(|h| h.filename.is_empty() && h.time_range.is_empty())
             .collect();
         assert_eq!(whole.len(), 1);
@@ -1227,9 +1256,8 @@ mod tests {
     fn test_compute_skip_nonexistent_path() {
         let (conn, uuid) = setup_with_media(MediaType::Music, None);
 
-        let result = compute_media_hash(
-            &conn, &uuid, "/nonexistent/file.mp3", "music", None,
-        ).unwrap();
+        let result =
+            compute_media_hash(&conn, &uuid, "/nonexistent/file.mp3", "music", None).unwrap();
 
         assert!(result.skipped);
         assert!(result.skip_reason.is_some());
@@ -1246,9 +1274,8 @@ mod tests {
             Some(file_path.to_str().unwrap().to_string()),
         );
 
-        let result = compute_media_hash(
-            &conn, &uuid, file_path.to_str().unwrap(), "music", None,
-        ).unwrap();
+        let result =
+            compute_media_hash(&conn, &uuid, file_path.to_str().unwrap(), "music", None).unwrap();
 
         assert!(result.skipped);
         assert!(result.skip_reason.unwrap().contains("size is 0"));
@@ -1264,9 +1291,8 @@ mod tests {
             Some(dir.path().to_str().unwrap().to_string()),
         );
 
-        let result = compute_media_hash(
-            &conn, &uuid, dir.path().to_str().unwrap(), "comic", None,
-        ).unwrap();
+        let result =
+            compute_media_hash(&conn, &uuid, dir.path().to_str().unwrap(), "comic", None).unwrap();
 
         assert!(result.skipped);
         assert!(result.skip_reason.unwrap().contains("No image files"));
@@ -1283,9 +1309,8 @@ mod tests {
             Some(file_path.to_str().unwrap().to_string()),
         );
 
-        let result = compute_media_hash(
-            &conn, &uuid, file_path.to_str().unwrap(), "comic", None,
-        ).unwrap();
+        let result =
+            compute_media_hash(&conn, &uuid, file_path.to_str().unwrap(), "comic", None).unwrap();
 
         assert!(result.skipped);
         assert!(result.skip_reason.unwrap().contains("not a directory"));
@@ -1302,9 +1327,9 @@ mod tests {
             MediaType::Comic,
             Some(dir1.path().to_str().unwrap().to_string()),
         );
-        let result1 = compute_media_hash(
-            &conn1, &uuid1, dir1.path().to_str().unwrap(), "comic", None,
-        ).unwrap();
+        let result1 =
+            compute_media_hash(&conn1, &uuid1, dir1.path().to_str().unwrap(), "comic", None)
+                .unwrap();
 
         // 同じ内容の別ディレクトリ（ファイル名順でソートされるので同じ結果）
         let dir2 = tempfile::tempdir().unwrap();
@@ -1315,12 +1340,20 @@ mod tests {
             MediaType::Comic,
             Some(dir2.path().to_str().unwrap().to_string()),
         );
-        let result2 = compute_media_hash(
-            &conn2, &uuid2, dir2.path().to_str().unwrap(), "comic", None,
-        ).unwrap();
+        let result2 =
+            compute_media_hash(&conn2, &uuid2, dir2.path().to_str().unwrap(), "comic", None)
+                .unwrap();
 
-        let whole1 = result1.hashes.iter().find(|h| h.filename.is_empty() && h.time_range.is_empty()).unwrap();
-        let whole2 = result2.hashes.iter().find(|h| h.filename.is_empty() && h.time_range.is_empty()).unwrap();
+        let whole1 = result1
+            .hashes
+            .iter()
+            .find(|h| h.filename.is_empty() && h.time_range.is_empty())
+            .unwrap();
+        let whole2 = result2
+            .hashes
+            .iter()
+            .find(|h| h.filename.is_empty() && h.time_range.is_empty())
+            .unwrap();
         assert_eq!(whole1.content_hash, whole2.content_hash);
     }
 
@@ -1336,15 +1369,13 @@ mod tests {
         );
 
         // 1回目
-        let r1 = compute_media_hash(
-            &conn, &uuid, file_path.to_str().unwrap(), "music", None,
-        ).unwrap();
+        let r1 =
+            compute_media_hash(&conn, &uuid, file_path.to_str().unwrap(), "music", None).unwrap();
         assert!(!r1.skipped);
 
         // 2回目（upsert）
-        let r2 = compute_media_hash(
-            &conn, &uuid, file_path.to_str().unwrap(), "music", None,
-        ).unwrap();
+        let r2 =
+            compute_media_hash(&conn, &uuid, file_path.to_str().unwrap(), "music", None).unwrap();
         assert!(!r2.skipped);
         assert_eq!(r2.hashes.len(), 2);
 

@@ -9,7 +9,10 @@ use rusqlite::{params, Connection, Row};
 fn calculate_volume_number(volume_text: Option<&str>) -> Option<i32> {
     volume_text.and_then(|text| {
         let trimmed = text.trim();
-        trimmed.parse::<i32>().ok().filter(|num| num.to_string() == trimmed)
+        trimmed
+            .parse::<i32>()
+            .ok()
+            .filter(|num| num.to_string() == trimmed)
     })
 }
 
@@ -27,7 +30,10 @@ pub(crate) fn row_to_media(row: &Row) -> rusqlite::Result<Media> {
                 rusqlite::Error::FromSqlConversionFailure(
                     0, // 列名アクセスのため動的インデックス取得は不要; プレースホルダーとして0を使用
                     rusqlite::types::Type::Text,
-                    Box::new(KijukuError::Parse(format!("Invalid media_type: {}", type_str))),
+                    Box::new(KijukuError::Parse(format!(
+                        "Invalid media_type: {}",
+                        type_str
+                    ))),
                 )
             })?
         },
@@ -116,7 +122,10 @@ pub fn create_media(conn: &Connection, input: &MediaInput) -> Result<Media> {
     let volume_number = calculate_volume_number(input.volume_text.as_deref());
 
     // UUID: 手動指定があればそれを使用、なければv4を自動生成
-    let uuid = input.uuid.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let uuid = input
+        .uuid
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     conn.execute(
         "INSERT INTO media (
@@ -165,19 +174,28 @@ pub fn create_media(conn: &Connection, input: &MediaInput) -> Result<Media> {
     )?;
 
     let id = conn.last_insert_rowid();
-    get_media(conn, id).ok_or_else(|| KijukuError::NotFound("作成されたメディアが見つかりません".to_string()))
+    get_media(conn, id)
+        .ok_or_else(|| KijukuError::NotFound("作成されたメディアが見つかりません".to_string()))
 }
 
 /// IDでメディアを取得
 pub fn get_media(conn: &Connection, id: i64) -> Option<Media> {
-    conn.query_row("SELECT * FROM media WHERE id = ?1", params![id], row_to_media)
-        .ok()
+    conn.query_row(
+        "SELECT * FROM media WHERE id = ?1",
+        params![id],
+        row_to_media,
+    )
+    .ok()
 }
 
 /// UUIDでメディアを取得（uuidカラムはUNIQUEのため単一取得）
 pub fn get_media_by_uuid(conn: &Connection, uuid: &str) -> Option<Media> {
-    conn.query_row("SELECT * FROM media WHERE uuid = ?1", params![uuid], row_to_media)
-        .ok()
+    conn.query_row(
+        "SELECT * FROM media WHERE uuid = ?1",
+        params![uuid],
+        row_to_media,
+    )
+    .ok()
 }
 
 /// メディアを更新（部分更新）
@@ -280,7 +298,9 @@ pub fn update_media(conn: &Connection, id: i64, input: &MediaUpdateInput) -> Res
     }
     if let Some(ref opt_val) = input.volume_text {
         // volume_textが更新される場合、volume_numberも再計算
-        let volume_number = opt_val.as_ref().and_then(|v| calculate_volume_number(Some(v.as_str())));
+        let volume_number = opt_val
+            .as_ref()
+            .and_then(|v| calculate_volume_number(Some(v.as_str())));
         update_fields.push(format!("volume_text = ?{}", param_idx));
         params.push(Box::new(opt_val.clone()));
         param_idx += 1;
@@ -585,8 +605,9 @@ pub fn build_update_media_sql(
 
     // volume_text 更新時は volume_number も再計算
     if let Some(ref opt_val) = input.volume_text {
-        let volume_number =
-            opt_val.as_ref().and_then(|v| calculate_volume_number(Some(v.as_str())));
+        let volume_number = opt_val
+            .as_ref()
+            .and_then(|v| calculate_volume_number(Some(v.as_str())));
         fields.push(format!("volume_text = ?{}", idx));
         params.push(SqlParam::from_opt_str(opt_val));
         idx += 1;
@@ -904,7 +925,7 @@ mod tests {
 
         // artistをNULLに設定（Some(None)）、descriptionは更新しない（None）
         let update_input = crate::types::MediaUpdateInput {
-            artist: Some(None),  // NULLに設定
+            artist: Some(None), // NULLに設定
             // description: None - 更新しない
             ..Default::default()
         };
@@ -935,7 +956,7 @@ mod tests {
 
         // volume_textをNULLに設定するとvolume_numberもNULLになる
         let update_input = crate::types::MediaUpdateInput {
-            volume_text: Some(None),  // NULLに設定
+            volume_text: Some(None), // NULLに設定
             ..Default::default()
         };
         update_media(&conn, media.id, &update_input).unwrap();

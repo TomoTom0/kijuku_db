@@ -7,7 +7,9 @@
 #![allow(deprecated)] // テストは同期 API（create_media / find_media 等）を直接使用
 
 use kijuku_db::diff::{GateConfig, ObserveOptions};
-use kijuku_db::{BackupOptions, DBOptions, KijukuDB, KijukuError, MediaFilter, MediaInput, MediaType};
+use kijuku_db::{
+    BackupOptions, DBOptions, KijukuDB, KijukuError, MediaFilter, MediaInput, MediaType,
+};
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -36,7 +38,9 @@ fn setup_prod(dir: &TempDir, n: usize) -> std::path::PathBuf {
 /// DB ファイルのメディア件数。
 fn media_count(db_path: &Path) -> usize {
     let db = KijukuDB::open(db_path).expect("open for count");
-    db.find_media(&MediaFilter::default(), None).expect("find_media").len()
+    db.find_media(&MediaFilter::default(), None)
+        .expect("find_media")
+        .len()
 }
 
 /// gate 合格: stg→prod 反映 + pre-stash（promote 前 prod）作成。
@@ -48,13 +52,19 @@ fn promote_gate_pass_reflects_stg_and_pre_stashes_prod() {
     KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("replicate prod->stg");
 
     let stg_db = KijukuDB::open(&stg).expect("open stg");
-    stg_db.create_media(&make_input("new")).expect("add stg media");
+    stg_db
+        .create_media(&make_input("new"))
+        .expect("add stg media");
 
     assert_eq!(media_count(&prod), 2, "prod before promote");
     let outcome = stg_db
         .promote(&prod, &ObserveOptions::default(), None)
         .expect("promote");
-    assert!(outcome.observe.passed, "gate should pass: {:?}", outcome.observe.checks);
+    assert!(
+        outcome.observe.passed,
+        "gate should pass: {:?}",
+        outcome.observe.checks
+    );
 
     // prod に stg が反映（3件・"new" 含む）。
     assert_eq!(media_count(&prod), 3, "prod after promote");
@@ -65,7 +75,11 @@ fn promote_gate_pass_reflects_stg_and_pre_stashes_prod() {
         .into_iter()
         .map(|m| m.title)
         .collect();
-    assert!(titles.iter().any(|t| t == "new"), "new reflected: {:?}", titles);
+    assert!(
+        titles.iter().any(|t| t == "new"),
+        "new reflected: {:?}",
+        titles
+    );
 
     // pre-stash は promote 前 prod（2件）= §8 即時復旧の戻し先。
     let pre = outcome.pre_stash_path.expect("pre-stash path");
@@ -81,7 +95,9 @@ fn promote_gate_fail_leaves_prod_untouched() {
     let stg = dir.path().join("kijuku.stg.db");
     KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("replicate prod->stg");
     let stg_db = KijukuDB::open(&stg).expect("open stg");
-    stg_db.create_media(&make_input("new")).expect("add stg media");
+    stg_db
+        .create_media(&make_input("new"))
+        .expect("add stg media");
 
     let opts = ObserveOptions {
         gate_config: GateConfig {
@@ -109,7 +125,9 @@ fn promote_same_path_rejected() {
     let stg_db = KijukuDB::open(&stg).expect("open stg");
     stg_db.migrate().expect("migrate stg");
 
-    let err = stg_db.promote(&stg, &ObserveOptions::default(), None).unwrap_err();
+    let err = stg_db
+        .promote(&stg, &ObserveOptions::default(), None)
+        .unwrap_err();
     assert!(
         matches!(err, KijukuError::Other(_)) && err.to_string().contains("same path"),
         "expected same-path rejection, got: {:?}",
@@ -128,7 +146,9 @@ fn promote_with_backup_opts_routes_pre_stash_to_custom_dir() {
     KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("replicate prod->stg");
 
     let stg_db = KijukuDB::open(&stg).expect("open stg");
-    stg_db.create_media(&make_input("new")).expect("add stg media");
+    stg_db
+        .create_media(&make_input("new"))
+        .expect("add stg media");
 
     // pre-stash 先を明示カスタマイズ（enabled:false で auto/manual/meta dir を作らず tmp/ のみ）。
     let custom_backup_dir = dir.path().join("custom-backup");
@@ -140,7 +160,11 @@ fn promote_with_backup_opts_routes_pre_stash_to_custom_dir() {
     let outcome = stg_db
         .promote(&prod, &ObserveOptions::default(), Some(backup_opts))
         .expect("promote");
-    assert!(outcome.observe.passed, "gate should pass: {:?}", outcome.observe.checks);
+    assert!(
+        outcome.observe.passed,
+        "gate should pass: {:?}",
+        outcome.observe.checks
+    );
 
     // prod に stg が反映され、pre-stash は指定 backup_dir 配下に作られる。
     assert_eq!(media_count(&prod), 3, "prod after promote");
@@ -163,7 +187,9 @@ fn list_pre_stashes_discovers_promote_pre_stash() {
     let stg = dir.path().join("kijuku.stg.db");
     KijukuDB::replicate_db(&prod, &stg, kijuku_db::SyncOp::Sync).expect("replicate prod->stg");
     let stg_db = KijukuDB::open(&stg).expect("open stg");
-    stg_db.create_media(&make_input("new")).expect("add stg media");
+    stg_db
+        .create_media(&make_input("new"))
+        .expect("add stg media");
 
     let custom_backup_dir = dir.path().join("custom-backup");
     let backup_opts = BackupOptions {

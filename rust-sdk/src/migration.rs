@@ -65,7 +65,10 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
         2 => {
             // volume_numberカラムを削除（バージョン2では削除していた）
             conn.execute_batch("ALTER TABLE media DROP COLUMN volume_number;")?;
-            conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+                [version],
+            )?;
             Ok(())
         }
         3 => {
@@ -83,14 +86,19 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
                 [],
             )?;
 
-            conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+                [version],
+            )?;
             Ok(())
         }
         4 => {
             // uuid列をNOT NULL制約付きで追加するため、テーブルを再作成する
 
             // 1. uuid列が存在しない場合のみ追加（冪等性のため）
-            let uuid_exists = get_table_info(conn, "media")?.iter().any(|c| c.name == "uuid");
+            let uuid_exists = get_table_info(conn, "media")?
+                .iter()
+                .any(|c| c.name == "uuid");
             if !uuid_exists {
                 conn.execute_batch("ALTER TABLE media ADD COLUMN uuid TEXT;")?;
             }
@@ -98,20 +106,24 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
             // 2. 既存データのうちuuidがNULLのレコードにUUID v4を生成して設定
             let ids: Vec<i64> = {
                 let mut stmt = conn.prepare("SELECT id FROM media WHERE uuid IS NULL")?;
-                let result = stmt.query_map([], |row| row.get(0))?
+                let result = stmt
+                    .query_map([], |row| row.get(0))?
                     .collect::<std::result::Result<Vec<i64>, _>>()?;
                 result
             };
             for id in ids {
                 let uuid = uuid::Uuid::new_v4().to_string();
-                conn.execute("UPDATE media SET uuid = ?1 WHERE id = ?2", params![uuid, id])?;
+                conn.execute(
+                    "UPDATE media SET uuid = ?1 WHERE id = ?2",
+                    params![uuid, id],
+                )?;
             }
 
             // 3. テーブルを再作成してNOT NULL制約を付与（SQLiteではALTER TABLEでNOT NULL追加不可）
             conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
             let migrate_result = (|| -> crate::error::Result<()> {
                 let tx = conn.unchecked_transaction()?;
-            tx.execute_batch("
+                tx.execute_batch("
                 CREATE TABLE media_new (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     uuid TEXT NOT NULL UNIQUE,
@@ -173,7 +185,10 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
                     UPDATE media SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
                 END;
             ")?;
-                tx.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+                    [version],
+                )?;
                 tx.commit()?;
                 Ok(())
             })();
@@ -215,7 +230,10 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
                 DROP TABLE media_attributes;
                 ALTER TABLE media_attributes_new RENAME TO media_attributes;
                 ")?;
-                tx.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+                    [version],
+                )?;
                 tx.commit()?;
                 Ok(())
             })();
@@ -249,7 +267,10 @@ fn apply_migration(conn: &Connection, version: i64) -> Result<()> {
                 END;
                 "
             )?;
-            conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", [version])?;
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+                [version],
+            )?;
             Ok(())
         }
         _ => Err(crate::error::KijukuError::Other(format!(
@@ -445,7 +466,9 @@ async fn apply_migration_async(exec: &dyn SqlExec, version: i64) -> Result<()> {
             }
 
             // uuid が NULL のレコードに UUID v4 を生成して設定
-            let rows = exec.query("SELECT id FROM media WHERE uuid IS NULL", &[]).await?;
+            let rows = exec
+                .query("SELECT id FROM media WHERE uuid IS NULL", &[])
+                .await?;
             for row in rows {
                 let id = row.get_int("id")?;
                 let uuid = uuid::Uuid::new_v4().to_string();
@@ -686,7 +709,10 @@ mod tests {
             versions.sort_unstable();
             versions.dedup();
             let expected: Vec<u32> = (1..=6).collect();
-            assert_eq!(versions, expected, "base schema must record migrations 1..=6");
+            assert_eq!(
+                versions, expected,
+                "base schema must record migrations 1..=6"
+            );
         }
     }
 
@@ -813,7 +839,11 @@ mod tests {
         delete_media(&conn, media.id).unwrap();
 
         let attrs_after = get_media_attributes(&conn, media.id).unwrap();
-        assert_eq!(attrs_after.len(), 0, "media削除時にattributesもカスケード削除されること");
+        assert_eq!(
+            attrs_after.len(),
+            0,
+            "media削除時にattributesもカスケード削除されること"
+        );
     }
 
     #[test]
@@ -844,6 +874,10 @@ mod tests {
         delete_media(&conn, media.id).unwrap();
 
         let tags_after = get_media_tags(&conn, media.id).unwrap();
-        assert_eq!(tags_after.len(), 0, "media削除時にmedia_tagsもカスケード削除されること");
+        assert_eq!(
+            tags_after.len(),
+            0,
+            "media削除時にmedia_tagsもカスケード削除されること"
+        );
     }
 }

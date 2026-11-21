@@ -12,7 +12,8 @@ use kijuku_db::audit::AuditRecord;
 use kijuku_db::backup::BackupManager;
 use kijuku_db::diff::ObserveOptions;
 use kijuku_db::{
-    AuditLogFilter, AuditResult, AuditTarget, BackupOptions, KijukuDB, MediaInput, MediaType, SyncOp,
+    AuditLogFilter, AuditResult, AuditTarget, BackupOptions, KijukuDB, MediaInput, MediaType,
+    SyncOp,
 };
 use std::path::Path;
 use tempfile::TempDir;
@@ -71,7 +72,9 @@ fn append_audit_record_is_jsonl_append_only() {
         })
         .expect("append");
     }
-    let logs = bm.read_audit_logs(&AuditLogFilter::default()).expect("read");
+    let logs = bm
+        .read_audit_logs(&AuditLogFilter::default())
+        .expect("read");
     assert_eq!(logs.len(), 3, "3 records");
     // 新しい順（timestamp 降順）
     assert_eq!(logs[0].timestamp, "2026-07-27T00:00:02.000Z");
@@ -133,7 +136,9 @@ fn read_audit_skips_invalid_lines() {
         },
     )
     .expect("bm");
-    let logs = bm.read_audit_logs(&AuditLogFilter::default()).expect("read");
+    let logs = bm
+        .read_audit_logs(&AuditLogFilter::default())
+        .expect("read");
     assert_eq!(logs.len(), 2, "invalid line skipped");
 }
 
@@ -153,8 +158,14 @@ fn sync_appends_audit_record() {
     assert_eq!(sync_log.target, AuditTarget::Stg);
     assert_eq!(sync_log.result, AuditResult::Success);
     assert_eq!(sync_log.prod_db_path, prod.display().to_string());
-    assert!(sync_log.summary.get("stgPath").is_some(), "stgPath in summary");
-    assert!(sync_log.summary.get("revision").is_some(), "revision in summary");
+    assert!(
+        sync_log.summary.get("stgPath").is_some(),
+        "stgPath in summary"
+    );
+    assert!(
+        sync_log.summary.get("revision").is_some(),
+        "revision in summary"
+    );
 }
 
 /// discard で operation="discard" のレコード。
@@ -192,10 +203,7 @@ fn observe_appends_audit_record() {
         .find(|r| r.operation == "observe")
         .expect("observe audit record");
     assert_eq!(
-        observe_log
-            .summary
-            .get("passed")
-            .and_then(|v| v.as_bool()),
+        observe_log.summary.get("passed").and_then(|v| v.as_bool()),
         Some(result.passed)
     );
     assert!(
@@ -212,7 +220,9 @@ fn promote_survives_in_prod_audit_log() {
     let stg = dir.path().join("kijuku.stg.db");
     KijukuDB::replicate_db(&prod, &stg, SyncOp::Sync).expect("sync");
     let stg_db = KijukuDB::open(&stg).expect("open stg");
-    stg_db.create_media(&make_input("new")).expect("add stg media");
+    stg_db
+        .create_media(&make_input("new"))
+        .expect("add stg media");
     stg_db
         .promote(&prod, &ObserveOptions::default(), None)
         .expect("promote");
@@ -246,7 +256,9 @@ fn promote_does_not_emit_observe_audit() {
     let stg = dir.path().join("kijuku.stg.db");
     KijukuDB::replicate_db(&prod, &stg, SyncOp::Sync).expect("sync");
     let stg_db = KijukuDB::open(&stg).expect("open stg");
-    stg_db.create_media(&make_input("new")).expect("add stg media");
+    stg_db
+        .create_media(&make_input("new"))
+        .expect("add stg media");
     stg_db
         .promote(&prod, &ObserveOptions::default(), None)
         .expect("promote");

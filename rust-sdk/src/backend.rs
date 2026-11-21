@@ -7,14 +7,13 @@
 //! 固有メソッドとして残る（D1 では提供しない）。
 
 use crate::error::Result;
-use std::collections::HashMap;
 use crate::migration::TableColumnInfo;
 use crate::types::{
     AttributeValueType, BulkUpdateItem, Media, MediaAttribute, MediaFilter, MediaHash,
-    MediaHashInput, MediaInput, MediaUpdateInput, QueryOptions, Tag,
-    TagUsageStats,
+    MediaHashInput, MediaInput, MediaUpdateInput, QueryOptions, Tag, TagUsageStats,
 };
 use async_trait::async_trait;
+use std::collections::HashMap;
 
 /// 純 DB 操作のみを抽象化するバックエンド trait（async）。
 ///
@@ -104,10 +103,7 @@ pub trait KijukuBackend: Send + Sync {
     ///
     /// デフォルト実装は `get_media_tags` のループ（N+1）。Local/D1 は JOIN 1発の
     /// 効率的実装で上書きする。RemoteKijukuDB はデフォルト（ループ）を使用する。
-    async fn get_media_tags_bulk(
-        &self,
-        media_ids: &[i64],
-    ) -> Result<HashMap<i64, Vec<Tag>>> {
+    async fn get_media_tags_bulk(&self, media_ids: &[i64]) -> Result<HashMap<i64, Vec<Tag>>> {
         let mut result = HashMap::new();
         for id in media_ids {
             if !result.contains_key(id) {
@@ -135,7 +131,8 @@ pub trait KijukuBackend: Send + Sync {
     ) -> Result<()>;
 
     /// メディアの属性を取得
-    async fn get_media_attribute(&self, media_id: i64, key: &str) -> Result<Option<MediaAttribute>>;
+    async fn get_media_attribute(&self, media_id: i64, key: &str)
+        -> Result<Option<MediaAttribute>>;
 
     /// メディアの全属性を取得
     async fn get_media_attributes(&self, media_id: i64) -> Result<Vec<MediaAttribute>>;

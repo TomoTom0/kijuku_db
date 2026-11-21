@@ -187,9 +187,8 @@ impl SqlRow {
         match self.require(col)? {
             SqlParam::Blob(b) => Ok(b.clone()),
             // D1 からは hex 文字列で返ってくるため、テキストを hex デコード
-            SqlParam::Text(s) => hex::decode(s).map_err(|e| {
-                KijukuError::Parse(format!("hex decode error for {}: {}", col, e))
-            }),
+            SqlParam::Text(s) => hex::decode(s)
+                .map_err(|e| KijukuError::Parse(format!("hex decode error for {}: {}", col, e))),
             other => Err(KijukuError::Parse(format!(
                 "expected blob for {}, got {:?}",
                 col, other
@@ -203,9 +202,9 @@ impl SqlRow {
         match self.cols.get(col) {
             None | Some(SqlParam::Null) => Ok(None),
             Some(SqlParam::Blob(b)) => Ok(Some(b.clone())),
-            Some(SqlParam::Text(s)) => hex::decode(s).map(Some).map_err(|e| {
-                KijukuError::Parse(format!("hex decode error for {}: {}", col, e))
-            }),
+            Some(SqlParam::Text(s)) => hex::decode(s)
+                .map(Some)
+                .map_err(|e| KijukuError::Parse(format!("hex decode error for {}: {}", col, e))),
             Some(other) => Err(KijukuError::Parse(format!(
                 "expected blob/null for {}, got {:?}",
                 col, other

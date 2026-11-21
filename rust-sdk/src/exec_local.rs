@@ -82,8 +82,7 @@ impl SqlExec for LocalExec {
             let tx = conn.unchecked_transaction()?;
             for (sql, params) in &stmts {
                 let refs = to_rusqlite_refs(params);
-                let refs_dyn: Vec<&dyn rusqlite::ToSql> =
-                    refs.iter().map(|r| r.as_ref()).collect();
+                let refs_dyn: Vec<&dyn rusqlite::ToSql> = refs.iter().map(|r| r.as_ref()).collect();
                 tx.execute(sql, refs_dyn.as_slice())?;
             }
             tx.commit()?;

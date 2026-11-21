@@ -12,16 +12,17 @@ use std::path::Path;
 use serde::Serialize;
 
 use kijuku_db::{
-    parse_db_path, AttributeValueType, BackupInfo, BackupOptions, BackupSelector, DBOptions,
-    KijukuDB, KijukuError, Media, MediaFilter, MediaHash, MediaInput, ParsedDbPath, QueryOptions,
-    RemoteConfig, RemoteKijukuDB, Result, Tag, ThumbnailOptions, UpdateExistOptions,
-    UpdateExistResult,
     backup::BackupMetaEntry,
     diff::{BackupDiff, DiffOptions, ObserveOptions, ObserveResult},
     file_ops::{FileOpOptions, FileOpResult},
     hash::ComputeHashResult,
+    parse_db_path,
     thumbnail::{CheckThumbnailResult, UpdateThumbnailResult},
     trash::{TrashEntry, TrashId, TrashOperation},
+    AttributeValueType, BackupInfo, BackupOptions, BackupSelector, DBOptions, KijukuDB,
+    KijukuError, Media, MediaFilter, MediaHash, MediaInput, ParsedDbPath, QueryOptions,
+    RemoteConfig, RemoteKijukuDB, Result, Tag, ThumbnailOptions, UpdateExistOptions,
+    UpdateExistResult,
 };
 
 use super::CliContext;
@@ -167,7 +168,11 @@ impl DbClient {
 
     /// バックアップから復元。戻り値は復元先パス文字列（Local の PathBuf を文字列化）。
     /// Local は `&mut self`（DB 再オープンを伴う）のため、このメソッドも `&mut self`。
-    pub fn restore(&mut self, selector: &BackupSelector, timeout_ms: Option<u32>) -> Result<String> {
+    pub fn restore(
+        &mut self,
+        selector: &BackupSelector,
+        timeout_ms: Option<u32>,
+    ) -> Result<String> {
         match self {
             DbClient::Local(d) => d
                 .restore(selector)
@@ -361,36 +366,21 @@ impl DbClient {
 
     // --- file ops ---
 
-    pub fn media_cp(
-        &self,
-        src: &str,
-        dst: &str,
-        opts: &FileOpOptions,
-    ) -> Result<FileOpResult> {
+    pub fn media_cp(&self, src: &str, dst: &str, opts: &FileOpOptions) -> Result<FileOpResult> {
         match self {
             DbClient::Local(d) => d.media_cp(src, dst, opts),
             DbClient::Remote(r) => r.media_cp(src, dst, opts),
         }
     }
 
-    pub fn media_mv(
-        &self,
-        src: &str,
-        dst: &str,
-        opts: &FileOpOptions,
-    ) -> Result<FileOpResult> {
+    pub fn media_mv(&self, src: &str, dst: &str, opts: &FileOpOptions) -> Result<FileOpResult> {
         match self {
             DbClient::Local(d) => d.media_mv(src, dst, opts),
             DbClient::Remote(r) => r.media_mv(src, dst, opts),
         }
     }
 
-    pub fn media_sync(
-        &self,
-        src: &str,
-        dst: &str,
-        opts: &FileOpOptions,
-    ) -> Result<FileOpResult> {
+    pub fn media_sync(&self, src: &str, dst: &str, opts: &FileOpOptions) -> Result<FileOpResult> {
         match self {
             DbClient::Local(d) => d.media_sync(src, dst, opts),
             DbClient::Remote(r) => r.media_sync(src, dst, opts),
@@ -421,7 +411,9 @@ impl DbClient {
     /// trash から復元。戻り値は文字列（Local の PathBuf を文字列化。Remote は元々 String）。
     pub fn restore_from_trash(&self, id: &str) -> Result<String> {
         match self {
-            DbClient::Local(d) => d.restore_from_trash(id).map(|p| p.to_string_lossy().into_owned()),
+            DbClient::Local(d) => d
+                .restore_from_trash(id)
+                .map(|p| p.to_string_lossy().into_owned()),
             DbClient::Remote(r) => r.restore_from_trash(id),
         }
     }
@@ -452,7 +444,12 @@ impl DbClient {
                     |name| d.create_tag(name),
                     |media_id, tag_id| d.add_tag_to_media(media_id, tag_id),
                     |media_id, key, value| {
-                        d.set_media_attribute(media_id, key, value, Some(AttributeValueType::String))
+                        d.set_media_attribute(
+                            media_id,
+                            key,
+                            value,
+                            Some(AttributeValueType::String),
+                        )
                     },
                 )
             }

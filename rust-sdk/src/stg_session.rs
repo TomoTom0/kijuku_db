@@ -45,9 +45,11 @@ pub fn compute_prod_revision(conn: &Connection) -> Result<ProdRevision> {
         Ok(row)
     };
     let count_only = |table: &str| -> Result<i64> {
-        Ok(conn.query_row(&format!("SELECT COUNT(*) FROM {t}", t = table), [], |r| {
-            r.get(0)
-        })?)
+        Ok(
+            conn.query_row(&format!("SELECT COUNT(*) FROM {t}", t = table), [], |r| {
+                r.get(0)
+            })?,
+        )
     };
 
     let (media_count, media_max_id) = count_max("media", "id")?;
@@ -158,10 +160,11 @@ impl StgLock {
             .read(true)
             .write(true)
             .open(&path)?;
-        file.try_lock_exclusive().map_err(|_| KijukuError::StgBusy {
-            stg_path: stg_db_path.display().to_string(),
-            holder_pid: None,
-        })?;
+        file.try_lock_exclusive()
+            .map_err(|_| KijukuError::StgBusy {
+                stg_path: stg_db_path.display().to_string(),
+                holder_pid: None,
+            })?;
         Ok(Self { file, path })
     }
 
@@ -192,7 +195,10 @@ mod tests {
         let lock1 = StgLock::acquire(&stg).expect("1回目の取得は成功");
         // 同一プロセスでも別 fd なので排他（flock は open file description 単位）
         let err = StgLock::acquire(&stg).unwrap_err();
-        assert!(matches!(err, KijukuError::StgBusy { .. }), "2回目は StgBusy: {err:?}");
+        assert!(
+            matches!(err, KijukuError::StgBusy { .. }),
+            "2回目は StgBusy: {err:?}"
+        );
 
         drop(lock1);
         // 解放後は再取得可能
@@ -203,7 +209,10 @@ mod tests {
     fn test_stg_meta_write_read_roundtrip() {
         let dir = TempDir::new().unwrap();
         let stg = dir.path().join("kijuku.stg.db");
-        assert!(read_stg_meta(&stg).expect("read").is_none(), "不在時は None");
+        assert!(
+            read_stg_meta(&stg).expect("read").is_none(),
+            "不在時は None"
+        );
 
         let meta = StgMeta {
             synced_from: SyncedFrom {
@@ -222,7 +231,9 @@ mod tests {
             },
         };
         write_stg_meta(&stg, &meta).expect("write");
-        let read = read_stg_meta(&stg).expect("read after write").expect("Some");
+        let read = read_stg_meta(&stg)
+            .expect("read after write")
+            .expect("Some");
         assert_eq!(read.synced_from.revision.media_count, 3);
         assert_eq!(read.synced_from.prod_path, "/tmp/prod.db");
     }

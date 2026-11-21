@@ -7,7 +7,8 @@
 #![allow(deprecated)] // テストは同期 API（create_media 等）を直接使用
 
 use kijuku_db::{
-    BackupManager, BackupOptions, KijukuDB, KijukuError, MediaInput, MediaType, ProdRwScope, StgLock,
+    BackupManager, BackupOptions, KijukuDB, KijukuError, MediaInput, MediaType, ProdRwScope,
+    StgLock,
 };
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -97,7 +98,9 @@ fn test_prod_rw_scope_pre_stash_regardless_of_enabled_false() {
         }),
     )
     .expect("acquire with enabled=false");
-    let pre = scope.pre_stash_path().expect("pre-stash created even if enabled=false");
+    let pre = scope
+        .pre_stash_path()
+        .expect("pre-stash created even if enabled=false");
     assert!(pre.exists(), "pre-stash file exists");
 }
 
@@ -124,10 +127,22 @@ fn test_prod_rw_scope_pre_stash_path_exposed_for_recovery() {
 
     // pre-stash は prod の退避時点（3件）と一致
     let pre_db = KijukuDB::open(pre).expect("open pre-stash");
-    assert!(pre_db.get_media(1).is_some(), "media id=1 exists in pre-stash");
-    assert!(pre_db.get_media(2).is_some(), "media id=2 exists in pre-stash");
-    assert!(pre_db.get_media(3).is_some(), "media id=3 exists in pre-stash");
-    assert!(pre_db.get_media(4).is_none(), "media id=4 absent in pre-stash");
+    assert!(
+        pre_db.get_media(1).is_some(),
+        "media id=1 exists in pre-stash"
+    );
+    assert!(
+        pre_db.get_media(2).is_some(),
+        "media id=2 exists in pre-stash"
+    );
+    assert!(
+        pre_db.get_media(3).is_some(),
+        "media id=3 exists in pre-stash"
+    );
+    assert!(
+        pre_db.get_media(4).is_none(),
+        "media id=4 absent in pre-stash"
+    );
 }
 
 /// scope 保持中に copy_db_online(stg, prod) で prod が上書きされる（C2 promote 書込経路の模擬）
@@ -144,7 +159,10 @@ fn test_prod_rw_scope_allows_promote_via_copy_db_online() {
     let prod_db = KijukuDB::open(&prod).expect("open prod after copy");
     assert_eq!(prod_db.get_media(1).unwrap().title, "stg0");
     assert_eq!(prod_db.get_media(2).unwrap().title, "stg1");
-    assert!(prod_db.get_media(3).is_none(), "prod overwritten with stg content (2 rows)");
+    assert!(
+        prod_db.get_media(3).is_none(),
+        "prod overwritten with stg content (2 rows)"
+    );
 }
 
 /// scope 保持中に RW KijukuDB で prod を開き書込できる（C4 (b)操作 書込経路の模擬）

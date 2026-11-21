@@ -5,6 +5,7 @@
 ```
 rust-sdk/tests/              # Rust SDK のインテグレーションテスト
   audit_test.rs              - 監査ログ（append-only JSONL・sync/discard/observe/promote での記録・promote 後も prod 側 audit.log が残る）
+  bulk_load_test.rs          - bulk_load（export/全データ移行: transfer/verify をローカル→ローカルで検証・uuid保持・不一致検出・空でないdestへの再転送拒否）
   backup_test.rs             - バックアップ機能（scope/kind/auto-records.csv/restore/pre_migrate・pre_promote snapshot/copy_db_online）
   cli_integration_test.rs    - CLIコマンドのインテグレーションテスト（stdin操作・file/trash/sync-db サブコマンド）
   d1_test.rs                 - D1バックエンドのテスト
@@ -112,6 +113,7 @@ cd rust-sdk && cargo test --test backup_test
 
 | 変更内容 | 更新が必要なテストファイル |
 |---|---|
+| bulk_load（export/移行）機能の変更 | `rust-sdk/tests/bulk_load_test.rs`, `rust-sdk/tests/d1_test.rs` |
 | バックアップ機能の変更 | `rust-sdk/tests/backup_test.rs`, `ts-sdk/test/integration/backup.test.ts` |
 | config.toml 読み込みの変更 | `rust-sdk/src/config.rs` (内蔵テスト), `ts-sdk/test/integration/config.test.ts` |
 | CRUD操作の変更 | `rust-sdk/tests/integration_test.rs`, `ts-sdk/test/integration/crud.test.ts` |

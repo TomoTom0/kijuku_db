@@ -77,7 +77,9 @@ fn test_readonly_skips_wal_and_rejects_writes() {
         let c = rusqlite::Connection::open(&db_path).unwrap();
         c.execute_batch("PRAGMA journal_mode=DELETE; CREATE TABLE _t(x);")
             .unwrap();
-        let mode: String = c.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+        let mode: String = c
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(mode.to_lowercase(), "delete");
     }
 

@@ -5,7 +5,6 @@
 //! `record_operation`（バックアップ記録）は Local 専用のため持たない。
 
 use crate::backend::KijukuBackend;
-use std::collections::HashMap;
 use crate::d1_client::{D1Client, D1Config};
 use crate::error::Result;
 use crate::exec_d1::D1Exec;
@@ -15,6 +14,7 @@ use crate::types::{
     MediaHashInput, MediaInput, MediaUpdateInput, QueryOptions, Tag, TagUsageStats,
 };
 use async_trait::async_trait;
+use std::collections::HashMap;
 
 /// D1（REST）を対象とした KijukuDB 相当のバックエンド
 pub struct D1KijukuDB {
@@ -142,10 +142,7 @@ impl KijukuBackend for D1KijukuDB {
         crate::tag::get_media_tags_async(&self.exec, media_id).await
     }
 
-    async fn get_media_tags_bulk(
-        &self,
-        media_ids: &[i64],
-    ) -> Result<HashMap<i64, Vec<Tag>>> {
+    async fn get_media_tags_bulk(&self, media_ids: &[i64]) -> Result<HashMap<i64, Vec<Tag>>> {
         crate::tag::get_media_tags_bulk_async(&self.exec, media_ids).await
     }
 
@@ -168,7 +165,11 @@ impl KijukuBackend for D1KijukuDB {
             .await
     }
 
-    async fn get_media_attribute(&self, media_id: i64, key: &str) -> Result<Option<MediaAttribute>> {
+    async fn get_media_attribute(
+        &self,
+        media_id: i64,
+        key: &str,
+    ) -> Result<Option<MediaAttribute>> {
         crate::attribute::get_media_attribute_async(&self.exec, media_id, key).await
     }
 

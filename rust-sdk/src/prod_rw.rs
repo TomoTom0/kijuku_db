@@ -52,10 +52,12 @@ impl ProdRwScope {
             .read(true)
             .write(true)
             .open(&lock_file_path)?;
-        lock_file.try_lock_exclusive().map_err(|_| KijukuError::ProdBusy {
-            prod_path: prod_path.display().to_string(),
-            holder_pid: None,
-        })?;
+        lock_file
+            .try_lock_exclusive()
+            .map_err(|_| KijukuError::ProdBusy {
+                prod_path: prod_path.display().to_string(),
+                holder_pid: None,
+            })?;
 
         // pre-stash 強制（§7.2・enabled と独立して常時実行）。prod を触る前に前倒し（§7.3）。
         let bm_opts = backup_opts.unwrap_or_else(|| BackupOptions {

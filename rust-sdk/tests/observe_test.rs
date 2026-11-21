@@ -40,16 +40,7 @@ fn passed(checks: &[GateCheck], name: &str) -> bool {
 #[test]
 fn test_evaluate_gate_all_pass() {
     let summary = summary_with_totals(10, 5, 20);
-    let checks = evaluate_gate(
-        &summary,
-        "ok",
-        &[],
-        true,
-        6,
-        6,
-        &[],
-        &GateConfig::default(),
-    );
+    let checks = evaluate_gate(&summary, "ok", &[], true, 6, 6, &[], &GateConfig::default());
     assert!(checks.iter().all(|c| c.passed), "全検査合格: {:?}", checks);
 }
 
@@ -63,7 +54,16 @@ fn test_evaluate_gate_fk_violation_fails() {
         parent: Some("media".to_string()),
         fkid: 0,
     }];
-    let checks = evaluate_gate(&summary, "ok", &violations, true, 6, 6, &[], &GateConfig::default());
+    let checks = evaluate_gate(
+        &summary,
+        "ok",
+        &violations,
+        true,
+        6,
+        6,
+        &[],
+        &GateConfig::default(),
+    );
     assert!(!passed(&checks, "foreign_key_check"));
     assert!(passed(&checks, "integrity_check"));
 }
@@ -72,7 +72,16 @@ fn test_evaluate_gate_fk_violation_fails() {
 #[test]
 fn test_evaluate_gate_fk_disabled_fails() {
     let summary = summary_with_totals(0, 0, 0);
-    let checks = evaluate_gate(&summary, "ok", &[], false, 6, 6, &[], &GateConfig::default());
+    let checks = evaluate_gate(
+        &summary,
+        "ok",
+        &[],
+        false,
+        6,
+        6,
+        &[],
+        &GateConfig::default(),
+    );
     assert!(!passed(&checks, "foreign_key_check"));
 }
 
@@ -175,7 +184,9 @@ fn test_evaluate_gate_golden_error_fails() {
         true,
         6,
         6,
-        &[kijuku_db::diff::GoldenResult::Error("no such table".to_string())],
+        &[kijuku_db::diff::GoldenResult::Error(
+            "no such table".to_string(),
+        )],
         &config,
     );
     assert!(!passed(&checks, "golden:bad"), "SQL エラーは gate 不合格");
@@ -277,14 +288,22 @@ fn test_observe_with_golden_assertion() {
         },
     };
     let result = stg_db.observe(&prod, &options).expect("observe");
-    assert!(result.passed, "3件 active で golden 合格: {:?}", result.checks);
+    assert!(
+        result.passed,
+        "3件 active で golden 合格: {:?}",
+        result.checks
+    );
     let golden = result
         .checks
         .iter()
         .find(|c| c.name == "golden:active_media")
         .expect("golden check 存在");
     assert!(golden.passed);
-    assert!(golden.detail.contains("count=3"), "detail に件数: {}", golden.detail);
+    assert!(
+        golden.detail.contains("count=3"),
+        "detail に件数: {}",
+        golden.detail
+    );
 }
 
 /// observe は prod を readonly で開くため prod を変更しない（設計 §5.1）
@@ -296,7 +315,9 @@ fn test_observe_does_not_modify_prod() {
     let prod_bytes_before = std::fs::read(&prod).expect("read prod before");
 
     let stg_db = KijukuDB::open(&stg).expect("open stg");
-    let _ = stg_db.observe(&prod, &ObserveOptions::default()).expect("observe");
+    let _ = stg_db
+        .observe(&prod, &ObserveOptions::default())
+        .expect("observe");
 
     let prod_bytes_after = std::fs::read(&prod).expect("read prod after");
     assert_eq!(

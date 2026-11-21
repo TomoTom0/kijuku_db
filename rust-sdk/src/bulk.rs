@@ -1,4 +1,6 @@
-use crate::crud::{build_update_media_sql, create_media, create_media_async, delete_media, update_media};
+use crate::crud::{
+    build_update_media_sql, create_media, create_media_async, delete_media, update_media,
+};
 use crate::db_value::SqlParam;
 use crate::error::Result;
 use crate::exec::SqlExec;
@@ -128,10 +130,7 @@ pub async fn bulk_delete_media_async(exec: &dyn SqlExec, ids: &[i64]) -> Result<
 /// 各件の SQL を `build_update_media_sql` で組み立て、更新フィールドなしはスキップ。
 /// ビルド時のバリデーションエラー（例: uuid への NULL）はチャンク実行前に伝播し、
 /// そのチャンクは実行されない。対象なき id は無視される（バッチ近似の制約）。
-pub async fn bulk_update_media_async(
-    exec: &dyn SqlExec,
-    updates: &[BulkUpdateItem],
-) -> Result<()> {
+pub async fn bulk_update_media_async(exec: &dyn SqlExec, updates: &[BulkUpdateItem]) -> Result<()> {
     if updates.is_empty() {
         return Ok(());
     }
@@ -267,11 +266,17 @@ mod tests {
         ];
         bulk_update_media_async(&exec, &updates).await.unwrap();
 
-        let m1 = get_media_async(&exec, results[0].id).await.unwrap().unwrap();
+        let m1 = get_media_async(&exec, results[0].id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(m1.title, "更新1");
         assert_eq!(m1.media_type, MediaType::Comic); // 未指定はそのまま
 
-        let m2 = get_media_async(&exec, results[1].id).await.unwrap().unwrap();
+        let m2 = get_media_async(&exec, results[1].id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(m2.artist, Some("作家2".to_string()));
         assert_eq!(m2.title, "元2"); // 未指定はそのまま
     }

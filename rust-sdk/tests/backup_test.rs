@@ -1,7 +1,10 @@
 // バックアップテストは意図的に deprecated 同期 API を検証
 #![allow(deprecated)]
 
-use kijuku_db::{BackupKind, BackupManager, BackupOptions, BackupScope, BackupSelector, DBOptions, KijukuDB, MediaInput, MediaType};
+use kijuku_db::{
+    BackupKind, BackupManager, BackupOptions, BackupScope, BackupSelector, DBOptions, KijukuDB,
+    MediaInput, MediaType,
+};
 use rusqlite;
 use std::thread;
 use std::time::Duration;
@@ -58,14 +61,16 @@ fn test_auto_backup_with_record_operation() {
         backup_dir: Some(backup_dir.to_string_lossy().to_string()),
         interval_ms: Some(100), // 100ミリ秒間隔
         enabled: Some(true),
-            ..Default::default()
+        ..Default::default()
     };
 
     // 実際のSQLiteデータベースを作成
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
-        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -100,14 +105,16 @@ fn test_manual_backup() {
         backup_dir: Some(backup_dir.to_string_lossy().to_string()),
         interval_ms: Some(3600000), // 1時間
         enabled: Some(true),
-            ..Default::default()
+        ..Default::default()
     };
 
     // 実際のSQLiteデータベースを作成
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
-        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -137,14 +144,16 @@ fn test_backup_list() {
         backup_dir: Some(backup_dir.to_string_lossy().to_string()),
         interval_ms: Some(1000),
         enabled: Some(true),
-            ..Default::default()
+        ..Default::default()
     };
 
     // 実際のSQLiteデータベースを作成
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
-        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -177,14 +186,16 @@ fn test_backup_timestamps() {
         backup_dir: Some(backup_dir.to_string_lossy().to_string()),
         interval_ms: Some(1000),
         enabled: Some(true),
-            ..Default::default()
+        ..Default::default()
     };
 
     // 実際のSQLiteデータベースを作成
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
-        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -222,8 +233,10 @@ fn test_backup_disabled() {
     // 実際のSQLiteデータベースを作成
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
-        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"]).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["test data"])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -323,7 +336,8 @@ fn test_db_backup_method() {
         title: "バックアップテスト".to_string(),
         media_type: MediaType::Comic,
         ..Default::default()
-    }).unwrap();
+    })
+    .unwrap();
 
     // backup()メソッドを直接呼び出す
     let backup_path = db.backup().unwrap();
@@ -430,14 +444,18 @@ fn test_backup_subdirectory_structure() {
 
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", [])
+            .unwrap();
     }
 
     BackupManager::new(&db_path, options).unwrap();
 
     // auto/ manual/ meta/ サブディレクトリが自動作成される
     assert!(backup_dir.join("auto").exists(), "auto/ should be created");
-    assert!(backup_dir.join("manual").exists(), "manual/ should be created");
+    assert!(
+        backup_dir.join("manual").exists(),
+        "manual/ should be created"
+    );
     assert!(backup_dir.join("meta").exists(), "meta/ should be created");
 }
 
@@ -455,7 +473,8 @@ fn test_backup_scope_and_kind_manual() {
 
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", [])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -489,7 +508,8 @@ fn test_backup_scope_auto() {
 
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", [])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -521,7 +541,8 @@ fn test_auto_records_csv() {
 
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", [])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -531,10 +552,18 @@ fn test_auto_records_csv() {
     assert!(csv_path.exists(), "auto-records.csv should be created");
 
     let content = std::fs::read_to_string(&csv_path).unwrap();
-    assert!(content.contains("id,created_at,tier,type,base_id,size_bytes,status,pruned_at"),
-        "CSV should have header");
-    assert!(content.contains("daily"), "First auto backup should be 'daily' tier");
-    assert!(content.contains("full"), "First auto backup should be 'full' type");
+    assert!(
+        content.contains("id,created_at,tier,type,base_id,size_bytes,status,pruned_at"),
+        "CSV should have header"
+    );
+    assert!(
+        content.contains("daily"),
+        "First auto backup should be 'daily' tier"
+    );
+    assert!(
+        content.contains("full"),
+        "First auto backup should be 'full' type"
+    );
 }
 
 #[test]
@@ -553,7 +582,8 @@ fn test_backup_selector_scope_filter() {
 
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", [])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -601,8 +631,10 @@ fn test_restore_creates_pre_restore_in_tmp() {
     // 実際のSQLiteデータベースを作成
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", []).unwrap();
-        conn.execute("INSERT INTO test (data) VALUES (?1)", ["before"]).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, data TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO test (data) VALUES (?1)", ["before"])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -624,7 +656,11 @@ fn test_restore_creates_pre_restore_in_tmp() {
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name().to_string_lossy().contains("pre_restore"))
         .collect();
-    assert_eq!(pre_restore_files.len(), 1, "One pre_restore file should exist in tmp/");
+    assert_eq!(
+        pre_restore_files.len(),
+        1,
+        "One pre_restore file should exist in tmp/"
+    );
 }
 
 #[test]
@@ -641,7 +677,8 @@ fn test_manual_backup_with_label() {
 
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", [])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -666,7 +703,8 @@ fn test_backup_selector_by_id() {
     };
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", [])
+            .unwrap();
     }
 
     let manager = BackupManager::new(&db_path, options).unwrap();
@@ -678,20 +716,26 @@ fn test_backup_selector_by_id() {
 
     // 各 id で選択できる（manual backup を ID 指定）
     for b in &backups {
-        let selected = manager.select_backup(&BackupSelector::by_id(&b.id)).unwrap();
+        let selected = manager
+            .select_backup(&BackupSelector::by_id(&b.id))
+            .unwrap();
         assert!(selected.is_some(), "should find backup by id {}", b.id);
         assert_eq!(selected.unwrap().id, b.id);
     }
 
     // scope 限定付きでも ID 検索できる
-    let manual_id = manager.list_backups_in_scope(BackupScope::Manual).unwrap()[0].id.clone();
+    let manual_id = manager.list_backups_in_scope(BackupScope::Manual).unwrap()[0]
+        .id
+        .clone();
     let scoped = manager
         .select_backup(&BackupSelector::by_id(&manual_id).scope(BackupScope::Manual))
         .unwrap();
     assert!(scoped.is_some());
 
     // 存在しない id は None
-    let none = manager.select_backup(&BackupSelector::by_id("20990101000000-000")).unwrap();
+    let none = manager
+        .select_backup(&BackupSelector::by_id("20990101000000-000"))
+        .unwrap();
     assert!(none.is_none());
 }
 
@@ -709,7 +753,8 @@ fn test_set_backup_label_and_note() {
     };
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", []).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)", [])
+            .unwrap();
     }
     let manager = BackupManager::new(&db_path, options).unwrap();
     manager.backup(None).unwrap();
@@ -719,7 +764,12 @@ fn test_set_backup_label_and_note() {
     manager.set_backup_label(&id, Some("important")).unwrap();
     manager.set_backup_note(&id, Some("作業前の状態")).unwrap();
 
-    let info = manager.list_backups().unwrap().into_iter().find(|b| b.id == id).unwrap();
+    let info = manager
+        .list_backups()
+        .unwrap()
+        .into_iter()
+        .find(|b| b.id == id)
+        .unwrap();
     assert_eq!(info.label.as_deref(), Some("important"));
     assert!(matches!(info.label_source, LabelSource::Sidecar));
     assert_eq!(info.note.as_deref(), Some("作業前の状態"));
@@ -735,12 +785,19 @@ fn test_set_backup_label_and_note() {
         ..Default::default()
     };
     let manager2 = BackupManager::new(&db_path, options2).unwrap();
-    let info2 = manager2.list_backups().unwrap().into_iter().find(|b| b.id == id).unwrap();
+    let info2 = manager2
+        .list_backups()
+        .unwrap()
+        .into_iter()
+        .find(|b| b.id == id)
+        .unwrap();
     assert_eq!(info2.label.as_deref(), Some("important"));
     assert_eq!(info2.note.as_deref(), Some("作業前の状態"));
 
     // 存在しない id はエラー
-    assert!(manager.set_backup_label("20990101000000-000", Some("x")).is_err());
+    assert!(manager
+        .set_backup_label("20990101000000-000", Some("x"))
+        .is_err());
 }
 
 /// migrate 実行前に `backup/tmp/` へ `-pre_migrate.db` が作られる（設計 §7.3・TASK-42 P0 Step2）。
@@ -819,9 +876,12 @@ fn test_copy_db_online_copies_arbitrary_src_to_dst() {
     // src に DB + データを作成
     {
         let conn = rusqlite::Connection::open(&src).unwrap();
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", []).unwrap();
-        conn.execute("INSERT INTO t (v) VALUES (?1)", ["data-1"]).unwrap();
-        conn.execute("INSERT INTO t (v) VALUES (?1)", ["data-2"]).unwrap();
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO t (v) VALUES (?1)", ["data-1"])
+            .unwrap();
+        conn.execute("INSERT INTO t (v) VALUES (?1)", ["data-2"])
+            .unwrap();
     }
     assert!(!dst.exists(), "コピー前は dst が存在しない");
 
@@ -854,7 +914,8 @@ fn test_pre_promote_snapshot_created_and_excluded_from_list() {
     };
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", []).unwrap();
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", [])
+            .unwrap();
     }
     let manager = BackupManager::new(&db_path, options).unwrap();
 
@@ -910,7 +971,8 @@ fn test_retention_fallback_keeps_manual_backups() {
     };
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", []).unwrap();
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", [])
+            .unwrap();
     }
     let manager = BackupManager::new(&db_path, options).unwrap();
 

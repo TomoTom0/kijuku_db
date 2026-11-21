@@ -14,9 +14,9 @@ fn get_parent_before_content(path_str: &str) -> Option<PathBuf> {
     let path = Path::new(path_str);
     let components: Vec<Component> = path.components().collect();
 
-    let last_content_idx = components.iter().rposition(|c| {
-        matches!(c, Component::Normal(s) if s.to_str() == Some("content"))
-    })?;
+    let last_content_idx = components
+        .iter()
+        .rposition(|c| matches!(c, Component::Normal(s) if s.to_str() == Some("content")))?;
 
     let has_normal = components[..last_content_idx]
         .iter()
@@ -182,17 +182,21 @@ fn check_media_thumbnail(media: &Media) -> CheckThumbnailItemResult {
         .and_then(|p| resolve_thumbnail_path(p, &media.uuid));
 
     let status = if media.path.is_none() {
-        CheckThumbnailStatus::Skipped { reason: "pathが未設定".to_string() }
+        CheckThumbnailStatus::Skipped {
+            reason: "pathが未設定".to_string(),
+        }
     } else if expected_path.is_none() {
-        CheckThumbnailStatus::Skipped { reason: "pathにcontentが含まれていない".to_string() }
+        CheckThumbnailStatus::Skipped {
+            reason: "pathにcontentが含まれていない".to_string(),
+        }
     } else {
         let expected = expected_path.as_deref().unwrap();
         let media_path = media.path.as_deref().unwrap();
         match &media.thumbnail_path {
             None => CheckThumbnailStatus::Missing,
-            Some(current)
-                if !thumbnail_path_matches(current, expected, media_path) =>
-                CheckThumbnailStatus::Missing,
+            Some(current) if !thumbnail_path_matches(current, expected, media_path) => {
+                CheckThumbnailStatus::Missing
+            }
             Some(_) => {
                 if Path::new(expected).exists() {
                     CheckThumbnailStatus::Ok
@@ -238,7 +242,14 @@ pub fn check_thumbnail(
         details.push(item);
     }
 
-    Ok(CheckThumbnailResult { total, ok, missing, file_not_found, skipped, details })
+    Ok(CheckThumbnailResult {
+        total,
+        ok,
+        missing,
+        file_not_found,
+        skipped,
+        details,
+    })
 }
 
 fn build_item_result(
@@ -266,7 +277,9 @@ fn update_media_thumbnail(
         None => {
             return Ok(build_item_result(
                 media,
-                UpdateThumbnailStatus::Skipped { reason: "pathが未設定".to_string() },
+                UpdateThumbnailStatus::Skipped {
+                    reason: "pathが未設定".to_string(),
+                },
                 None,
             ));
         }
@@ -442,12 +455,18 @@ fn update_media_thumbnail(
     if let Err(e) = update_media(conn, media.id, &update) {
         return Ok(build_item_result(
             media,
-            UpdateThumbnailStatus::Error { message: format!("DB更新に失敗: {}", e) },
+            UpdateThumbnailStatus::Error {
+                message: format!("DB更新に失敗: {}", e),
+            },
             Some(expected_path),
         ));
     }
 
-    Ok(build_item_result(media, UpdateThumbnailStatus::Generated, Some(expected_path)))
+    Ok(build_item_result(
+        media,
+        UpdateThumbnailStatus::Generated,
+        Some(expected_path),
+    ))
 }
 
 /// フィルタで絞り込んだメディアのサムネイルを生成・更新する
@@ -476,7 +495,14 @@ pub fn update_thumbnail(
         details.push(item);
     }
 
-    Ok(UpdateThumbnailResult { total, generated, already_exists, skipped, errors, details })
+    Ok(UpdateThumbnailResult {
+        total,
+        generated,
+        already_exists,
+        skipped,
+        errors,
+        details,
+    })
 }
 
 #[cfg(test)]
@@ -543,14 +569,20 @@ mod tests {
     #[test]
     fn test_resolve_thumbnail_path_basic() {
         let result = resolve_thumbnail_path("/media/onepiece/vol1/content", "abc-uuid");
-        assert_eq!(result, Some("/media/onepiece/vol1/cover/abc-uuid.jpg".to_string()));
+        assert_eq!(
+            result,
+            Some("/media/onepiece/vol1/cover/abc-uuid.jpg".to_string())
+        );
     }
 
     #[test]
     fn test_resolve_thumbnail_path_last_content() {
         // pathにcontentが複数ある場合、最後のcontentを使う
         let result = resolve_thumbnail_path("/media/content/onepiece/vol1/content", "abc-uuid");
-        assert_eq!(result, Some("/media/content/onepiece/vol1/cover/abc-uuid.jpg".to_string()));
+        assert_eq!(
+            result,
+            Some("/media/content/onepiece/vol1/cover/abc-uuid.jpg".to_string())
+        );
     }
 
     #[test]
@@ -571,28 +603,37 @@ mod tests {
     #[test]
     fn test_check_thumbnail_path_none_skipped() {
         let conn = setup_db();
-        create_media(&conn, &MediaInput {
-            title: "pathなし".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "pathなし".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         let result = check_thumbnail(&conn, &MediaFilter::default(), None).unwrap();
         assert_eq!(result.skipped, 1);
-        assert!(matches!(result.details[0].status, CheckThumbnailStatus::Skipped { .. }));
+        assert!(matches!(
+            result.details[0].status,
+            CheckThumbnailStatus::Skipped { .. }
+        ));
     }
 
     #[test]
     fn test_check_thumbnail_no_content_in_path_skipped() {
         let conn = setup_db();
-        create_media(&conn, &MediaInput {
-            title: "contentなし".to_string(),
-            media_type: MediaType::Comic,
-            path: Some("/media/onepiece/vol1".to_string()),
-            uuid: Some("test-uuid-no-content".to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "contentなし".to_string(),
+                media_type: MediaType::Comic,
+                path: Some("/media/onepiece/vol1".to_string()),
+                uuid: Some("test-uuid-no-content".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         let result = check_thumbnail(&conn, &MediaFilter::default(), None).unwrap();
@@ -602,13 +643,16 @@ mod tests {
     #[test]
     fn test_check_thumbnail_missing_when_no_thumbnail_path() {
         let conn = setup_db();
-        create_media(&conn, &MediaInput {
-            title: "サムネなし".to_string(),
-            media_type: MediaType::Comic,
-            path: Some("/media/onepiece/vol1/content".to_string()),
-            uuid: Some("test-uuid-missing".to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "サムネなし".to_string(),
+                media_type: MediaType::Comic,
+                path: Some("/media/onepiece/vol1/content".to_string()),
+                uuid: Some("test-uuid-missing".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         let result = check_thumbnail(&conn, &MediaFilter::default(), None).unwrap();
@@ -621,14 +665,17 @@ mod tests {
         let uuid = "test-uuid-not-found";
         let path = "/media/onepiece/vol1/content";
         let thumb = format!("/media/onepiece/vol1/cover/{}.jpg", uuid);
-        create_media(&conn, &MediaInput {
-            title: "ファイルなし".to_string(),
-            media_type: MediaType::Comic,
-            path: Some(path.to_string()),
-            uuid: Some(uuid.to_string()),
-            thumbnail_path: Some(thumb),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "ファイルなし".to_string(),
+                media_type: MediaType::Comic,
+                path: Some(path.to_string()),
+                uuid: Some(uuid.to_string()),
+                thumbnail_path: Some(thumb),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         let result = check_thumbnail(&conn, &MediaFilter::default(), None).unwrap();
@@ -648,14 +695,17 @@ mod tests {
         let content_path = tmp.path().join("content");
         fs::create_dir(&content_path).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "OK".to_string(),
-            media_type: MediaType::Comic,
-            path: Some(content_path.to_str().unwrap().to_string()),
-            uuid: Some(uuid.to_string()),
-            thumbnail_path: Some(thumb_path.to_str().unwrap().to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "OK".to_string(),
+                media_type: MediaType::Comic,
+                path: Some(content_path.to_str().unwrap().to_string()),
+                uuid: Some(uuid.to_string()),
+                thumbnail_path: Some(thumb_path.to_str().unwrap().to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         let result = check_thumbnail(&conn, &MediaFilter::default(), None).unwrap();
@@ -667,16 +717,23 @@ mod tests {
     #[test]
     fn test_update_thumbnail_skip_no_path() {
         let conn = setup_db();
-        create_media(&conn, &MediaInput {
-            title: "pathなし".to_string(),
-            media_type: MediaType::Comic,
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "pathなし".to_string(),
+                media_type: MediaType::Comic,
+                ..Default::default()
+            },
+        )
         .unwrap();
 
-        let result =
-            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
-                .unwrap();
+        let result = update_thumbnail(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &ThumbnailOptions::default(),
+        )
+        .unwrap();
         assert_eq!(result.skipped, 1);
         assert_eq!(result.generated, 0);
     }
@@ -684,18 +741,25 @@ mod tests {
     #[test]
     fn test_update_thumbnail_skip_no_content_in_path() {
         let conn = setup_db();
-        create_media(&conn, &MediaInput {
-            title: "contentなし".to_string(),
-            media_type: MediaType::Comic,
-            path: Some("/media/onepiece/vol1".to_string()),
-            uuid: Some("test-uuid-no-content-update".to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "contentなし".to_string(),
+                media_type: MediaType::Comic,
+                path: Some("/media/onepiece/vol1".to_string()),
+                uuid: Some("test-uuid-no-content-update".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
-        let result =
-            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
-                .unwrap();
+        let result = update_thumbnail(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &ThumbnailOptions::default(),
+        )
+        .unwrap();
         assert_eq!(result.skipped, 1);
     }
 
@@ -707,19 +771,26 @@ mod tests {
         fs::create_dir(&content_dir).unwrap();
         // 001.jpgを作成しない
 
-        create_media(&conn, &MediaInput {
-            title: "001なし".to_string(),
-            media_type: MediaType::Comic,
-            path: Some(content_dir.to_str().unwrap().to_string()),
-            uuid: Some("test-uuid-no-first-page".to_string()),
-            extension: Some("jpg".to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "001なし".to_string(),
+                media_type: MediaType::Comic,
+                path: Some(content_dir.to_str().unwrap().to_string()),
+                uuid: Some("test-uuid-no-first-page".to_string()),
+                extension: Some("jpg".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
-        let result =
-            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
-                .unwrap();
+        let result = update_thumbnail(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &ThumbnailOptions::default(),
+        )
+        .unwrap();
         assert_eq!(result.skipped, 1);
     }
 
@@ -738,20 +809,27 @@ mod tests {
         let thumb_path = cover_dir.join(format!("{}.jpg", uuid));
         fs::write(&thumb_path, b"dummy thumb").unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "既存あり".to_string(),
-            media_type: MediaType::Comic,
-            path: Some(content_dir.to_str().unwrap().to_string()),
-            uuid: Some(uuid.to_string()),
-            extension: Some("jpg".to_string()),
-            thumbnail_path: Some(thumb_path.to_str().unwrap().to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "既存あり".to_string(),
+                media_type: MediaType::Comic,
+                path: Some(content_dir.to_str().unwrap().to_string()),
+                uuid: Some(uuid.to_string()),
+                extension: Some("jpg".to_string()),
+                thumbnail_path: Some(thumb_path.to_str().unwrap().to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
-        let result =
-            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
-                .unwrap();
+        let result = update_thumbnail(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &ThumbnailOptions::default(),
+        )
+        .unwrap();
         assert_eq!(result.already_exists, 1);
         assert_eq!(result.generated, 0);
     }
@@ -766,21 +844,27 @@ mod tests {
         fs::create_dir(&content_dir).unwrap();
         fs::write(content_dir.join("001.jpg"), b"dummy page").unwrap();
 
-        let media = create_media(&conn, &MediaInput {
-            title: "dry_runテスト".to_string(),
-            media_type: MediaType::Comic,
-            path: Some(content_dir.to_str().unwrap().to_string()),
-            uuid: Some(uuid.to_string()),
-            extension: Some("jpg".to_string()),
-            ..Default::default()
-        })
+        let media = create_media(
+            &conn,
+            &MediaInput {
+                title: "dry_runテスト".to_string(),
+                media_type: MediaType::Comic,
+                path: Some(content_dir.to_str().unwrap().to_string()),
+                uuid: Some(uuid.to_string()),
+                extension: Some("jpg".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         let result = update_thumbnail(
             &conn,
             &MediaFilter::default(),
             None,
-            &ThumbnailOptions { dry_run: true, force: false },
+            &ThumbnailOptions {
+                dry_run: true,
+                force: false,
+            },
         )
         .unwrap();
         assert_eq!(result.generated, 1);
@@ -821,14 +905,17 @@ mod tests {
         fs::create_dir(&content_dir).unwrap();
         fs::write(content_dir.join("001.jpg"), b"dummy page").unwrap();
 
-        let media = create_media(&conn, &MediaInput {
-            title: "成功ケース".to_string(),
-            media_type: MediaType::Comic,
-            path: Some(content_dir.to_str().unwrap().to_string()),
-            uuid: Some(uuid.to_string()),
-            extension: Some("jpg".to_string()),
-            ..Default::default()
-        })
+        let media = create_media(
+            &conn,
+            &MediaInput {
+                title: "成功ケース".to_string(),
+                media_type: MediaType::Comic,
+                path: Some(content_dir.to_str().unwrap().to_string()),
+                uuid: Some(uuid.to_string()),
+                extension: Some("jpg".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         // fakeのconvertをPATHの先頭に追加して実行
@@ -841,7 +928,10 @@ mod tests {
                 &conn,
                 &MediaFilter::default(),
                 None,
-                &ThumbnailOptions { dry_run: false, force: false },
+                &ThumbnailOptions {
+                    dry_run: false,
+                    force: false,
+                },
             );
             std::env::set_var("PATH", &original_path);
             r
@@ -870,18 +960,25 @@ mod tests {
         let content_dir = tmp.path().join("content");
         fs::create_dir(&content_dir).unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "Music".to_string(),
-            media_type: MediaType::Music,
-            path: Some(content_dir.to_str().unwrap().to_string()),
-            uuid: Some("test-uuid-music".to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "Music".to_string(),
+                media_type: MediaType::Music,
+                path: Some(content_dir.to_str().unwrap().to_string()),
+                uuid: Some("test-uuid-music".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
-        let result =
-            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
-                .unwrap();
+        let result = update_thumbnail(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &ThumbnailOptions::default(),
+        )
+        .unwrap();
         assert_eq!(result.skipped, 1);
         assert!(matches!(
             &result.details[0].status,
@@ -898,19 +995,26 @@ mod tests {
         let video_path = content_dir.join("video.mp4");
         // ファイルを作成しない
 
-        create_media(&conn, &MediaInput {
-            title: "Video no file".to_string(),
-            media_type: MediaType::Video,
-            path: Some(video_path.to_str().unwrap().to_string()),
-            uuid: Some("test-uuid-video-nofile".to_string()),
-            extension: Some("mp4".to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "Video no file".to_string(),
+                media_type: MediaType::Video,
+                path: Some(video_path.to_str().unwrap().to_string()),
+                uuid: Some("test-uuid-video-nofile".to_string()),
+                extension: Some("mp4".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
-        let result =
-            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
-                .unwrap();
+        let result = update_thumbnail(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &ThumbnailOptions::default(),
+        )
+        .unwrap();
         assert_eq!(result.skipped, 1);
     }
 
@@ -923,21 +1027,27 @@ mod tests {
         let video_path = content_dir.join("video.mp4");
         fs::write(&video_path, b"dummy video").unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "Video dry_run".to_string(),
-            media_type: MediaType::Video,
-            path: Some(video_path.to_str().unwrap().to_string()),
-            uuid: Some("test-uuid-video-dry".to_string()),
-            extension: Some("mp4".to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "Video dry_run".to_string(),
+                media_type: MediaType::Video,
+                path: Some(video_path.to_str().unwrap().to_string()),
+                uuid: Some("test-uuid-video-dry".to_string()),
+                extension: Some("mp4".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         let result = update_thumbnail(
             &conn,
             &MediaFilter::default(),
             None,
-            &ThumbnailOptions { dry_run: true, force: false },
+            &ThumbnailOptions {
+                dry_run: true,
+                force: false,
+            },
         )
         .unwrap();
         assert_eq!(result.generated, 1);
@@ -973,14 +1083,17 @@ mod tests {
         let video_path = content_dir.join("video.mp4");
         fs::write(&video_path, b"dummy video").unwrap();
 
-        let media = create_media(&conn, &MediaInput {
-            title: "Video成功".to_string(),
-            media_type: MediaType::Video,
-            path: Some(video_path.to_str().unwrap().to_string()),
-            uuid: Some(uuid.to_string()),
-            extension: Some("mp4".to_string()),
-            ..Default::default()
-        })
+        let media = create_media(
+            &conn,
+            &MediaInput {
+                title: "Video成功".to_string(),
+                media_type: MediaType::Video,
+                path: Some(video_path.to_str().unwrap().to_string()),
+                uuid: Some(uuid.to_string()),
+                extension: Some("mp4".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         let original_path = std::env::var("PATH").unwrap_or_default();
@@ -991,7 +1104,10 @@ mod tests {
                 &conn,
                 &MediaFilter::default(),
                 None,
-                &ThumbnailOptions { dry_run: false, force: false },
+                &ThumbnailOptions {
+                    dry_run: false,
+                    force: false,
+                },
             );
             std::env::set_var("PATH", &original_path);
             r
@@ -1025,20 +1141,27 @@ mod tests {
         let thumb_path = cover_dir.join(format!("{}.jpg", uuid));
         fs::write(&thumb_path, b"dummy thumb").unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "Video既存あり".to_string(),
-            media_type: MediaType::Video,
-            path: Some(video_path.to_str().unwrap().to_string()),
-            uuid: Some(uuid.to_string()),
-            extension: Some("mp4".to_string()),
-            thumbnail_path: Some(thumb_path.to_str().unwrap().to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "Video既存あり".to_string(),
+                media_type: MediaType::Video,
+                path: Some(video_path.to_str().unwrap().to_string()),
+                uuid: Some(uuid.to_string()),
+                extension: Some("mp4".to_string()),
+                thumbnail_path: Some(thumb_path.to_str().unwrap().to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
-        let result =
-            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
-                .unwrap();
+        let result = update_thumbnail(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &ThumbnailOptions::default(),
+        )
+        .unwrap();
         assert_eq!(result.already_exists, 1);
         assert_eq!(result.generated, 0);
     }
@@ -1056,21 +1179,27 @@ mod tests {
         let actual_file = content_dir.join(format!("{}.mp4", uuid));
         fs::write(&actual_file, b"dummy video").unwrap();
 
-        create_media(&conn, &MediaInput {
-            title: "Video extなし".to_string(),
-            media_type: MediaType::Video,
-            path: Some(path_without_ext.to_str().unwrap().to_string()),
-            uuid: Some(uuid.to_string()),
-            extension: Some("mp4".to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "Video extなし".to_string(),
+                media_type: MediaType::Video,
+                path: Some(path_without_ext.to_str().unwrap().to_string()),
+                uuid: Some(uuid.to_string()),
+                extension: Some("mp4".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
         let result = update_thumbnail(
             &conn,
             &MediaFilter::default(),
             None,
-            &ThumbnailOptions { dry_run: true, force: false },
+            &ThumbnailOptions {
+                dry_run: true,
+                force: false,
+            },
         )
         .unwrap();
         assert_eq!(result.generated, 1);
@@ -1087,19 +1216,26 @@ mod tests {
         let path_without_ext = content_dir.join(uuid);
         // ファイルを作成しない
 
-        create_media(&conn, &MediaInput {
-            title: "Video ファイルなし".to_string(),
-            media_type: MediaType::Video,
-            path: Some(path_without_ext.to_str().unwrap().to_string()),
-            uuid: Some(uuid.to_string()),
-            extension: Some("mp4".to_string()),
-            ..Default::default()
-        })
+        create_media(
+            &conn,
+            &MediaInput {
+                title: "Video ファイルなし".to_string(),
+                media_type: MediaType::Video,
+                path: Some(path_without_ext.to_str().unwrap().to_string()),
+                uuid: Some(uuid.to_string()),
+                extension: Some("mp4".to_string()),
+                ..Default::default()
+            },
+        )
         .unwrap();
 
-        let result =
-            update_thumbnail(&conn, &MediaFilter::default(), None, &ThumbnailOptions::default())
-                .unwrap();
+        let result = update_thumbnail(
+            &conn,
+            &MediaFilter::default(),
+            None,
+            &ThumbnailOptions::default(),
+        )
+        .unwrap();
         assert_eq!(result.skipped, 1);
     }
 }
