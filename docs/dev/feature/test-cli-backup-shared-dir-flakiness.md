@@ -1,6 +1,10 @@
 # 並列テストでの backup 共有ディレクトリ競合による flaky テスト
 
-## 現状
+## ステータス
+
+**解決済み（PR #56・テストの TempDir 分離 + 既定 backup_dir の db_path 親基準化）**
+
+## 現状（旧実装の問題）
 
 `rust-sdk/tests/cli_integration_test.rs` の `test_cli_set_backup_label_and_note` が、
 フルスイート並列実行時におよそ 10〜30% の確率で失敗する（単独実行では常に成功）。
@@ -25,6 +29,15 @@
   のフラグ追加）。
 - または `execute_cli_command` が暗黙に依存するデフォルト backup_dir を db_path 相対にし、
   テスト間で分離する。
+
+## 解決内容（PR #56・両案とも採用）
+
+- 既定 backup_dir の解決を「db_path の親/`backup`」に変更（`rust-sdk/src/backup.rs`。
+  ファイル実体のない `:memory:` は既定解決を持たないため明示指定必須）。
+- CLI 統合テストは `TempDir` 内に db_path を置き、backup_dir もテストごとに分離
+  （`rust-sdk/tests/cli_integration_test.rs` の `execute_cli_command_with_env`）。
+- 共有 `/tmp/backup` への並列書き込みは発生しなくなり、フルスイート並列実行での
+  当該 flaky 失敗は再現しない（`test_cli_set_backup_label_and_note` 含む全テスト緑）。
 
 ## 優先度
 
