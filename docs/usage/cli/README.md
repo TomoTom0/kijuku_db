@@ -354,7 +354,7 @@ kijuku-cli --db ./data/kijuku.db check-thumbnail --filter '{"media_type":"comic"
 - `missing`: `thumbnail_path` が未設定または期待パスと不一致の件数
 - `file_not_found`: `thumbnail_path` は設定されているがファイルが存在しない件数
 - `skipped`: `path` 未設定・`content` コンポーネントなしなど条件を満たさない件数
-- `detail_file`: 全件詳細（`CheckThumbnailItemResult[]`）を含む一時JSONファイルパス
+- `details`: 全件詳細（`CheckThumbnailItemResult[]`）の配列（レスポンスにインラインで含まれる）
 
 ### update-thumbnail
 
@@ -408,6 +408,17 @@ kijuku-cli --db ./data/kijuku.db update-exist --dry-run
 # フィルタを指定して対象を絞り込む
 kijuku-cli --db ./data/kijuku.db update-exist --filter '{"media_type":"comic"}'
 ```
+
+結果（JSON）の主なフィールド：
+- `total`: 対象件数
+- `updated`: flag_exist・extension・page_count に変更があった件数
+- `updated_ids`: 変更があったメディアID一覧（1000件以下の場合のみインライン・超過時は `null`）
+- `updated_ids_file`: `updated_ids` が1000件超の場合のID一覧JSONファイルパス（1000件以下では `null`）
+- `detail_file`: 全件詳細（`UpdateExistItemResult[]`）を含むJSONファイルのパス
+
+**削除責任:** `detail_file` / `updated_ids_file` は CLI プロセス終了後もファイルシステムに残ります。
+読み取り後は呼び出し側の責任で削除してください（TS SDK `updateExist` と同じ契約）。
+削除しない場合は OS の `/tmp` クリーンアップに任されます。
 
 ### file
 

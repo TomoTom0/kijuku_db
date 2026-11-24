@@ -3430,10 +3430,20 @@ async fn handle_update_exist(db: &KijukuDB, params: &serde_json::Value) -> Comma
         params.options.as_ref(),
         &params.update_options,
     ) {
-        Ok(result) => match serde_json::to_value(result) {
-            Ok(data) => CommandResponse::success(data),
-            Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
-        },
+        Ok(result) => {
+            // detail_file / updated_ids_file はレスポンス出力（CLIプロセス終了）後に呼び出し側が
+            // 読み取るため、UpdateExistResult の Drop による一時ファイル自動削除を回避する。
+            // 削除責任は CLI 呼び出し側（TS SDK updateExist と同じ契約・docs/usage/cli/README.md）。
+            let serialized = serde_json::to_value(&result);
+            match serialized {
+                Ok(data) => {
+                    std::mem::forget(result);
+                    CommandResponse::success(data)
+                }
+                // シリアライズ失敗時はパスを返さないため、通常どおり Drop してファイルを削除する
+                Err(e) => CommandResponse::error(format!("レスポンスのシリアライズに失敗: {}", e)),
+            }
+        }
         Err(e) => CommandResponse::error(format!("update-existエラー: {}", e)),
     }
 }
@@ -3458,13 +3468,24 @@ fn handle_update_exist_subcommand(ctx: &CliContext, dry_run: bool, filter_json: 
 
     let update_options = UpdateExistOptions { dry_run };
     match client.update_exist(&filter, None, &update_options) {
-        Ok(result) => match serde_json::to_value(result) {
-            Ok(data) => output_response(&CommandResponse::success(data)),
-            Err(e) => output_response(&CommandResponse::error(format!(
-                "レスポンスのシリアライズに失敗: {}",
-                e
-            ))),
-        },
+        Ok(result) => {
+            // stdinハンドラ (handle_update_exist) と同様、Drop による自動削除を回避して
+            // プロセス終了後もファイルを実在させる（削除責任は呼び出し側）。
+            // Remote接続時はこの result がレスポンスJSONから逆シリアライズされたコピーであり、
+            // クライアント側 Drop が（同一ホストSSH時等に）ファイルを誤削除する事故の防止も兼ねる。
+            let serialized = serde_json::to_value(&result);
+            match serialized {
+                Ok(data) => {
+                    let response = CommandResponse::success(data);
+                    std::mem::forget(result);
+                    output_response(&response);
+                }
+                Err(e) => output_response(&CommandResponse::error(format!(
+                    "レスポンスのシリアライズに失敗: {}",
+                    e
+                ))),
+            }
+        }
         Err(e) => output_response(&CommandResponse::error(format!(
             "update-existエラー: {}",
             e

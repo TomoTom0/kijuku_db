@@ -269,9 +269,13 @@ fn process_media(
 /// # 一時ファイル
 ///
 /// この関数は結果を格納するために一時ファイルを作成します。
-/// 返される [`UpdateExistResult`] の `detail_file` および `updated_ids_file` に含まれる
-/// 返される [`UpdateExistResult`] がドロップされる際、一時ファイルは自動的に削除されます。
-/// ファイルの内容が必要な場合は、ドロップ前に読み取ってください。
+/// 返される [`UpdateExistResult`] の `detail_file`、および `updated_ids_file`（`updated_ids` が
+/// 1000件超の場合）にそのパスが格納されます。[`UpdateExistResult`] がドロップされる際、
+/// 一時ファイルは自動的に削除されます。ファイルの内容が必要な場合は、ドロップ前に読み取ってください。
+///
+/// プロセス境界を越えてパスを渡す場合（CLI レスポンス等）は `std::mem::forget` 等で
+/// Drop を回避し、削除責任を受け渡し先に移譲してください（実装例: cli/main.rs
+/// `handle_update_exist`）。
 pub fn update_exist(
     conn: &Connection,
     filter: &MediaFilter,
