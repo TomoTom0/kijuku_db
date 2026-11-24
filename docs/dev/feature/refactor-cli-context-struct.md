@@ -1,6 +1,10 @@
 # Rust CLI: コンテキスト構造体の導入
 
-## 現状
+## ステータス
+
+**解決済み（PR #56・`CliContext` 導入済み）**
+
+## 現状（旧実装の問題）
 
 `verbose: bool` など、CLIのグローバルオプションを多数の関数に個別の引数として受け渡している。
 
@@ -26,9 +30,15 @@ struct CliContext {
 
 low
 
+## 解決内容（PR #56）
+
+- `rust-sdk/src/bin/cli/main.rs` に `struct CliContext` を導入済み（db_path 等のグローバル
+  オプションを集約）。ハンドラ群は個別引数の受け渡しから本構造体経由に移行済みで、
+  改善案どおりの「将来の追加フィールドはここに集約」構造になっている。
+
 ## 関連
 
 - PR: #38
 - Thread ID: PRRT_kwDOQt7xR8545fm0
 - タスク: TASK-177
-- 関連ファイル: rust-sdk/src/bin/cli.rs
+- 関連ファイル: rust-sdk/src/bin/cli/main.rs
