@@ -62,7 +62,7 @@ ts-sdk/test/
     trash.test.ts            - 論理削除（move/list/restore/purge）
   integration/               # 実SQLite・実ファイルシステムを使うテスト
     attribute.test.ts        - メディア追加属性（CRUD・削除）
-    backup.test.ts           - BackupManager・BackupSelector
+    backup.test.ts           - BackupManager・BackupSelector（CUD直後即closeの自動バックアップ回帰・TASK-112を含む）
     bulk.test.ts             - 一括操作
     config.test.ts           - config.toml 読み込み・マージ
     crud.test.ts             - メディアCRUD操作
