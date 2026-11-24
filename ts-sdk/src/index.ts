@@ -384,9 +384,7 @@ export class KijukuDB {
   createMedia(data: MediaInput): Media {
     this.assertWritable('createMedia');
     const result = crud.createMedia(this.db, data);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
     return result;
   }
 
@@ -410,9 +408,7 @@ export class KijukuDB {
   updateMedia(id: number, data: Partial<MediaInput>): void {
     this.assertWritable('updateMedia');
     crud.updateMedia(this.db, id, data);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
   }
 
   /**
@@ -421,9 +417,7 @@ export class KijukuDB {
   deleteMedia(id: number): void {
     this.assertWritable('deleteMedia');
     crud.deleteMedia(this.db, id);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
   }
 
   /**
@@ -443,9 +437,7 @@ export class KijukuDB {
   bulkCreateMedia(dataList: MediaInput[]): Media[] {
     this.assertWritable('bulkCreateMedia');
     const result = bulk.bulkCreateMedia(this.db, dataList);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
     return result;
   }
 
@@ -455,9 +447,7 @@ export class KijukuDB {
   bulkDeleteMedia(ids: number[]): void {
     this.assertWritable('bulkDeleteMedia');
     bulk.bulkDeleteMedia(this.db, ids);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
   }
 
   /**
@@ -466,9 +456,7 @@ export class KijukuDB {
   bulkUpdateMedia(updates: BulkUpdateItem[]): void {
     this.assertWritable('bulkUpdateMedia');
     bulk.bulkUpdateMedia(this.db, updates);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
   }
 
   /**
@@ -477,9 +465,7 @@ export class KijukuDB {
   createTag(name: string): Tag {
     this.assertWritable('createTag');
     const result = tag.createTag(this.db, name);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
     return result;
   }
 
@@ -489,9 +475,7 @@ export class KijukuDB {
   addTagToMedia(mediaId: number, tagId: number): void {
     this.assertWritable('addTagToMedia');
     tag.addTagToMedia(this.db, mediaId, tagId);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
   }
 
   /**
@@ -500,9 +484,7 @@ export class KijukuDB {
   removeTagFromMedia(mediaId: number, tagId: number): void {
     this.assertWritable('removeTagFromMedia');
     tag.removeTagFromMedia(this.db, mediaId, tagId);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
   }
 
   /**
@@ -558,9 +540,7 @@ export class KijukuDB {
   ): void {
     this.assertWritable('setMediaAttribute');
     attribute.setMediaAttribute(this.db, mediaId, key, value, valueType);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
   }
 
   /**
@@ -583,9 +563,7 @@ export class KijukuDB {
   deleteMediaAttribute(mediaId: number, key: string): void {
     this.assertWritable('deleteMediaAttribute');
     attribute.deleteMediaAttribute(this.db, mediaId, key);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
   }
 
   /**
@@ -594,9 +572,7 @@ export class KijukuDB {
   deleteAllMediaAttributes(mediaId: number): void {
     this.assertWritable('deleteAllMediaAttributes');
     attribute.deleteAllMediaAttributes(this.db, mediaId);
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
   }
 
   // ========== メディアハッシュ操作 ==========
@@ -657,10 +633,26 @@ export class KijukuDB {
    */
   transaction<T>(fn: () => T): T {
     const result = this.db.transaction(fn)();
-    this.backupManager?.recordOperation().catch((err) => {
-      console.error('Backup operation failed:', err);
-    });
+    this.recordBackupOperation();
     return result;
+  }
+
+  /**
+   * CUD 操作後に自動バックアップを記録する（TASK-112・Rust lib.rs の record_operation と同等）
+   *
+   * BackupManager.recordOperation() は同期で、呼び出しスレッド内でバックアップを
+   * 完結させる（トランザクション中の CUD は BackupManager 側の inTransaction
+   * ガードでスキップされ、外側の transaction() が commit 後に1回だけ記録する）。
+   * 失敗時のみ console.error へ出力し、操作結果には影響させない。浮遊 Promise
+   * （fire-and-forget）を残さないため、close() 後に "connection is not open"
+   * エラーやバックアップ取りこぼしは発生しない。
+   */
+  private recordBackupOperation(): void {
+    try {
+      this.backupManager?.recordOperation();
+    } catch (err) {
+      console.error('Backup operation failed:', err);
+    }
   }
 
   /** 手動バックアップを実行（ラベルなし） */
@@ -751,15 +743,19 @@ export class KijukuDB {
     this.assertWritable('updateThumbnail');
     const result = thumbnailModule.updateThumbnail(this.db, filter, options, thumbnailOptions);
     if (result.generated > 0) {
-      this.backupManager?.recordOperation().catch((err) => {
-        console.error('Backup operation failed:', err);
-      });
+      this.recordBackupOperation();
     }
     return result;
   }
 
   /**
    * データベース接続を閉じる
+   *
+   * 自動バックアップは各 CUD 操作の時点で同期的に完了している
+   * （recordBackupOperation → BackupManager.recordOperation・TASK-112）。
+   * そのため close() が待つべき pending バックアップは存在せず、同期シグネチャの
+   * まま接続のみを閉じられる（close の async 化ではなくバックアップ側を同期化する
+   * 方式を採用した・Rust SDK と同じ挙動）。
    */
   close(): void {
     this.db.close();

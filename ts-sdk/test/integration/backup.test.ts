@@ -1,7 +1,7 @@
 /**
  * BackupManager の単体テスト
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { KijukuDB } from '../../src/index.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -530,6 +530,59 @@ describe('BackupManager', () => {
       } finally {
         db2.close();
         if (fs.existsSync(p)) fs.unlinkSync(p);
+        if (fs.existsSync(bdir)) fs.rmSync(bdir, { recursive: true });
+      }
+    });
+  });
+
+  describe('CUD直後の即時close（TASK-112）', () => {
+    it('CUD直後にclose()しても自動バックアップが取られ stderr ノイズが出ない', async () => {
+      const tmpDir = os.tmpdir();
+      const p = path.join(tmpDir, `task112-${Date.now()}.db`);
+      const bdir = path.join(tmpDir, `task112bak-${Date.now()}`);
+
+      // 旧実装（fire-and-forget recordOperation）では close() が pending バックアップを
+      // 待たずに接続を閉じるため、close 後に "connection is not open" が console.error
+      // に出力されバックアップも取りこぼされる。同期化（Rust parity）で解消されること。
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const db2 = new KijukuDB(p, {
+          backup: { backupDir: bdir, enabled: true, intervalMs: 3_600_000 },
+        });
+        db2.migrate();
+        db2.createMedia({ title: 'TASK-112 immediate close', media_type: 'comic' });
+        db2.close(); // CUD直後に同期で即close
+
+        // 旧実装の非同期バックアップ失敗（.catch 内 console.error）が発生する余裕を与える
+        await new Promise((resolve) => setTimeout(resolve, 100));
+
+        // (a) auto/ にバックアップファイルが実際に残る
+        const autoDir = path.join(bdir, 'auto');
+        const files = fs.existsSync(autoDir) ? fs.readdirSync(autoDir) : [];
+        expect(files.length).toBeGreaterThan(0);
+
+        // (b) "Backup operation failed" / "not open" 等の stderr ノイズが出ない
+        expect(errSpy).not.toHaveBeenCalled();
+
+        // (c) バックアップに作成した media が実際に含まれる（backup:null で読み取り検証）
+        const fullBackupName = files.find((f) => f.endsWith('.db'));
+        expect(fullBackupName).toBeDefined();
+        const verify = new KijukuDB(path.join(autoDir, fullBackupName!), {
+          backup: null,
+          readonly: true,
+        });
+        try {
+          const found = verify.findMedia({ title: 'TASK-112 immediate close' });
+          expect(found.length).toBe(1);
+          expect(found[0].title).toBe('TASK-112 immediate close');
+        } finally {
+          verify.close();
+        }
+      } finally {
+        errSpy.mockRestore();
+        for (const suffix of ['', '-wal', '-shm']) {
+          if (fs.existsSync(p + suffix)) fs.unlinkSync(p + suffix);
+        }
         if (fs.existsSync(bdir)) fs.rmSync(bdir, { recursive: true });
       }
     });

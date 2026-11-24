@@ -188,7 +188,8 @@ export interface BackupOptions {
   busyTimeoutMs?: number;
   /** DBロック時のリトライ間隔（ミリ秒）のリスト。長さがリトライ回数を決定する・Rust parity */
   retryIntervalsMs?: number[];
-  /** バックアップ進捗コールバック */
+  /** バックアップ進捗コールバック（API互換で残置・TASK-112 の同期化で現在は未呼び出し。
+   *  VACUUM INTO による同期コピーは進捗通知を持たない） */
   onProgress?: (info: { totalPages: number; remainingPages: number }) => void;
 }
 
@@ -240,20 +241,35 @@ export class BackupManager {
     }
   }
 
-  /** 操作を記録し、必要に応じて自動バックアップを実行 */
-  async recordOperation(): Promise<void> {
+  /**
+   * 操作を記録し、必要に応じて自動バックアップを実行（同期・Rust parity・TASK-112）
+   *
+   * CUD 操作の呼び出しスレッド内でバックアップを完結させる。旧実装は非同期
+   * （fire-and-forget）で、CUD 直後に close() する短命接続で "connection is not
+   * open" エラーとバックアップ取りこぼしが起きた。Rust SDK の record_operation
+   * と同じく同期実行とし、close() 時に drain すべき pending バックアップを
+   * 存在させない（close の async 化の代替方式）。
+   *
+   * トランザクション中（inTransaction）は記録しない（Rust の autocommit ガードと
+   * 同等）。index.ts の transaction() が commit 後に1回だけ記録する。VACUUM INTO
+   * による同期コピーもトランザクション内では使えないため、このガードは必須。
+   */
+  recordOperation(): void {
     if (!this.enabled || !this.autoEnabled) return;
+
+    // トランザクション中は記録しない（外側の transaction() が commit 後に記録する）
+    if (this.db.inTransaction) return;
 
     const now = Date.now();
     this.lastOperationTime = now;
 
     if (this.lastBackupTime === null || now - this.lastBackupTime >= this.intervalMs) {
-      await this.backupAuto();
+      this.backupAuto();
     }
   }
 
-  /** 自動バックアップを実行（内部用） */
-  async backupAuto(): Promise<string> {
+  /** 自動バックアップを実行（内部用・同期）。await して呼び出しても問題ない */
+  backupAuto(): string {
     const timestamp = currentTimestampStr();
     const autoDir = path.join(this.backupDir, 'auto');
     fs.mkdirSync(autoDir, { recursive: true });
@@ -268,7 +284,7 @@ export class BackupManager {
     if (todayFull !== null) {
       // 差分バックアップを試みる
       try {
-        const diffPath = await this.createDiffBackupFile(timestamp, todayFull);
+        const diffPath = this.createDiffBackupFile(timestamp, todayFull);
         backupPath = diffPath;
         isDiff = true;
         baseId = todayFull.id;
@@ -276,13 +292,13 @@ export class BackupManager {
         // 差分作成失敗時はフルにフォールバック
         const filename = `${this.dbStem}.${timestamp}.db`;
         backupPath = path.join(autoDir, filename);
-        await this.copyDbTo(backupPath);
+        this.copyDbToSync(backupPath);
       }
     } else {
       // フルバックアップ（今日の最初 = daily）
       const filename = `${this.dbStem}.${timestamp}.db`;
       backupPath = path.join(autoDir, filename);
-      await this.copyDbTo(backupPath);
+      this.copyDbToSync(backupPath);
     }
 
     this.lastBackupTime = Date.now();
@@ -319,7 +335,8 @@ export class BackupManager {
     return backupPath;
   }
 
-  /** 手動バックアップを実行（常にフル） */
+  /** 手動バックアップを実行（常にフル）。シグネチャは async のまま（既存呼び出し側の
+   *  await 互換維持）だが、内部処理は同期（copyDbToSync）で完結する */
   async backup(label?: string): Promise<string> {
     if (!this.enabled) {
       throw new Error('Backup is disabled');
@@ -334,7 +351,7 @@ export class BackupManager {
       : `${this.dbStem}.${timestamp}.db`;
 
     const backupPath = path.join(manualDir, filename);
-    await this.copyDbTo(backupPath);
+    this.copyDbToSync(backupPath);
 
     this.lastBackupTime = Date.now();
     this.cleanupOldBackups();
@@ -793,13 +810,22 @@ export class BackupManager {
     return this.dbPath !== ':memory:' && fs.existsSync(this.dbPath);
   }
 
-  private async copyDbTo(dstPath: string): Promise<void> {
-    await this.db.backup(dstPath, {
-      progress: (info) => {
-        if (this.onProgress) this.onProgress(info);
-        return 200;
-      },
-    });
+  /**
+   * DB を dstPath へ同期コピーする（TASK-112・Rust parity）。
+   *
+   * better-sqlite3 の Online Backup（db.backup()）は非同期 API で、完了を待つには
+   * 呼び出し側の async 化が必要になる（close 時の取りこぼし原因）。代わりに同期
+   * 実行できる VACUUM INTO を使い、パスはパラメータバインドで渡す（インジェクション
+   * 回避・パスに `'` 等が含まれても安全）。トランザクション内では実行できない
+   * （recordOperation の inTransaction ガードで保護）。
+   */
+  private copyDbToSync(dstPath: string): void {
+    // VACUUM INTO は転送先ファイルが既に存在すると失敗する（SQLite 仕様）。
+    // タイムスタンプの一意性で通常は衝突しないが、残骸があれば先に削除する。
+    if (fs.existsSync(dstPath)) {
+      fs.rmSync(dstPath);
+    }
+    this.db.prepare('VACUUM INTO ?').run(dstPath);
   }
 
   /**
@@ -874,13 +900,13 @@ export class BackupManager {
     return null;
   }
 
-  /** 差分バックアップファイルを作成（TASK-147） */
-  private async createDiffBackupFile(timestamp: string, base: BackupInfo): Promise<string> {
+  /** 差分バックアップファイルを作成（TASK-147・同期） */
+  private createDiffBackupFile(timestamp: string, base: BackupInfo): string {
     const autoDir = path.join(this.backupDir, 'auto');
 
     // 現在のDBの一時フルコピーを作成
     const tempPath = path.join(autoDir, `${this.dbStem}.${timestamp}.tmp_full.db`);
-    await this.copyDbTo(tempPath);
+    this.copyDbToSync(tempPath);
 
     const diffPath = path.join(autoDir, `${this.dbStem}.${timestamp}.diff`);
     try {
