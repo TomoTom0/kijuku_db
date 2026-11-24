@@ -7,7 +7,7 @@ rust-sdk/tests/              # Rust SDK のインテグレーションテスト
   audit_test.rs              - 監査ログ（append-only JSONL・sync/discard/observe/promote での記録・promote 後も prod 側 audit.log が残る）
   bulk_load_test.rs          - bulk_load（export/全データ移行: transfer/verify をローカル→ローカルで検証・uuid保持・不一致検出・空でないdestへの再転送拒否）
   backup_test.rs             - バックアップ機能（scope/kind/auto-records.csv/restore/pre_migrate・pre_promote snapshot/copy_db_online）
-  cli_integration_test.rs    - CLIコマンドのインテグレーションテスト（stdin操作・file/trash/sync-db サブコマンド）
+  cli_integration_test.rs    - CLIコマンドのインテグレーションテスト（stdin操作・file/trash/sync-db サブコマンド・update-exist 結果ファイルの実在検証）
   d1_test.rs                 - D1バックエンドのテスト
   db_options_test.rs         - DBOptions（WAL・busy_timeout・readonly 時の WAL skip）
   diff_prod_stg_test.rs      - diff_with_prod（prod RO + stg 比較・stg 編集視点のセマンティクス担保）

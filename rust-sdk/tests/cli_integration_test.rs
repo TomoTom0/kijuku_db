@@ -1152,6 +1152,201 @@ fn test_cli_bulk_create() {
     assert_eq!(response["data"].as_array().unwrap().len(), 2);
 }
 
+/// TASK-113: stdin `updateExist` の detail_file が CLI プロセス終了後も実在すること。
+/// Drop 自動削除がレスポンス出力前に走る実装では赤（ファイルは削除済み）。
+#[test]
+fn test_cli_update_exist_detail_file_persists_after_exit() {
+    // db_path を TempDir 内に置くことで backup_dir（db_path の親/backup）も各テスト独立となり、
+    // 並列実行時の /tmp/backup 共有競合を防ぐ（NamedTempFile は /tmp 直下になるため共有される）。
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+    let media_dir = dir.path().join("media");
+    fs::create_dir_all(&media_dir).unwrap();
+    let file_path = media_dir.join("detail-persist-a.m4a");
+    fs::write(&file_path, b"dummy").unwrap();
+
+    execute_cli_command(db_path, json!({ "operation": "migrate", "params": {} }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": {
+                "data": {
+                    "title": "detail file persist",
+                    "media_type": "music",
+                    "uuid": "detail-persist-a",
+                    "path": file_path.to_str().unwrap(),
+                    "extension": "m4a",
+                    "flag_exist": false
+                }
+            }
+        }),
+    );
+
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "updateExist",
+            "params": {}
+        }),
+    );
+
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["total"], 1);
+    assert_eq!(response["data"]["updated"], 1);
+
+    let detail_file = response["data"]["detail_file"]
+        .as_str()
+        .expect("detail_file は文字列パスであること");
+    assert!(
+        fs::metadata(detail_file).is_ok(),
+        "detail_file が CLI プロセス終了後に存在しない: {}",
+        detail_file
+    );
+
+    // 内容検証: UpdateExistItemResult[] としてパースでき、flag_exist が false→true に変化
+    let items: Vec<Value> =
+        serde_json::from_str(&fs::read_to_string(detail_file).unwrap()).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["flag_exist_before"], false);
+    assert_eq!(items[0]["flag_exist_after"], true);
+
+    // updated_ids は1件 → インライン返却・updated_ids_file は null
+    assert_eq!(response["data"]["updated_ids_file"], Value::Null);
+    assert_eq!(response["data"]["updated_ids"].as_array().unwrap().len(), 1);
+
+    // 呼び出し側削除責任の履行（テスト後始末・文書化契約の実演）
+    fs::remove_file(detail_file).unwrap();
+}
+
+/// TASK-113: `update-exist` サブコマンド経由でも detail_file がプロセス終了後も実在すること。
+#[test]
+fn test_cli_update_exist_subcommand_detail_file_persists_after_exit() {
+    // db_path を TempDir 内に置くことで backup_dir（db_path の親/backup）も各テスト独立となり、
+    // 並列実行時の /tmp/backup 共有競合を防ぐ（NamedTempFile は /tmp 直下になるため共有される）。
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+    let media_dir = dir.path().join("media");
+    fs::create_dir_all(&media_dir).unwrap();
+    let file_path = media_dir.join("detail-persist-b.m4a");
+    fs::write(&file_path, b"dummy").unwrap();
+
+    // セットアップは stdin 版テストと同一（省略せず完全実装）:
+    // migrate + createMedia（実ファイル + flag_exist=false の music 1件）
+    execute_cli_command(db_path, json!({ "operation": "migrate", "params": {} }));
+    execute_cli_command(
+        db_path,
+        json!({
+            "operation": "createMedia",
+            "params": {
+                "data": {
+                    "title": "subcommand detail file persist",
+                    "media_type": "music",
+                    "uuid": "detail-persist-b",
+                    "path": file_path.to_str().unwrap(),
+                    "extension": "m4a",
+                    "flag_exist": false
+                }
+            }
+        }),
+    );
+
+    // execute_cli_subcommand は --media-root を必ず渡すが update-exist はそれを使用しないため、
+    // TempDir パスをダミーとして渡す
+    let response = execute_cli_subcommand(db_path, dir.path().to_str().unwrap(), &["update-exist"]);
+
+    // サニティ: success / total=1 / updated=1
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["total"], 1);
+    assert_eq!(response["data"]["updated"], 1);
+
+    let detail_file = response["data"]["detail_file"]
+        .as_str()
+        .expect("detail_file は文字列パスであること");
+    assert!(
+        fs::metadata(detail_file).is_ok(),
+        "detail_file が CLI プロセス終了後に存在しない: {}",
+        detail_file
+    );
+
+    // 呼び出し側削除責任の履行（テスト後始末）
+    fs::remove_file(detail_file).unwrap();
+}
+
+/// TASK-113: updated_ids が1000件超のとき updated_ids_file がプロセス終了後も実在し、
+/// 1001件のIDを含むこと（1001件は bulkCreateMedia 1回で作成）。
+#[test]
+fn test_cli_update_exist_updated_ids_file_over_1000_persists() {
+    // db_path を TempDir 内に置くことで backup_dir（db_path の親/backup）も各テスト独立となり、
+    // 並列実行時の /tmp/backup 共有競合を防ぐ（NamedTempFile は /tmp 直下になるため共有される）。
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let db_path = db_path.to_str().unwrap();
+    let media_dir = dir.path().join("media");
+    fs::create_dir_all(&media_dir).unwrap();
+
+    execute_cli_command(db_path, json!({ "operation": "migrate", "params": {} }));
+
+    // 1001件 (= UPDATED_IDS_INLINE_LIMIT + 1): 実ファイル + flag_exist=false → 全件 updated 扱い
+    let data_list: Vec<Value> = (0..=1000)
+        .map(|i| {
+            let uuid = format!("ids-over-limit-{}", i);
+            let file_path = media_dir.join(format!("{}.m4a", uuid));
+            fs::write(&file_path, b"d").unwrap();
+            json!({
+                "title": format!("music {}", i),
+                "media_type": "music",
+                "uuid": uuid,
+                "path": file_path.to_str().unwrap(),
+                "extension": "m4a",
+                "flag_exist": false
+            })
+        })
+        .collect();
+    let bulk = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "bulkCreateMedia",
+            "params": {
+                "data_list": data_list
+            }
+        }),
+    );
+    assert_eq!(bulk["success"], true);
+    assert_eq!(bulk["data"].as_array().unwrap().len(), 1001);
+
+    let response = execute_cli_command(
+        db_path,
+        json!({
+            "operation": "updateExist",
+            "params": {}
+        }),
+    );
+
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["total"], 1001);
+    assert_eq!(response["data"]["updated"], 1001);
+    assert_eq!(response["data"]["updated_ids"], Value::Null);
+    let ids_file = response["data"]["updated_ids_file"]
+        .as_str()
+        .expect("updated_ids_file は文字列パスであること");
+    assert!(
+        fs::metadata(ids_file).is_ok(),
+        "updated_ids_file が CLI プロセス終了後に存在しない: {}",
+        ids_file
+    );
+
+    let ids: Vec<i64> = serde_json::from_str(&fs::read_to_string(ids_file).unwrap()).unwrap();
+    assert_eq!(ids.len(), 1001);
+
+    // 呼び出し側削除責任の履行（detail_file も併せて後始末）
+    fs::remove_file(ids_file).unwrap();
+    let detail_file = response["data"]["detail_file"].as_str().unwrap();
+    fs::remove_file(detail_file).unwrap();
+}
+
 #[test]
 fn test_cli_get_distinct_values_single_field() {
     // db_path を TempDir 内に置くことで backup_dir（db_path の親/backup）も各テスト独立となり、
